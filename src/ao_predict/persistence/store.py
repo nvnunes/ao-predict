@@ -42,7 +42,7 @@ def _write_value(group: h5py.Group, key: str, value: Any) -> None:
         dtype = h5py.string_dtype(encoding="utf-8")
         if key in group:
             del group[key]
-        group.create_dataset(key, data=arr.astype(str), dtype=dtype)
+        group.create_dataset(key, data=np.asarray(arr, dtype=object), dtype=dtype)
     else:
         if key in group:
             del group[key]
@@ -115,6 +115,11 @@ def _require_all_finite(name: str, arr: np.ndarray) -> None:
         raise ValueError(f"{name} must contain only finite values.")
 
 
+def _read_extra_stat_names(simulation: Mapping[str, Any]) -> tuple[str, ...]:
+    """Read declared extra stat names from an already-validated ``/simulation`` payload."""
+    return tuple(str(name) for name in np.asarray(simulation[schema.KEY_SIMULATION_EXTRA_STAT_NAMES]).reshape(-1).tolist())
+
+
 def _clear_simulation_outputs(f: h5py.File, sim_idx: int) -> None:
     """Reset one simulation's persisted outputs to ``NaN`` values."""
     stats = f[schema.KEY_STATS_SECTION]
@@ -123,6 +128,8 @@ def _clear_simulation_outputs(f: h5py.File, sim_idx: int) -> None:
     stats[schema.KEY_STATS_SR][sim_idx, ...] = np.nan
     stats[schema.KEY_STATS_EE][sim_idx, ...] = np.nan
     stats[schema.KEY_STATS_FWHM_MAS][sim_idx, ...] = np.nan
+    for key in _read_extra_stat_names(_read_node(f[schema.KEY_SIMULATION_SECTION])):
+        stats[key][sim_idx, ...] = np.nan
 
     meta[schema.KEY_META_PIXEL_SCALE_MAS][sim_idx] = np.nan
     meta[schema.KEY_META_TEL_DIAMETER_M][sim_idx] = np.nan
@@ -196,6 +203,7 @@ class SimulationStore:
         validate_setup_payload_core(setup)
         num_sims = validate_options_payload_core(options)
         validate_atm_profile_ids(setup, options)
+        extra_stat_names = _read_extra_stat_names(simulation)
 
         m_sci = get_num_sci(setup)
         ee = get_ee_apertures(setup)
@@ -242,6 +250,8 @@ class SimulationStore:
                 schema.KEY_STATS_EE, data=np.full((num_sims, m_sci, ee.shape[0]), np.nan, dtype=np.float32)
             )
             g_stats.create_dataset(schema.KEY_STATS_FWHM_MAS, data=np.full((num_sims, m_sci), np.nan, dtype=np.float32))
+            for name in extra_stat_names:
+                g_stats.create_dataset(name, data=np.full((num_sims, m_sci), np.nan, dtype=np.float32))
 
     def exists(self) -> bool:
         """Return whether the dataset file currently exists on disk.
@@ -478,8 +488,10 @@ class SimulationStore:
             try:
                 simulation_data = _read_node(f[schema.KEY_SIMULATION_SECTION])
                 validate_simulation_payload_core(simulation_data)
+                extra_stat_names = _read_extra_stat_names(simulation_data)
             except Exception as exc:
                 issues.append(f"Invalid /simulation payload: {exc}")
+                extra_stat_names = ()
 
             try:
                 setup_data = _read_node(f[schema.KEY_SETUP_SECTION])
@@ -490,18 +502,24 @@ class SimulationStore:
 
             try:
                 options_data = _read_node(f[schema.KEY_OPTION_SECTION])
-                num_sims = validate_options_payload_core(options_data, expected_num_sims=n)
+                validate_options_payload_core(options_data, expected_num_sims=n)
                 if setup_data is not None:
                     validate_atm_profile_ids(setup_data, options_data)
             except Exception as exc:
                 issues.append(f"Invalid /options payload: {exc}")
 
-            sr_data = f[f"{schema.KEY_STATS_SECTION}/{schema.KEY_STATS_SR}"]
-            ee_data = f[f"{schema.KEY_STATS_SECTION}/{schema.KEY_STATS_EE}"]
-            fwhm_mas_data = f[f"{schema.KEY_STATS_SECTION}/{schema.KEY_STATS_FWHM_MAS}"]
             pixel_scale_mas_data = f[f"{schema.KEY_META_SECTION}/{schema.KEY_META_PIXEL_SCALE_MAS}"]
             tel_diameter_m_data = f[f"{schema.KEY_META_SECTION}/{schema.KEY_META_TEL_DIAMETER_M}"]
             tel_pupil_data = f[f"{schema.KEY_META_SECTION}/{schema.KEY_META_TEL_PUPIL}"]
+
+            sr_data = f[f"{schema.KEY_STATS_SECTION}/{schema.KEY_STATS_SR}"]
+            ee_data = f[f"{schema.KEY_STATS_SECTION}/{schema.KEY_STATS_EE}"]
+            fwhm_mas_data = f[f"{schema.KEY_STATS_SECTION}/{schema.KEY_STATS_FWHM_MAS}"]
+            extra_stat_data = {
+                name: f[f"{schema.KEY_STATS_SECTION}/{name}"]
+                for name in extra_stat_names
+                if name in stats_group
+            }
 
             if sr_data.ndim != 2:
                 issues.append("/stats/sr must be 2D [N, M].")
@@ -509,10 +527,21 @@ class SimulationStore:
                 issues.append("/stats/ee must be 3D [N, M, A].")
             if fwhm_mas_data.ndim != 2:
                 issues.append("/stats/fwhm_mas must be 2D [N, M].")
+            for name in extra_stat_names:
+                if name not in stats_group:
+                    issues.append(f"Missing declared extra stats dataset '/stats/{name}'.")
+                elif stats_group[name].ndim != 2:
+                    issues.append(f"/stats/{name} must be 2D [N, M].")
             if pixel_scale_mas_data.ndim != 1 or tel_diameter_m_data.ndim != 1:
                 issues.append("/meta/pixel_scale_mas and /meta/tel_diameter_m must be 1D [N].")
             if tel_pupil_data.ndim != 3:
                 issues.append("/meta/tel_pupil must be 3D [N, Ny, Nx].")
+
+            undeclared_stats = sorted(
+                set(stats_group.keys()) - set(schema.CORE_STATS_KEYS) - set(extra_stat_names)
+            )
+            if undeclared_stats:
+                issues.append(f"Undeclared stats datasets found under /stats: {', '.join(undeclared_stats)}.")
 
             if not issues:
                 if (
@@ -521,6 +550,9 @@ class SimulationStore:
                     or fwhm_mas_data.shape[0] != n
                 ):
                     issues.append("Stats first dimension must match /status/state length.")
+                for name, ds in extra_stat_data.items():
+                    if ds.shape[0] != n:
+                        issues.append(f"/stats/{name} first dimension must match /status/state length.")
                 if pixel_scale_mas_data.shape[0] != n or tel_diameter_m_data.shape[0] != n:
                     issues.append("Meta first dimension must match /status/state length.")
                 if tel_pupil_data.shape[0] != n:
@@ -529,7 +561,10 @@ class SimulationStore:
                     sr_data.shape[1] != ee_data.shape[1]
                     or sr_data.shape[1] != fwhm_mas_data.shape[1]
                 ):
-                    issues.append("Stats M dimension mismatch between sr/ee/fwhm_mas/jitter_mas.")
+                    issues.append("Stats M dimension mismatch between sr/ee/fwhm_mas.")
+                for name, ds in extra_stat_data.items():
+                    if sr_data.shape[1] != ds.shape[1]:
+                        issues.append(f"Stats M dimension mismatch between sr and {name}.")
 
             if schema.KEY_PSFS_SECTION in f and schema.KEY_PSFS_DATA in f[schema.KEY_PSFS_SECTION]:
                 psf_data = f[f"{schema.KEY_PSFS_SECTION}/{schema.KEY_PSFS_DATA}"]
@@ -586,19 +621,16 @@ class SimulationStore:
             if ee_ds.ndim != 3:
                 raise ValueError("/stats/ee must be 3D [N, M, A].")
             num_ee = int(ee_ds.shape[2])
+            extra_stat_names = _read_extra_stat_names(_read_node(f[schema.KEY_SIMULATION_SECTION]))
             require_psfs = schema.KEY_PSFS_SECTION in f
-            validate_successful_result(result, num_sci, num_ee, require_psfs=require_psfs)
 
-            # Persist stats arrays.
-            sr = np.asarray(result.stats[schema.KEY_STATS_SR], dtype=np.float32)
-            ee = np.asarray(result.stats[schema.KEY_STATS_EE], dtype=np.float32)
-            fwhm = np.asarray(result.stats[schema.KEY_STATS_FWHM_MAS], dtype=np.float32)
-            if ee.ndim == 1:
-                ee = ee[:, np.newaxis]
-
-            stats[schema.KEY_STATS_SR][sim_idx, :] = sr
-            stats[schema.KEY_STATS_EE][sim_idx, :, :] = ee
-            stats[schema.KEY_STATS_FWHM_MAS][sim_idx, :] = fwhm
+            validate_successful_result(
+                result,
+                num_sci,
+                num_ee,
+                extra_stat_names=extra_stat_names,
+                require_psfs=require_psfs,
+            )
 
             # Persist meta values.
             meta = f[schema.KEY_META_SECTION]
@@ -610,6 +642,19 @@ class SimulationStore:
             tel_pupil = np.asarray(result.meta[schema.KEY_META_TEL_PUPIL], dtype=np.float32)
             _ensure_meta_tel_pupil(f, tel_pupil)
             f[f"{schema.KEY_META_SECTION}/{schema.KEY_META_TEL_PUPIL}"][sim_idx, ...] = tel_pupil
+
+            # Persist stats arrays.
+            sr = np.asarray(result.stats[schema.KEY_STATS_SR], dtype=np.float32)
+            ee = np.asarray(result.stats[schema.KEY_STATS_EE], dtype=np.float32)
+            fwhm = np.asarray(result.stats[schema.KEY_STATS_FWHM_MAS], dtype=np.float32)
+            if ee.ndim == 1:
+                ee = ee[:, np.newaxis]
+
+            stats[schema.KEY_STATS_SR][sim_idx, :] = sr
+            stats[schema.KEY_STATS_EE][sim_idx, :, :] = ee
+            stats[schema.KEY_STATS_FWHM_MAS][sim_idx, :] = fwhm
+            for name in extra_stat_names:
+                stats[name][sim_idx, :] = np.asarray(result.stats[name], dtype=np.float32)
 
             # Persist PSFs only when the dataset was configured to store them.
             if require_psfs:

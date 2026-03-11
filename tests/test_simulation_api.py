@@ -85,8 +85,11 @@ class FakeSimulation(Simulation):
         self.fail_idx = fail_idx
         self.failed_once: set[int] = set()
 
-    def prepare_simulation_payload(self, simulation_cfg):
-        return {"name": self.name, "version": self.version, "base_config": str(simulation_cfg.get("config_path", ""))}
+    def prepare_simulation_payload(self, base_simulation_payload, simulation_cfg):
+        return {
+            **dict(base_simulation_payload),
+            "base_config": str(simulation_cfg.get("config_path", "")),
+        }
 
     def load_simulation_payload(self, simulation_payload):
         self._base_config = simulation_payload.get("base_config")

@@ -130,10 +130,9 @@ class TiptopSimulation(Simulation):
         self.fail_idx = fail_idx
         self.failed_once: set[int] = set()
 
-    def prepare_simulation_payload(self, simulation_cfg):
+    def prepare_simulation_payload(self, base_simulation_payload, simulation_cfg):
         return {
-            "name": self.name,
-            "version": self.version,
+            **dict(base_simulation_payload),
             "base_config": f"source_path={simulation_cfg.get('config_path')}",
         }
 

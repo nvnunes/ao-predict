@@ -153,6 +153,11 @@ def _prepare_simulation_payload(simulation_cfg: ConfigMapping) -> tuple[Simulati
 
     Returns:
         Tuple ``(simulation, simulation_payload)`` ready for dataset creation.
+
+    Notes:
+        The core ``/simulation`` contract fields are assembled by ao-predict.
+        The simulation hook completes that base payload with
+        simulation-specific persisted fields.
     """
     return create_simulation_from_config(simulation_cfg)
 

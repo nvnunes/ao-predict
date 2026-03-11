@@ -129,10 +129,15 @@ class TiptopSimulation(BaseSimulation):
 
     # Simulation payload lifecycle
 
-    def prepare_simulation_payload(self, simulation_cfg: Mapping[str, Any]) -> Mapping[str, Any]:
+    def prepare_simulation_payload(
+        self,
+        base_simulation_payload: Mapping[str, Any],
+        simulation_cfg: Mapping[str, Any],
+    ) -> Mapping[str, Any]:
         """Build persisted ``/simulation`` payload from config input.
 
         Args:
+            base_simulation_payload: Core-prepared simulation payload.
             simulation_cfg: Normalized simulation config mapping.
 
         Returns:
@@ -164,6 +169,7 @@ class TiptopSimulation(BaseSimulation):
         ini_text = ini_path.read_text(encoding="utf-8")
 
         simulation_payload = self._build_simulation_payload(
+            base_simulation_payload,
             simulation_cfg,
             exclude_keys={
                 self.KEY_SETUP_CONFIG_PATH,

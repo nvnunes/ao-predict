@@ -60,13 +60,20 @@ class SimulationResult:
         state: Final state (`SimulationState.SUCCEEDED` or `SimulationState.FAILED`).
         psfs: Optional PSF cube for this simulation.
         meta: Per-simulation metadata used by persistence.
-        stats: Per-simulation computed metrics (for example ``sr``, ``ee``).
+        stats: Final per-simulation persisted stats assembled by ao-predict.
+            This field is initialized empty by default. Successful
+            simulations should not populate it directly; ao-predict computes
+            the core stats (`sr`, `ee`, and `fwhm_mas`) later from the PSFs
+            and merges in simulation-provided declared extra stats returned
+            by `build_extra_stats(...)`.
         errors: Failure details when ``state=SimulationState.FAILED``.
         runtime: Non-persisted diagnostics for API-side inspection.
 
     Notes:
-    - `state=SimulationState.SUCCEEDED`: simulation succeeded; `meta` and `stats` should include
-      required fields expected by persistence.
+    - `state=SimulationState.SUCCEEDED`: simulation succeeded; `meta` should
+      include the required persisted fields. `stats` starts empty and is
+      assembled later by ao-predict from core PSF-derived stats plus
+      declared extra stats.
     - `state=SimulationState.FAILED`: simulation failed; `errors` should describe the failure.
     """
 
@@ -112,7 +119,7 @@ class Simulation(ABC):
     1. `load_simulation_payload(...)`
     2. `load_setup_payload(...)`
     3. for each simulation:
-       `create(...)` -> `run(...)` -> `finalize(...)`
+       `create(...)` -> `run(...)` -> `finalize(...)` -> `build_extra_stats(...)`
 
     Implementers should keep `prepare_*` / `validate_*` methods focused on
     payload construction and validation. Avoid external I/O, simulator runs,
@@ -141,22 +148,35 @@ class Simulation(ABC):
     def version(self) -> str:
         return str(type(self)._VERSION)
 
-    @abstractmethod
-    def prepare_simulation_payload(self, simulation_cfg: Mapping[str, Any]) -> Mapping[str, Any]:
-        """Build persisted `/simulation` payload.
+    @property
+    def extra_stat_names(self) -> tuple[str, ...]:
+        """Return simulation-specific extra stat names persisted under ``/stats``.
 
-        Must include at least:
-        - `name`: simulation identifier (normally `self.name`)
-        - `version`: simulation implementation version (normally `self.version`)
+        These names are part of the core `/simulation` payload assembled by
+        ao-predict before `prepare_simulation_payload(...)` is called.
+        """
+        return ()
+
+    @abstractmethod
+    def prepare_simulation_payload(
+        self,
+        base_simulation_payload: Mapping[str, Any],
+        simulation_cfg: Mapping[str, Any],
+    ) -> Mapping[str, Any]:
+        """Build persisted `/simulation` payload from core base fields plus config.
 
         For file-backed simulations, this is where external config paths are
         converted into serialized content suitable for persistence.
 
         Args:
+            base_simulation_payload: Core-prepared simulation payload containing
+                the shared persisted `/simulation` contract fields.
             simulation_cfg: Raw simulation section from API/CLI config.
 
         Returns:
-            Persistable mapping for ``/simulation``.
+            Complete persisted mapping for ``/simulation``. Implementations
+            should start from ``base_simulation_payload`` and add only
+            simulation-specific fields.
         """
 
     @abstractmethod
@@ -272,9 +292,29 @@ class Simulation(ABC):
         - `state=SimulationState.FAILED` plus error information on simulation-level failure.
 
         Successful results should expose core-readable outputs such as PSFs and
-        metadata. Core modules own derived statistics unless a different
-        contract is stated explicitly by the simulation layer.
+        metadata. Successful simulations must not populate `result.stats`
+        directly. ao-predict assembles `result.stats` later from core
+        PSF-derived stats plus any declared extra stats returned by
+        `build_extra_stats(...)`.
 
         Args:
             context: Runtime context for one simulation.
         """
+
+    def build_extra_stats(self, context: SimulationContext) -> Mapping[str, Any]:
+        """Build declared simulation-specific extra stats for one completed result.
+
+        This hook runs after `finalize(...)` for successful simulations.
+        Implementations should return only declared simulation-owned extra
+        stats with per-simulation shape `[M]`. Successful simulations should
+        leave `context.result.stats` empty; core stats are computed later by
+        ao-predict and must not be returned here.
+
+        Args:
+            context: Completed runtime context with a successful result.
+
+        Returns:
+            Mapping of declared extra stat name to per-science-target values.
+        """
+        del context
+        return {}

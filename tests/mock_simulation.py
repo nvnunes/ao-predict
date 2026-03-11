@@ -33,12 +33,13 @@ class MockSimulation(BaseSimulation):
 
     # Simulation payload lifecycle
 
-    def prepare_simulation_payload(self, simulation_cfg: Mapping[str, Any]) -> Mapping[str, Any]:
+    def prepare_simulation_payload(
+        self,
+        base_simulation_payload: Mapping[str, Any],
+        simulation_cfg: Mapping[str, Any],
+    ) -> Mapping[str, Any]:
         """Build persisted ``/simulation`` payload for the mock backend."""
-        return self._build_simulation_payload(
-            simulation_cfg,
-            exclude_keys={schema.KEY_SIMULATION_VERSION},
-        )
+        return self._build_simulation_payload(base_simulation_payload, simulation_cfg)
 
     def validate_simulation_payload(self, simulation_payload: Mapping[str, Any]) -> None:
         """Accept any persisted mock simulation payload.

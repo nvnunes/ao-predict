@@ -196,6 +196,12 @@ Top-level groups:
 - `/stats`
 - optional `/psfs`
 
+Stats layout:
+- `/stats/sr`: core `[N, M]`
+- `/stats/ee`: core `[N, M, A]`
+- `/stats/fwhm_mas`: core `[N, M]`
+- Additional `/stats/*` datasets may appear when declared by the simulation in `/simulation/extra_stat_names`; each extra stat dataset is `[N, M]`.
+
 Core state dataset:
 - `/status/state`: `uint8[N]`
 

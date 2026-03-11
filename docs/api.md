@@ -14,6 +14,20 @@ Responsibilities:
 - complete and validate options payload (`/options`)
 - allocate status/meta/stats (and optional psfs) datasets
 
+Simulation payload note:
+- ao-predict assembles the core `/simulation` fields: `name`, `version`, and `extra_stat_names`.
+- Simulations expose the extra-stat registry through the `Simulation.extra_stat_names` property.
+- The simulation implementation completes that base payload with simulation-specific persisted fields.
+- This mirrors the existing core-plus-completion pattern used for `/setup` and `/options`.
+
+Stats note:
+- Core stats under `/stats` are `sr`, `ee`, and `fwhm_mas`.
+- Simulations may also declare extra 2D stats with shape `[N, M]`.
+- The declared extra stat registry is persisted in `/simulation/extra_stat_names`.
+- During execution, successful simulations expose PSFs and metadata in `finalize(...)` and leave `result.stats` empty.
+- ao-predict computes the core stats from PSFs and assembles the final `result.stats`.
+- Simulations contribute only declared extra stats through the `Simulation.build_extra_stats(...)` hook.
+
 ### `run_simulations_by_state(dataset_path: str | Path, *, state: SimulationState | int = SimulationState.PENDING, verbose: bool = False, indexes: list[int] | None = None) -> RunSummary`
 Run simulations for a selected source state.
 

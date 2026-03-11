@@ -52,8 +52,21 @@ def _check_simulation_payload(simulation: Simulation, simulation_payload: Mappin
         simulation_payload,
         simulation.name,
         simulation.version,
+        simulation.extra_stat_names,
     )
     simulation.validate_simulation_payload(simulation_payload)
+
+
+def _prepare_base_simulation_payload(simulation: Simulation) -> dict[str, Any]:
+    """Build the core persisted ``/simulation`` payload owned by ao-predict."""
+    return {
+        schema.KEY_SIMULATION_NAME: simulation.name,
+        schema.KEY_SIMULATION_VERSION: simulation.version,
+        schema.KEY_SIMULATION_EXTRA_STAT_NAMES: np.asarray(
+            simulation.extra_stat_names,
+            dtype=str,
+        ),
+    }
 
 
 def _load_simulation_class(spec: str) -> Type[Simulation]:
@@ -131,6 +144,12 @@ def create_simulation_from_config(simulation_cfg: Mapping[str, Any]) -> tuple[Si
         - ``simulation`` is instantiated and loaded with payload state.
         - ``simulation_payload`` is validated and ready for persistence.
 
+    Notes:
+        ao-predict assembles the core persisted ``/simulation`` fields
+        (`name`, `version`, and `extra_stat_names`) before delegating to
+        ``simulation.prepare_simulation_payload(...)`` for simulation-specific
+        completion.
+
     Raises:
         ValueError: If required config fields are missing/invalid.
         TypeError: If simulation payload fields have invalid types.
@@ -140,7 +159,11 @@ def create_simulation_from_config(simulation_cfg: Mapping[str, Any]) -> tuple[Si
         raise ValueError("simulation.name must be provided as a non-empty string.")
 
     simulation = _create_simulation(simulation_name)
-    simulation_payload = simulation.prepare_simulation_payload(simulation_cfg)
+    base_simulation_payload = _prepare_base_simulation_payload(simulation)
+    simulation_payload = simulation.prepare_simulation_payload(
+        base_simulation_payload,
+        simulation_cfg,
+    )
     _check_simulation_payload(simulation, simulation_payload)
     simulation.load_simulation_payload(simulation_payload)
     return simulation, simulation_payload
@@ -264,10 +287,11 @@ def _filter_execution_indices(
     return available_indices[np.isin(available_indices, requested)]
 
 
-def _populate_result_stats(context: Any) -> None:
-    """Populate core PSF stats on a successful simulation result.
+def _populate_result_stats(simulation: Simulation, context: Any) -> None:
+    """Populate final result stats from core PSF stats plus simulation extra stats.
 
     Args:
+        simulation: Bound simulation implementation.
         context: Completed simulation context with successful ``result``.
 
     Raises:
@@ -277,6 +301,11 @@ def _populate_result_stats(context: Any) -> None:
         raise ValueError("Cannot populate stats without a successful simulation result.")
     if context.result.psfs is None:
         raise ValueError("Cannot populate stats without a successful result PSF cube.")
+    if context.result.stats:
+        raise ValueError(
+            "Successful simulations must not populate result.stats directly. "
+            "Declared extra stats must be returned from build_extra_stats(...)."
+        )
 
     num_sci = int(as_float_vector(context.setup.sci_r_arcsec, label="setup.sci_r_arcsec").shape[0])
 
@@ -292,10 +321,47 @@ def _populate_result_stats(context: Any) -> None:
         context.result.meta,
     )
 
+    raw_extra_stats = simulation.build_extra_stats(context)
+    if not isinstance(raw_extra_stats, Mapping):
+        raise TypeError(
+            f"{type(simulation).__name__}.build_extra_stats(...) must return a mapping, got {type(raw_extra_stats).__name__}."
+        )
+
+    extra_stat_names = tuple(raw_extra_stats.keys())
+
+    provided_core_stat_names = sorted(set(extra_stat_names) & set(schema.CORE_STATS_KEYS))
+    if provided_core_stat_names:
+        raise ValueError(
+            "Simulation built core stats in build_extra_stats(): "
+            f"{', '.join(provided_core_stat_names)}. "
+            "Core stats are owned by ao-predict and must not be provided by the simulation."
+        )
+
+    expected_extra_stat_names = tuple(context.runtime.get("extra_stat_names", ()))
+
+    unexpected_extra_stat_names = sorted(set(extra_stat_names) - set(expected_extra_stat_names))
+    if unexpected_extra_stat_names:
+        raise ValueError(
+            "Simulation built undeclared extra stats in build_extra_stats(): "
+            f"{', '.join(unexpected_extra_stat_names)}"
+        )
+
+    missing_extra_stat_names = [name for name in expected_extra_stat_names if name not in raw_extra_stats]
+    if missing_extra_stat_names:
+        raise ValueError(
+            "Simulation did not build declared extra stats in build_extra_stats(): "
+            f"{', '.join(missing_extra_stat_names)}"
+        )
+
+    extra_stats = {
+        name: np.asarray(raw_extra_stats[name], dtype=np.float32) for name in expected_extra_stat_names
+    }
+
     context.result.stats = {
         schema.KEY_STATS_SR: sr,
         schema.KEY_STATS_EE: ee,
         schema.KEY_STATS_FWHM_MAS: fwhm_mas,
+        **extra_stats,
     }
 
 
@@ -329,6 +395,7 @@ def _run_simulations_for_indices(
         try:
             options = _prepare_runtime_options(store, idx)
             context = simulation.create(idx, options)
+            context.runtime["extra_stat_names"] = simulation.extra_stat_names
             simulation.run(context)
             simulation.finalize(context)
 
@@ -336,7 +403,7 @@ def _run_simulations_for_indices(
                 raise ValueError("Simulation did not set context.result.")
 
             if int(context.result.state) == int(SimulationState.SUCCEEDED):
-                _populate_result_stats(context)
+                _populate_result_stats(simulation, context)
                 store.write_simulation_success(idx, context.result, allow_from_failed=allow_from_failed)
                 succeeded += 1
             else:

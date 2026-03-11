@@ -24,16 +24,28 @@ def _ini_text() -> str:
     )
 
 
+def _base_simulation_payload(sim: TiptopSimulation) -> dict[str, object]:
+    return {
+        "name": sim.name,
+        "version": sim.version,
+        "extra_stat_names": np.asarray(sim.extra_stat_names, dtype=str),
+    }
+
+
+def _prepare_simulation_payload(sim: TiptopSimulation, simulation_cfg: dict[str, object]) -> dict[str, object]:
+    return sim.prepare_simulation_payload(_base_simulation_payload(sim), simulation_cfg)
+
+
 def test_tiptop_config_roundtrip(tmp_path: Path):
     sim = TiptopSimulation()
     ini_path = tmp_path / "tiptop.ini"
     ini_path.write_text(_ini_text(), encoding="utf-8")
 
-    simulation_payload = sim.prepare_simulation_payload({"config_path": str(ini_path)})
+    simulation_payload = _prepare_simulation_payload(sim, {"config_path": str(ini_path)})
     assert "base_config" in simulation_payload
     assert isinstance(simulation_payload["base_config"], str)
 
-    sim.load_simulation_payload({"name": sim.name, "version": sim.version, **simulation_payload})
+    sim.load_simulation_payload(simulation_payload)
     assert sim._base_config is not None
     assert sim._base_config.parser["main"]["value"] == "42"
     assert sim._base_config.parser["science"]["wavelength_um"] == "1.65"
@@ -44,7 +56,7 @@ def test_tiptop_create_context(tmp_path: Path):
     ini_path = tmp_path / "tiptop.ini"
     ini_path.write_text(_ini_text(), encoding="utf-8")
 
-    simulation_payload = sim.prepare_simulation_payload({"config_path": str(ini_path)})
+    simulation_payload = _prepare_simulation_payload(sim, {"config_path": str(ini_path)})
     setup = {
         "ee_apertures_mas": np.array([50.0, 100.0]),
         "ngs_mag_zeropoint": 1.1e13 / 368.0,
@@ -80,7 +92,7 @@ def test_tiptop_create_context(tmp_path: Path):
         "ngs_used": np.array([True, False, True]),
         "atm_profile_id": 1,
     }
-    sim.load_simulation_payload({"name": sim.name, "version": sim.version, **simulation_payload})
+    sim.load_simulation_payload(simulation_payload)
     setup_payload = sim.prepare_setup_payload({"ee_apertures_mas": setup["ee_apertures_mas"]}, setup)
     sim.load_setup_payload(setup_payload)
     ctx = sim.create(index=3, options=options)
@@ -130,8 +142,8 @@ def test_tiptop_validate_setup_payload_does_not_rebind_loaded_setup(tmp_path: Pa
     ini_path = tmp_path / "tiptop.ini"
     ini_path.write_text(_ini_text(), encoding="utf-8")
 
-    simulation_payload = sim.prepare_simulation_payload({"config_path": str(ini_path)})
-    sim.load_simulation_payload({"name": sim.name, "version": sim.version, **simulation_payload})
+    simulation_payload = _prepare_simulation_payload(sim, {"config_path": str(ini_path)})
+    sim.load_simulation_payload(simulation_payload)
 
     original_setup_payload = sim.prepare_setup_payload(
         {"ee_apertures_mas": np.array([50.0, 100.0])},
@@ -156,8 +168,8 @@ def test_tiptop_create_context_leaves_ini_ngs_when_options_omit_ngs(tmp_path: Pa
     ini_path = tmp_path / "tiptop.ini"
     ini_path.write_text(_ini_text(), encoding="utf-8")
 
-    simulation_payload = sim.prepare_simulation_payload({"config_path": str(ini_path)})
-    sim.load_simulation_payload({"name": sim.name, "version": sim.version, **simulation_payload})
+    simulation_payload = _prepare_simulation_payload(sim, {"config_path": str(ini_path)})
+    sim.load_simulation_payload(simulation_payload)
 
     setup_payload = sim.prepare_setup_payload(
         {"ee_apertures_mas": np.array([50.0, 100.0])},
@@ -185,8 +197,8 @@ def test_tiptop_prepare_options_payload_loads_ngs_defaults_from_ini(tmp_path: Pa
     ini_path = tmp_path / "tiptop.ini"
     ini_path.write_text(_ini_text(), encoding="utf-8")
 
-    simulation_payload = sim.prepare_simulation_payload({"config_path": str(ini_path)})
-    sim.load_simulation_payload({"name": sim.name, "version": sim.version, **simulation_payload})
+    simulation_payload = _prepare_simulation_payload(sim, {"config_path": str(ini_path)})
+    sim.load_simulation_payload(simulation_payload)
 
     setup_payload = sim.prepare_setup_payload(
         {"ee_apertures_mas": np.array([50.0, 100.0])},
@@ -256,7 +268,7 @@ def test_tiptop_run_finalize_with_stubbed_tiptop(tmp_path: Path, monkeypatch: py
     monkeypatch.setitem(sys.modules, "tiptop", tiptop_pkg)
     monkeypatch.setitem(sys.modules, "tiptop.tiptop", tiptop_mod)
 
-    simulation_payload = sim.prepare_simulation_payload({"config_path": str(ini_path)})
+    simulation_payload = _prepare_simulation_payload(sim, {"config_path": str(ini_path)})
     setup = {
         "ee_apertures_mas": np.array([50.0, 100.0]),
         "ngs_mag_zeropoint": 1.1e13 / 368.0,
@@ -282,7 +294,7 @@ def test_tiptop_run_finalize_with_stubbed_tiptop(tmp_path: Path, monkeypatch: py
         "ngs_used": np.array([True, True, True]),
         "atm_profile_id": 0,
     }
-    sim.load_simulation_payload({"name": sim.name, "version": sim.version, **simulation_payload})
+    sim.load_simulation_payload(simulation_payload)
     setup_payload = sim.prepare_setup_payload({"ee_apertures_mas": setup["ee_apertures_mas"]}, setup)
     sim.load_setup_payload(setup_payload)
     ctx = sim.create(index=0, options=options)
@@ -318,8 +330,8 @@ def test_tiptop_derives_r0_from_seeing_when_missing(tmp_path: Path):
         encoding="utf-8",
     )
 
-    simulation_payload = sim.prepare_simulation_payload({"config_path": str(ini_path)})
-    sim.load_simulation_payload({"name": sim.name, "version": sim.version, **simulation_payload})
+    simulation_payload = _prepare_simulation_payload(sim, {"config_path": str(ini_path)})
+    sim.load_simulation_payload(simulation_payload)
     setup_payload = sim.prepare_setup_payload(
         {"ee_apertures_mas": np.array([50.0])},
         {"ngs_mag_zeropoint": 1.1e13 / 368.0},
@@ -345,8 +357,8 @@ def test_tiptop_uses_only_seeing_in_effective_config_when_r0_present(tmp_path: P
         encoding="utf-8",
     )
 
-    simulation_payload = sim.prepare_simulation_payload({"config_path": str(ini_path)})
-    sim.load_simulation_payload({"name": sim.name, "version": sim.version, **simulation_payload})
+    simulation_payload = _prepare_simulation_payload(sim, {"config_path": str(ini_path)})
+    sim.load_simulation_payload(simulation_payload)
     setup_payload = sim.prepare_setup_payload(
         {"ee_apertures_mas": np.array([50.0])},
         {"ngs_mag_zeropoint": 3.0e10},
@@ -377,8 +389,8 @@ def test_tiptop_accepts_seeing_arcsec_in_atm_profiles(tmp_path: Path):
     ini_path = tmp_path / "tiptop.ini"
     ini_path.write_text(_ini_text(), encoding="utf-8")
 
-    simulation_payload = sim.prepare_simulation_payload({"config_path": str(ini_path)})
-    sim.load_simulation_payload({"name": sim.name, "version": sim.version, **simulation_payload})
+    simulation_payload = _prepare_simulation_payload(sim, {"config_path": str(ini_path)})
+    sim.load_simulation_payload(simulation_payload)
 
     setup_payload = sim.prepare_setup_payload(
         {"ee_apertures_mas": np.array([50.0, 100.0])},
@@ -409,8 +421,8 @@ def test_tiptop_requires_runtime_ngs_used_when_ngs_options_present(tmp_path: Pat
     ini_path = tmp_path / "tiptop.ini"
     ini_path.write_text(_ini_text(), encoding="utf-8")
 
-    simulation_payload = sim.prepare_simulation_payload({"config_path": str(ini_path)})
-    sim.load_simulation_payload({"name": sim.name, "version": sim.version, **simulation_payload})
+    simulation_payload = _prepare_simulation_payload(sim, {"config_path": str(ini_path)})
+    sim.load_simulation_payload(simulation_payload)
     setup_payload = sim.prepare_setup_payload(
         {"ee_apertures_mas": np.array([50.0])},
         {"ngs_mag_zeropoint": 3.0e10},
@@ -438,8 +450,8 @@ def test_tiptop_rejects_non_positive_atm_profile_scalars(tmp_path: Path, field: 
     ini_path = tmp_path / "tiptop.ini"
     ini_path.write_text(_ini_text(), encoding="utf-8")
 
-    simulation_payload = sim.prepare_simulation_payload({"config_path": str(ini_path)})
-    sim.load_simulation_payload({"name": sim.name, "version": sim.version, **simulation_payload})
+    simulation_payload = _prepare_simulation_payload(sim, {"config_path": str(ini_path)})
+    sim.load_simulation_payload(simulation_payload)
 
     profile = {
         "name": "invalid_profile",
@@ -467,8 +479,8 @@ def test_tiptop_rejects_inconsistent_atm_profile_r0_and_seeing(tmp_path: Path):
     ini_path = tmp_path / "tiptop.ini"
     ini_path.write_text(_ini_text(), encoding="utf-8")
 
-    simulation_payload = sim.prepare_simulation_payload({"config_path": str(ini_path)})
-    sim.load_simulation_payload({"name": sim.name, "version": sim.version, **simulation_payload})
+    simulation_payload = _prepare_simulation_payload(sim, {"config_path": str(ini_path)})
+    sim.load_simulation_payload(simulation_payload)
 
     with pytest.raises(ValueError, match="Inconsistent atmospheric profile"):
         sim.prepare_setup_payload(
@@ -506,8 +518,8 @@ def test_tiptop_requires_ngs_mag_zeropoint(tmp_path: Path):
         encoding="utf-8",
     )
 
-    simulation_payload = sim.prepare_simulation_payload({"config_path": str(ini_path)})
-    sim.load_simulation_payload({"name": sim.name, "version": sim.version, **simulation_payload})
+    simulation_payload = _prepare_simulation_payload(sim, {"config_path": str(ini_path)})
+    sim.load_simulation_payload(simulation_payload)
     with pytest.raises(ValueError, match="ngs_mag_zeropoint"):
         sim.prepare_setup_payload({"ee_apertures_mas": np.array([50.0])}, {})
 
@@ -524,8 +536,8 @@ def test_tiptop_rejects_invalid_lo_frame_rate_for_ngs_mag(tmp_path: Path, line: 
     ini_path = tmp_path / "tiptop_bad_frame_rate.ini"
     ini_path.write_text(_ini_text().replace("SensorFrameRate_LO=500.0", line), encoding="utf-8")
 
-    simulation_payload = sim.prepare_simulation_payload({"config_path": str(ini_path)})
-    sim.load_simulation_payload({"name": sim.name, "version": sim.version, **simulation_payload})
+    simulation_payload = _prepare_simulation_payload(sim, {"config_path": str(ini_path)})
+    sim.load_simulation_payload(simulation_payload)
     setup_payload = sim.prepare_setup_payload(
         {"ee_apertures_mas": np.array([50.0, 100.0])},
         {"ngs_mag_zeropoint": 1.1e13 / 368.0},
@@ -560,8 +572,8 @@ def test_tiptop_rejects_invalid_telescope_diameter_for_ngs_mag(tmp_path: Path, l
     ini_path = tmp_path / "tiptop_bad_telescope.ini"
     ini_path.write_text(_ini_text().replace("TelescopeDiameter=8.0", line), encoding="utf-8")
 
-    simulation_payload = sim.prepare_simulation_payload({"config_path": str(ini_path)})
-    sim.load_simulation_payload({"name": sim.name, "version": sim.version, **simulation_payload})
+    simulation_payload = _prepare_simulation_payload(sim, {"config_path": str(ini_path)})
+    sim.load_simulation_payload(simulation_payload)
     setup_payload = sim.prepare_setup_payload(
         {"ee_apertures_mas": np.array([50.0, 100.0])},
         {"ngs_mag_zeropoint": 1.1e13 / 368.0},

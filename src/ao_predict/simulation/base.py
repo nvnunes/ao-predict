@@ -88,21 +88,23 @@ class BaseSimulation(Simulation, ABC):
 
     def _build_simulation_payload(
         self,
+        base_simulation_payload: Mapping[str, Any],
         simulation_cfg: Mapping[str, Any],
         *,
         exclude_keys: set[str] | None = None,
     ) -> dict[str, Any]:
-        """Build persisted ``/simulation`` payload with name/version plus copied fields."""
+        """Build persisted ``/simulation`` payload from core fields plus copied config fields.
+
+        This helper preserves the core-owned `/simulation` fields supplied by
+        ao-predict and appends only simulation-specific fields derived from the
+        normalized simulation config.
+        """
         exclude_keys = {
-            schema.KEY_SIMULATION_NAME,
-            schema.KEY_SIMULATION_VERSION,
+            *schema.SIMULATION_KEYS_CORE,
             schema.KEY_CFG_SIMULATION_BASE_PATH,
             *(str(k) for k in exclude_keys or ()),
         }
-        payload = {
-            schema.KEY_SIMULATION_NAME: self.name,
-            schema.KEY_SIMULATION_VERSION: self.version,
-        }
+        payload = {str(k): v for k, v in dict(base_simulation_payload).items()}
         payload.update(
             {
                 str(k): v
@@ -510,8 +512,9 @@ class BaseSimulation(Simulation, ABC):
 
         This shared finalize path extracts the PSF cube and PSF metadata,
         flattens the metadata into ``result.meta``, and marks the result as a
-        successful simulation output. Core PSF validation and stats
-        computation run later in the runner/result-validation layer.
+        successful simulation output. Core PSF validation, extra-stats
+        collection, and stats computation run later in the
+        runner/result-validation layer.
 
         Args:
             context: Completed simulation context.

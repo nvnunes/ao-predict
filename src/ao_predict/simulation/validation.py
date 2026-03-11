@@ -28,6 +28,7 @@ def validate_simulation_payload_core(
     simulation: Mapping[str, Any],
     expected_name: str | None = None,
     expected_version: str | None = None,
+    expected_extra_stat_names: tuple[str, ...] | None = None,
 ) -> None:
     """Validate core persisted ``/simulation`` payload constraints.
 
@@ -35,6 +36,8 @@ def validate_simulation_payload_core(
         simulation: Candidate ``/simulation`` payload mapping.
         expected_name: Optional simulation class ``name`` expected by the caller.
         expected_version: Optional simulation class ``version`` expected by the caller.
+        expected_extra_stat_names: Optional declared simulation-owned extra stat
+            names expected by the caller.
 
     Raises:
         ValueError: If required keys are missing or values are invalid.
@@ -48,23 +51,53 @@ def validate_simulation_payload_core(
     if not simulation_version:
         raise ValueError(f"simulation['{schema.KEY_SIMULATION_VERSION}'] must be a non-empty string.")
     if expected_name is not None:
-        normalized_expected_name = str(expected_name).strip()
-        if not normalized_expected_name:
+        expected_name = str(expected_name).strip()
+        if not expected_name:
             raise ValueError("Simulation implementation name must be a non-empty string.")
-        if simulation_name != normalized_expected_name:
+        if simulation_name != expected_name:
             raise ValueError(
                 f"Simulation payload name mismatch: payload has '{simulation_name}', "
-                f"but instantiated simulation is '{normalized_expected_name}'."
+                f"but instantiated simulation is '{expected_name}'."
             )
     if expected_version is not None:
-        normalized_expected_version = str(expected_version).strip()
-        if not normalized_expected_version:
+        expected_version = str(expected_version).strip()
+        if not expected_version:
             raise ValueError("Simulation implementation version must be a non-empty string.")
-        if simulation_version != normalized_expected_version:
+        if simulation_version != expected_version:
             raise ValueError(
                 f"Simulation payload version mismatch: payload has '{simulation_version}', "
-                f"but instantiated simulation expects '{normalized_expected_version}'."
+                f"but instantiated simulation expects '{expected_version}'."
             )
+
+    extra_stat_names = as_array(simulation.get(schema.KEY_SIMULATION_EXTRA_STAT_NAMES, ()))
+    if extra_stat_names.ndim > 1:
+        raise ValueError(
+            f"simulation['{schema.KEY_SIMULATION_EXTRA_STAT_NAMES}'] must be a scalar or 1D string array."
+        )
+    extra_stat_names = tuple(str(name).strip() for name in np.asarray(extra_stat_names).reshape(-1).tolist())
+
+    if any(not name for name in extra_stat_names):
+        raise ValueError(f"simulation['{schema.KEY_SIMULATION_EXTRA_STAT_NAMES}'] must not contain empty names.")
+
+    duplicate_extra_stat_names = sorted({name for name in extra_stat_names if extra_stat_names.count(name) > 1})
+    if duplicate_extra_stat_names:
+        raise ValueError(
+            f"simulation['{schema.KEY_SIMULATION_EXTRA_STAT_NAMES}'] contains duplicate names: {duplicate_extra_stat_names}."
+        )
+
+    core_stat_names = set(schema.CORE_STATS_KEYS)
+    collision_extra_stat_names = sorted(name for name in extra_stat_names if name in core_stat_names)
+    if collision_extra_stat_names:
+        raise ValueError(
+            f"simulation['{schema.KEY_SIMULATION_EXTRA_STAT_NAMES}'] collides with core stats: {collision_extra_stat_names}."
+        )
+
+    if expected_extra_stat_names is not None and extra_stat_names != tuple(expected_extra_stat_names):
+        raise ValueError(
+            "Simulation payload extra stat registry mismatch: "
+            f"payload has {list(extra_stat_names)}, "
+            f"but instantiated simulation declares {list(expected_extra_stat_names)}."
+        )
 
 
 def validate_setup_payload_core(setup: Mapping[str, Any]) -> None:
@@ -281,6 +314,7 @@ def validate_successful_result(
     num_sci: int,
     num_ee: int,
     *,
+    extra_stat_names: tuple[str, ...] = (),
     require_psfs: bool = False,
 ) -> None:
     """Validate one successful simulation result against core persistence rules.
@@ -330,6 +364,22 @@ def validate_successful_result(
 
     if not np.all(np.isfinite(ee)):
         raise ValueError(f"result.{schema.KEY_STATS_EE} must contain only finite values.")
+
+    missing_extra_stats = [key for key in extra_stat_names if key not in result.stats]
+    if missing_extra_stats:
+        raise ValueError(f"result.stats is missing declared extra stats: {', '.join(missing_extra_stats)}")
+
+    allowed_stat_names = set(schema.CORE_STATS_KEYS) | set(extra_stat_names)
+    unexpected_stat_names = sorted(set(result.stats) - allowed_stat_names)
+    if unexpected_stat_names:
+        raise ValueError(f"result.stats contains undeclared stats: {', '.join(unexpected_stat_names)}")
+
+    for key in extra_stat_names:
+        value = np.asarray(result.stats[key], dtype=np.float32)
+        if value.shape != (int(num_sci),):
+            raise ValueError(f"result.{key} must have shape ({int(num_sci)},), got {value.shape}")
+        if not np.all(np.isfinite(value)):
+            raise ValueError(f"result.{key} must contain only finite values.")
 
     missing_meta_keys = [key for key in schema.REQUIRED_META_KEYS if key not in result.meta]
     if missing_meta_keys:
