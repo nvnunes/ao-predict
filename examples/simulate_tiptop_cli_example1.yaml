@@ -1,0 +1,17 @@
+simulation:
+  name: Tiptop
+  config_path: sample_tiptop.ini
+
+setup:
+  ee_apertures_mas: [50.0, 100.0]
+  ngs_mag_zeropoint: 3.0e10
+
+options:
+  broadcast:
+    zenith_angle_deg: 20.0
+  table:
+    columns:
+      - wavelength_um
+    rows:
+      - [1.654]
+      - [2.179]

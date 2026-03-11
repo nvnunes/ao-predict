@@ -1,0 +1,40 @@
+# macOS
+.DS_Store
+
+# Python bytecode / caches
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Build artifacts
+build/
+dist/
+site/
+*.egg-info/
+.eggs/
+
+# Virtual/env dirs
+.venv/
+venv/
+env/
+
+# Conda
+.conda/
+
+# Test/tool caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# IDE/editor
+.vscode/
+.idea/
+
+# Output
+examples/sims/

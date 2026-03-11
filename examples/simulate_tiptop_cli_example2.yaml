@@ -1,0 +1,10 @@
+simulation:
+  name: Tiptop
+  config_path: sample_tiptop.ini
+
+setup:
+  ee_apertures_mas: [50.0, 100.0]
+  ngs_mag_zeropoint: 3.0e10
+
+options:
+  table_path: simulate_tiptop_cli_example2.csv

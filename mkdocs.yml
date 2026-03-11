@@ -1,0 +1,35 @@
+site_name: ao-predict
+site_description: Adaptive optics simulation and surrogate-model tooling
+repo_name: ao-predict
+docs_dir: docs
+strict: true
+
+theme:
+  name: material
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          paths:
+            - src
+          options:
+            show_root_heading: true
+            show_source: false
+            heading_level: 2
+            members_order: source
+
+nav:
+  - Home: index.md
+  - Guides:
+      - CLI: cli.md
+      - API: api.md
+      - Development Setup: development.md
+  - Reference:
+      - Simulation Interfaces: reference/simulation/interfaces.md
+      - Simulation API: reference/simulation/api.md
+      - Simulation Runner: reference/simulation/runner.md
+      - TIPTOP Simulation: reference/simulation/tiptop.md
+      - Validation: reference/simulation/validation.md
+      - Persistence Store: reference/persistence/store.md
