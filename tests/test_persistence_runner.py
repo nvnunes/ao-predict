@@ -69,7 +69,6 @@ def _success_result(m: int = 3, a: int = 2, ny: int = 4, nx: int = 4) -> Simulat
             "sr": np.linspace(0.1, 0.3, m, dtype=np.float32),
             "ee": np.full((m, a), 0.5, dtype=np.float32),
             "fwhm_mas": np.full((m,), 60.0, dtype=np.float32),
-            "jitter_mas": np.full((m,), 1.0, dtype=np.float32),
         },
         meta={
             "pixel_scale_mas": 4.0,
@@ -172,7 +171,6 @@ def test_store_create_and_row_writes(tmp_path):
         assert f[f"{schema.KEY_STATS_SECTION}/{schema.KEY_STATS_SR}"].shape == (3, 3)
         assert f[f"{schema.KEY_STATS_SECTION}/{schema.KEY_STATS_EE}"].shape == (3, 3, 2)
         assert f[f"{schema.KEY_STATS_SECTION}/{schema.KEY_STATS_FWHM_MAS}"].shape == (3, 3)
-        assert f[f"{schema.KEY_STATS_SECTION}/{schema.KEY_STATS_JITTER_MAS}"].shape == (3, 3)
 
         assert np.all(np.isfinite(f[f"{schema.KEY_STATS_SECTION}/{schema.KEY_STATS_SR}"][0]))
         assert np.all(np.isnan(f[f"{schema.KEY_STATS_SECTION}/{schema.KEY_STATS_SR}"][1]))
@@ -533,7 +531,7 @@ def test_store_write_success_clears_optional_outputs_on_rerun(tmp_path):
                 dtype=np.uint8,
             ),
         )
-        assert np.all(np.isfinite(f[f"{schema.KEY_STATS_SECTION}/{schema.KEY_STATS_JITTER_MAS}"][0]))
+        assert np.all(np.isfinite(f[f"{schema.KEY_STATS_SECTION}/{schema.KEY_STATS_FWHM_MAS}"][0]))
         assert np.all(np.isfinite(f[f"{schema.KEY_PSFS_SECTION}/{schema.KEY_PSFS_DATA}"][0]))
 
 
@@ -571,7 +569,7 @@ def test_store_write_failure_clears_outputs(tmp_path):
             ),
         )
         assert np.all(np.isnan(f[f"{schema.KEY_STATS_SECTION}/{schema.KEY_STATS_SR}"][0]))
-        assert np.all(np.isnan(f[f"{schema.KEY_STATS_SECTION}/{schema.KEY_STATS_JITTER_MAS}"][0]))
+        assert np.all(np.isnan(f[f"{schema.KEY_STATS_SECTION}/{schema.KEY_STATS_FWHM_MAS}"][0]))
         assert np.isnan(f[f"{schema.KEY_META_SECTION}/{schema.KEY_META_PIXEL_SCALE_MAS}"][0])
         assert np.isnan(f[f"{schema.KEY_META_SECTION}/{schema.KEY_META_TEL_DIAMETER_M}"][0])
         assert np.all(np.isnan(f[f"{schema.KEY_META_SECTION}/{schema.KEY_META_TEL_PUPIL}"][0]))

@@ -304,13 +304,12 @@ def validate_successful_result(
     missing_stats_keys = [key for key in schema.REQUIRED_STATS_KEYS if key not in result.stats]
     if missing_stats_keys:
         raise ValueError(
-            "result.stats must include sr, ee, fwhm_mas, and jitter_mas for successful results."
+            "result.stats must include sr, ee, and fwhm_mas for successful results."
         )
 
     for key in (
         schema.KEY_STATS_SR,
         schema.KEY_STATS_FWHM_MAS,
-        schema.KEY_STATS_JITTER_MAS,
     ):
         value = np.asarray(result.stats[key], dtype=np.float32)
         if value.shape != (int(num_sci),):

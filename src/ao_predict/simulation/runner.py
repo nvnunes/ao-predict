@@ -286,7 +286,7 @@ def _populate_result_stats(context: Any) -> None:
         f"{type(context.setup).__name__} PSFs",
     )
 
-    sr, ee, fwhm_mas, jitter_mas = compute_psf_stats(
+    sr, ee, fwhm_mas = compute_psf_stats(
         context.result.psfs,
         context.setup,
         context.result.meta,
@@ -296,7 +296,6 @@ def _populate_result_stats(context: Any) -> None:
         schema.KEY_STATS_SR: sr,
         schema.KEY_STATS_EE: ee,
         schema.KEY_STATS_FWHM_MAS: fwhm_mas,
-        schema.KEY_STATS_JITTER_MAS: jitter_mas,
     }
 
 

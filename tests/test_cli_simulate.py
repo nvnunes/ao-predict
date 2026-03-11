@@ -118,7 +118,6 @@ def _success_result(m: int = 3, *, with_stats: bool = True, with_psfs: bool = Tr
             "sr": np.linspace(0.1, 0.3, m, dtype=np.float32),
             "ee": np.full((m, 2), 0.5, dtype=np.float32),
             "fwhm_mas": np.full((m,), 60.0, dtype=np.float32),
-            "jitter_mas": np.full((m,), 1.0, dtype=np.float32),
         }
     return result
 

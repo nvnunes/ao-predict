@@ -123,7 +123,6 @@ def _clear_simulation_outputs(f: h5py.File, sim_idx: int) -> None:
     stats[schema.KEY_STATS_SR][sim_idx, ...] = np.nan
     stats[schema.KEY_STATS_EE][sim_idx, ...] = np.nan
     stats[schema.KEY_STATS_FWHM_MAS][sim_idx, ...] = np.nan
-    stats[schema.KEY_STATS_JITTER_MAS][sim_idx, ...] = np.nan
 
     meta[schema.KEY_META_PIXEL_SCALE_MAS][sim_idx] = np.nan
     meta[schema.KEY_META_TEL_DIAMETER_M][sim_idx] = np.nan
@@ -243,7 +242,6 @@ class SimulationStore:
                 schema.KEY_STATS_EE, data=np.full((num_sims, m_sci, ee.shape[0]), np.nan, dtype=np.float32)
             )
             g_stats.create_dataset(schema.KEY_STATS_FWHM_MAS, data=np.full((num_sims, m_sci), np.nan, dtype=np.float32))
-            g_stats.create_dataset(schema.KEY_STATS_JITTER_MAS, data=np.full((num_sims, m_sci), np.nan, dtype=np.float32))
 
     def exists(self) -> bool:
         """Return whether the dataset file currently exists on disk.
@@ -501,7 +499,6 @@ class SimulationStore:
             sr_data = f[f"{schema.KEY_STATS_SECTION}/{schema.KEY_STATS_SR}"]
             ee_data = f[f"{schema.KEY_STATS_SECTION}/{schema.KEY_STATS_EE}"]
             fwhm_mas_data = f[f"{schema.KEY_STATS_SECTION}/{schema.KEY_STATS_FWHM_MAS}"]
-            jitter_mas_data = f[f"{schema.KEY_STATS_SECTION}/{schema.KEY_STATS_JITTER_MAS}"]
             pixel_scale_mas_data = f[f"{schema.KEY_META_SECTION}/{schema.KEY_META_PIXEL_SCALE_MAS}"]
             tel_diameter_m_data = f[f"{schema.KEY_META_SECTION}/{schema.KEY_META_TEL_DIAMETER_M}"]
             tel_pupil_data = f[f"{schema.KEY_META_SECTION}/{schema.KEY_META_TEL_PUPIL}"]
@@ -512,8 +509,6 @@ class SimulationStore:
                 issues.append("/stats/ee must be 3D [N, M, A].")
             if fwhm_mas_data.ndim != 2:
                 issues.append("/stats/fwhm_mas must be 2D [N, M].")
-            if jitter_mas_data.ndim != 2:
-                issues.append("/stats/jitter_mas must be 2D [N, M].")
             if pixel_scale_mas_data.ndim != 1 or tel_diameter_m_data.ndim != 1:
                 issues.append("/meta/pixel_scale_mas and /meta/tel_diameter_m must be 1D [N].")
             if tel_pupil_data.ndim != 3:
@@ -524,7 +519,6 @@ class SimulationStore:
                     sr_data.shape[0] != n
                     or ee_data.shape[0] != n
                     or fwhm_mas_data.shape[0] != n
-                    or jitter_mas_data.shape[0] != n
                 ):
                     issues.append("Stats first dimension must match /status/state length.")
                 if pixel_scale_mas_data.shape[0] != n or tel_diameter_m_data.shape[0] != n:
@@ -534,7 +528,6 @@ class SimulationStore:
                 if (
                     sr_data.shape[1] != ee_data.shape[1]
                     or sr_data.shape[1] != fwhm_mas_data.shape[1]
-                    or sr_data.shape[1] != jitter_mas_data.shape[1]
                 ):
                     issues.append("Stats M dimension mismatch between sr/ee/fwhm_mas/jitter_mas.")
 
@@ -600,14 +593,12 @@ class SimulationStore:
             sr = np.asarray(result.stats[schema.KEY_STATS_SR], dtype=np.float32)
             ee = np.asarray(result.stats[schema.KEY_STATS_EE], dtype=np.float32)
             fwhm = np.asarray(result.stats[schema.KEY_STATS_FWHM_MAS], dtype=np.float32)
-            jitter = np.asarray(result.stats[schema.KEY_STATS_JITTER_MAS], dtype=np.float32)
             if ee.ndim == 1:
                 ee = ee[:, np.newaxis]
 
             stats[schema.KEY_STATS_SR][sim_idx, :] = sr
             stats[schema.KEY_STATS_EE][sim_idx, :, :] = ee
             stats[schema.KEY_STATS_FWHM_MAS][sim_idx, :] = fwhm
-            stats[schema.KEY_STATS_JITTER_MAS][sim_idx, :] = jitter
 
             # Persist meta values.
             meta = f[schema.KEY_META_SECTION]

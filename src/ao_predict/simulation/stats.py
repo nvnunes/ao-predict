@@ -19,8 +19,8 @@ def compute_psf_stats(
     psfs: np.ndarray,
     setup: Mapping[str, Any] | SimulationSetup,
     meta: Mapping[str, Any],
-) -> tuple[StatValue, StatValue, StatValue, StatValue]:
-    """Return zero-valued placeholder PSF statistics with the correct shape contract.
+) -> tuple[StatValue, StatValue, StatValue]:
+    """Return zero-valued placeholder core PSF statistics with the correct shape contract.
 
     Args:
         psfs: PSF image or PSF cube.
@@ -28,7 +28,7 @@ def compute_psf_stats(
         meta: Persisted PSF metadata mapping.
 
     Returns:
-        Tuple ``(sr, ee, fwhm_mas, jitter_mas)`` matching the shared stats contract.
+        Tuple ``(sr, ee, fwhm_mas)`` matching the shared core stats contract.
     """
     cube = np.asarray(psfs, dtype=np.float32)
     scalar_output = False
@@ -62,7 +62,6 @@ def compute_psf_stats(
     sr = np.zeros((num_sci,), dtype=np.float32)
     ee = np.zeros((num_sci, apertures.size), dtype=np.float32)
     fwhm_mas = np.zeros((num_sci,), dtype=np.float32)
-    jitter_mas = np.zeros((num_sci,), dtype=np.float32)
 
     if scalar_output:
         sr = float(sr[0])
@@ -70,6 +69,5 @@ def compute_psf_stats(
         if ee.shape[0] == 1:
             ee = float(ee[0])
         fwhm_mas = float(fwhm_mas[0])
-        jitter_mas = float(jitter_mas[0])
 
-    return sr, ee, fwhm_mas, jitter_mas
+    return sr, ee, fwhm_mas
