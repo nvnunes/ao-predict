@@ -23,6 +23,10 @@ Simulation payload note:
 Stats note:
 - Core stats under `/stats` are `sr`, `ee`, and `fwhm_mas`.
 - Dataset-level stats selectors live under `/setup` as `sr_method` and `fwhm_summary`.
+- Core metadata under `/meta` mixes one per-simulation field and invariant telescope fields:
+  - `/meta/pixel_scale_mas` is `[N]`
+  - `/meta/tel_diameter_m` is a scalar
+  - `/meta/tel_pupil` is `[Ny, Nx]`
 - Simulations may also declare extra 2D stats with shape `[N, M]`.
 - The declared extra stat registry is persisted in `/simulation/extra_stat_names`.
 - During execution, successful simulations expose PSFs and metadata in `finalize(...)` and leave `result.stats` empty.

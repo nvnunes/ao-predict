@@ -71,13 +71,12 @@ def _ensure_sim_idx(sim_idx: int) -> int:
 
 
 def _ensure_meta_tel_pupil(f: h5py.File, tel_pupil: np.ndarray) -> None:
-    """Ensure ``/meta/tel_pupil`` exists and matches the expected per-simulation shape."""
+    """Ensure ``/meta/tel_pupil`` exists and matches the dataset-level shape."""
     meta = f[schema.KEY_META_SECTION]
-    num_sims = int(f[f"{schema.KEY_STATUS_SECTION}/{schema.KEY_STATUS_STATE}"].shape[0])
-    expected = (num_sims,) + tuple(tel_pupil.shape)
+    expected = tuple(tel_pupil.shape)
     if schema.KEY_META_TEL_PUPIL in meta:
         ds = meta[schema.KEY_META_TEL_PUPIL]
-        if ds.shape == (num_sims, 0, 0):
+        if ds.shape == (0, 0):
             ds.resize(expected)
             ds[...] = np.nan
             return
@@ -89,6 +88,31 @@ def _ensure_meta_tel_pupil(f: h5py.File, tel_pupil: np.ndarray) -> None:
         schema.KEY_META_TEL_PUPIL,
         data=np.full(expected, np.nan, dtype=np.float32),
     )
+
+
+def _write_dataset_level_telescope_meta(f: h5py.File, result: SimulationResult) -> None:
+    """Persist invariant telescope metadata once and enforce consistency."""
+    meta = f[schema.KEY_META_SECTION]
+    tel_diameter = np.asarray(result.meta[schema.KEY_META_TEL_DIAMETER_M], dtype=np.float32)
+    tel_pupil = np.asarray(result.meta[schema.KEY_META_TEL_PUPIL], dtype=np.float32)
+
+    tel_diameter_value = np.float32(tel_diameter.item())
+    stored_tel_diameter = np.asarray(meta[schema.KEY_META_TEL_DIAMETER_M][()], dtype=np.float32)
+    if np.isnan(stored_tel_diameter):
+        meta[schema.KEY_META_TEL_DIAMETER_M][()] = tel_diameter_value
+    elif not np.isclose(float(stored_tel_diameter), float(tel_diameter_value), rtol=0.0, atol=0.0):
+        raise ValueError(
+            "result.meta.tel_diameter_m does not match dataset-level /meta/tel_diameter_m."
+        )
+
+    _ensure_meta_tel_pupil(f, tel_pupil)
+    stored_tel_pupil = np.asarray(meta[schema.KEY_META_TEL_PUPIL][...], dtype=np.float32)
+    if np.all(np.isnan(stored_tel_pupil)):
+        meta[schema.KEY_META_TEL_PUPIL][...] = tel_pupil
+    elif stored_tel_pupil.shape != tel_pupil.shape or not np.array_equal(stored_tel_pupil, tel_pupil, equal_nan=True):
+        raise ValueError(
+            "result.meta.tel_pupil does not match dataset-level /meta/tel_pupil."
+        )
 
 
 def _ensure_psfs_data(f: h5py.File, psfs: np.ndarray) -> None:
@@ -132,9 +156,6 @@ def _clear_simulation_outputs(f: h5py.File, sim_idx: int) -> None:
         stats[key][sim_idx, ...] = np.nan
 
     meta[schema.KEY_META_PIXEL_SCALE_MAS][sim_idx] = np.nan
-    meta[schema.KEY_META_TEL_DIAMETER_M][sim_idx] = np.nan
-    if schema.KEY_META_TEL_PUPIL in meta:
-        meta[schema.KEY_META_TEL_PUPIL][sim_idx, ...] = np.nan
 
     if schema.KEY_PSFS_SECTION in f and schema.KEY_PSFS_DATA in f[schema.KEY_PSFS_SECTION]:
         f[f"{schema.KEY_PSFS_SECTION}/{schema.KEY_PSFS_DATA}"][sim_idx, ...] = np.nan
@@ -236,11 +257,11 @@ class SimulationStore:
             )
 
             g_meta.create_dataset(schema.KEY_META_PIXEL_SCALE_MAS, data=np.full((num_sims,), np.nan, dtype=np.float32))
-            g_meta.create_dataset(schema.KEY_META_TEL_DIAMETER_M, data=np.full((num_sims,), np.nan, dtype=np.float32))
+            g_meta.create_dataset(schema.KEY_META_TEL_DIAMETER_M, data=np.float32(np.nan))
             g_meta.create_dataset(
                 schema.KEY_META_TEL_PUPIL,
-                shape=(num_sims, 0, 0),
-                maxshape=(num_sims, None, None),
+                shape=(0, 0),
+                maxshape=(None, None),
                 chunks=True,
                 dtype=np.float32,
             )
@@ -532,10 +553,12 @@ class SimulationStore:
                     issues.append(f"Missing declared extra stats dataset '/stats/{name}'.")
                 elif stats_group[name].ndim != 2:
                     issues.append(f"/stats/{name} must be 2D [N, M].")
-            if pixel_scale_mas_data.ndim != 1 or tel_diameter_m_data.ndim != 1:
-                issues.append("/meta/pixel_scale_mas and /meta/tel_diameter_m must be 1D [N].")
-            if tel_pupil_data.ndim != 3:
-                issues.append("/meta/tel_pupil must be 3D [N, Ny, Nx].")
+            if pixel_scale_mas_data.ndim != 1:
+                issues.append("/meta/pixel_scale_mas must be 1D [N].")
+            if tel_diameter_m_data.ndim != 0:
+                issues.append("/meta/tel_diameter_m must be a scalar.")
+            if tel_pupil_data.ndim != 2:
+                issues.append("/meta/tel_pupil must be 2D [Ny, Nx].")
 
             undeclared_stats = sorted(
                 set(stats_group.keys()) - set(schema.CORE_STATS_KEYS) - set(extra_stat_names)
@@ -553,10 +576,8 @@ class SimulationStore:
                 for name, ds in extra_stat_data.items():
                     if ds.shape[0] != n:
                         issues.append(f"/stats/{name} first dimension must match /status/state length.")
-                if pixel_scale_mas_data.shape[0] != n or tel_diameter_m_data.shape[0] != n:
-                    issues.append("Meta first dimension must match /status/state length.")
-                if tel_pupil_data.shape[0] != n:
-                    issues.append("/meta/tel_pupil first dimension must match /status/state length.")
+                if pixel_scale_mas_data.shape[0] != n:
+                    issues.append("/meta/pixel_scale_mas first dimension must match /status/state length.")
                 if (
                     sr_data.shape[1] != ee_data.shape[1]
                     or sr_data.shape[1] != fwhm_mas_data.shape[1]
@@ -635,13 +656,8 @@ class SimulationStore:
             # Persist meta values.
             meta = f[schema.KEY_META_SECTION]
             pixel_scale = np.asarray(result.meta[schema.KEY_META_PIXEL_SCALE_MAS], dtype=np.float32)
-            tel_diameter = np.asarray(result.meta[schema.KEY_META_TEL_DIAMETER_M], dtype=np.float32)
             meta[schema.KEY_META_PIXEL_SCALE_MAS][sim_idx] = np.float32(pixel_scale.item())
-            meta[schema.KEY_META_TEL_DIAMETER_M][sim_idx] = np.float32(tel_diameter.item())
-
-            tel_pupil = np.asarray(result.meta[schema.KEY_META_TEL_PUPIL], dtype=np.float32)
-            _ensure_meta_tel_pupil(f, tel_pupil)
-            f[f"{schema.KEY_META_SECTION}/{schema.KEY_META_TEL_PUPIL}"][sim_idx, ...] = tel_pupil
+            _write_dataset_level_telescope_meta(f, result)
 
             # Persist stats arrays.
             sr = np.asarray(result.stats[schema.KEY_STATS_SR], dtype=np.float32)

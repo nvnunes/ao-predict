@@ -71,6 +71,11 @@ def _options(num_sims: int = 3, max_ngs: int = 3) -> dict:
     }
 
 
+def _options_row(index: int = 0) -> dict:
+    options = _options()
+    return {key: np.asarray(value)[index].copy() for key, value in options.items()}
+
+
 def _success_result(
     m: int = 3,
     a: int = 2,
@@ -224,7 +229,7 @@ def test_validate_success_result_rejects_non_2d_tel_pupil():
 
 
 def test_populate_result_stats_rejects_simulation_provided_core_stats():
-    context = SimulationContext(index=0, setup=_setup_obj(), options={})
+    context = SimulationContext(index=0, setup=_setup_obj(), options=_options_row())
     context.runtime["extra_stat_names"] = ()
     context.result = SimulationResult(
         state=SimulationState.SUCCEEDED,
@@ -247,7 +252,7 @@ def test_populate_result_stats_rejects_simulation_provided_core_stats():
 
 
 def test_populate_result_stats_rejects_direct_result_stats_population():
-    context = SimulationContext(index=0, setup=_setup_obj(), options={})
+    context = SimulationContext(index=0, setup=_setup_obj(), options=_options_row())
     context.runtime["extra_stat_names"] = ()
     context.result = SimulationResult(
         state=SimulationState.SUCCEEDED,
@@ -269,7 +274,7 @@ def test_populate_result_stats_rejects_direct_result_stats_population():
 
 
 def test_populate_result_stats_rejects_undeclared_extra_stats():
-    context = SimulationContext(index=0, setup=_setup_obj(), options={})
+    context = SimulationContext(index=0, setup=_setup_obj(), options=_options_row())
     context.runtime["extra_stat_names"] = ()
     context.result = SimulationResult(
         state=SimulationState.SUCCEEDED,
@@ -286,6 +291,37 @@ def test_populate_result_stats_rejects_undeclared_extra_stats():
         _populate_result_stats(simulation, context)
 
 
+def test_populate_result_stats_passes_runtime_options_to_stats(monkeypatch):
+    observed_options: list[dict[str, object]] = []
+    context = SimulationContext(index=0, setup=_setup_obj(), options=_options_row())
+    context.runtime["extra_stat_names"] = ()
+    context.result = SimulationResult(
+        state=SimulationState.SUCCEEDED,
+        psfs=np.full((3, 4, 4), 0.1, dtype=np.float32),
+        meta={
+            "pixel_scale_mas": 4.0,
+            "tel_diameter_m": 8.0,
+            "tel_pupil": np.ones((6, 6), dtype=np.float32),
+        },
+    )
+
+    def _compute(psfs, simulation, setup, options, meta):
+        del psfs, simulation, setup, meta
+        observed_options.append(dict(options))
+        return (
+            np.zeros((3,), dtype=np.float32),
+            np.zeros((3, 2), dtype=np.float32),
+            np.zeros((3,), dtype=np.float32),
+        )
+
+    monkeypatch.setattr("ao_predict.simulation.runner.compute_psf_stats", _compute)
+
+    _populate_result_stats(_ExtraStatsSimulation({}), context)
+
+    assert len(observed_options) == 1
+    assert float(observed_options[0][schema.KEY_OPTION_WAVELENGTH_UM]) == pytest.approx(1.65)
+
+
 def test_compute_psf_stats_rejects_missing_ee_apertures():
     with pytest.raises(
         ValueError,
@@ -295,6 +331,7 @@ def test_compute_psf_stats_rejects_missing_ee_apertures():
             np.zeros((3, 4, 4), dtype=np.float32),
             _ExtraStatsSimulation({}),
             {},
+            _options_row(),
             {schema.KEY_META_PIXEL_SCALE_MAS: 4.0},
         )
 
@@ -311,6 +348,7 @@ def test_compute_psf_stats_rejects_missing_sr_method():
                 schema.KEY_SETUP_EE_APERTURES_MAS: np.array([50.0], dtype=float),
                 schema.KEY_SETUP_FWHM_SUMMARY: schema.DEFAULT_SETUP_FWHM_SUMMARY,
             },
+            _options_row(),
             {schema.KEY_META_PIXEL_SCALE_MAS: 4.0},
         )
 
@@ -327,6 +365,21 @@ def test_compute_psf_stats_rejects_missing_fwhm_summary():
                 schema.KEY_SETUP_EE_APERTURES_MAS: np.array([50.0], dtype=float),
                 schema.KEY_SETUP_SR_METHOD: schema.DEFAULT_SETUP_SR_METHOD,
             },
+            _options_row(),
+            {schema.KEY_META_PIXEL_SCALE_MAS: 4.0},
+        )
+
+
+def test_compute_psf_stats_rejects_missing_wavelength_option():
+    with pytest.raises(
+        ValueError,
+        match=r"options\['wavelength_um'\] is required for PSF stats computation\.",
+    ):
+        compute_psf_stats(
+            np.zeros((3, 4, 4), dtype=np.float32),
+            _ExtraStatsSimulation({}),
+            _setup(),
+            {},
             {schema.KEY_META_PIXEL_SCALE_MAS: 4.0},
         )
 
@@ -360,6 +413,7 @@ def test_compute_psf_stats_dispatches_selected_strehl_method(monkeypatch):
             **_setup(),
             schema.KEY_SETUP_SR_METHOD: schema.STATS_SR_METHOD_PIXEL_MAX,
         },
+        _options_row(),
         {schema.KEY_META_PIXEL_SCALE_MAS: 4.0},
     )
 
@@ -373,6 +427,7 @@ def test_compute_psf_stats_dispatches_selected_strehl_method(monkeypatch):
             **_setup(),
             schema.KEY_SETUP_SR_METHOD: schema.STATS_SR_METHOD_PIXEL_FIT,
         },
+        _options_row(),
         {schema.KEY_META_PIXEL_SCALE_MAS: 4.0},
     )
 
@@ -412,6 +467,7 @@ def test_compute_psf_stats_reuses_fit_peak_locations_for_ee(monkeypatch):
             **_setup(),
             schema.KEY_SETUP_SR_METHOD: schema.STATS_SR_METHOD_PIXEL_FIT,
         },
+        _options_row(),
         {schema.KEY_META_PIXEL_SCALE_MAS: 4.0},
     )
 
@@ -426,6 +482,7 @@ def test_compute_psf_stats_reuses_fit_peak_locations_for_ee(monkeypatch):
             **_setup(),
             schema.KEY_SETUP_SR_METHOD: schema.STATS_SR_METHOD_PIXEL_MAX,
         },
+        _options_row(),
         {schema.KEY_META_PIXEL_SCALE_MAS: 4.0},
     )
 
@@ -458,6 +515,7 @@ def test_compute_psf_stats_selects_requested_fwhm_summary(monkeypatch):
             **_setup(),
             schema.KEY_SETUP_FWHM_SUMMARY: schema.STATS_FWHM_SUMMARY_MAX,
         },
+        _options_row(),
         {schema.KEY_META_PIXEL_SCALE_MAS: 4.0},
     )
 
@@ -484,6 +542,7 @@ def test_compute_psf_stats_uses_simulation_psf_preprocessing_hook(monkeypatch):
         np.zeros((2, 4, 4), dtype=np.float32),
         _PreprocessSimulation({}),
         _setup(),
+        _options_row(),
         {schema.KEY_META_PIXEL_SCALE_MAS: 4.0},
     )
 
@@ -534,8 +593,8 @@ def test_store_create_and_row_writes(tmp_path):
         assert np.all(np.isnan(f[f"{schema.KEY_STATS_SECTION}/{schema.KEY_STATS_SR}"][1]))
 
         assert f[f"{schema.KEY_META_SECTION}/{schema.KEY_META_PIXEL_SCALE_MAS}"][0] == np.float32(4.0)
-        assert f[f"{schema.KEY_META_SECTION}/{schema.KEY_META_TEL_DIAMETER_M}"][0] == np.float32(8.0)
-        assert f[f"{schema.KEY_META_SECTION}/{schema.KEY_META_TEL_PUPIL}"].shape == (3, 6, 6)
+        assert f[f"{schema.KEY_META_SECTION}/{schema.KEY_META_TEL_DIAMETER_M}"][()] == np.float32(8.0)
+        assert f[f"{schema.KEY_META_SECTION}/{schema.KEY_META_TEL_PUPIL}"].shape == (6, 6)
 
         assert f[f"{schema.KEY_PSFS_SECTION}/{schema.KEY_PSFS_DATA}"].shape == (3, 3, 4, 4)
         assert np.all(np.isfinite(f[f"{schema.KEY_PSFS_SECTION}/{schema.KEY_PSFS_DATA}"][0]))
@@ -548,7 +607,25 @@ def test_store_create_preallocates_empty_tel_pupil_dataset(tmp_path):
     store.create(_simulation(), _setup(), _options(), save_psfs=False)
 
     with h5py.File(data_path, "r") as f:
-        assert f[f"{schema.KEY_META_SECTION}/{schema.KEY_META_TEL_PUPIL}"].shape == (3, 0, 0)
+        assert f[f"{schema.KEY_META_SECTION}/{schema.KEY_META_TEL_PUPIL}"].shape == (0, 0)
+
+
+def test_store_write_success_rejects_mismatched_dataset_level_telescope_meta(tmp_path):
+    data_path = tmp_path / "sim_data_telescope_meta_mismatch.h5"
+    store = SimulationStore(data_path)
+    store.create(_simulation(), _setup(), _options(), save_psfs=False)
+
+    store.write_simulation_success(0, _success_result())
+
+    bad_result = _success_result()
+    bad_result.meta[schema.KEY_META_TEL_DIAMETER_M] = np.float32(10.0)
+    with pytest.raises(ValueError, match=r"result\.meta\.tel_diameter_m does not match dataset-level /meta/tel_diameter_m\."):
+        store.write_simulation_success(1, bad_result)
+
+    bad_result = _success_result()
+    bad_result.meta[schema.KEY_META_TEL_PUPIL] = np.full((6, 6), 2.0, dtype=np.float32)
+    with pytest.raises(ValueError, match=r"result\.meta\.tel_pupil does not match dataset-level /meta/tel_pupil\."):
+        store.write_simulation_success(1, bad_result)
 
 
 def test_store_create_preallocates_declared_extra_stats(tmp_path):
@@ -1071,8 +1148,8 @@ def test_store_write_failure_clears_outputs(tmp_path):
         assert np.all(np.isnan(f[f"{schema.KEY_STATS_SECTION}/{schema.KEY_STATS_SR}"][0]))
         assert np.all(np.isnan(f[f"{schema.KEY_STATS_SECTION}/{schema.KEY_STATS_FWHM_MAS}"][0]))
         assert np.isnan(f[f"{schema.KEY_META_SECTION}/{schema.KEY_META_PIXEL_SCALE_MAS}"][0])
-        assert np.isnan(f[f"{schema.KEY_META_SECTION}/{schema.KEY_META_TEL_DIAMETER_M}"][0])
-        assert np.all(np.isnan(f[f"{schema.KEY_META_SECTION}/{schema.KEY_META_TEL_PUPIL}"][0]))
+        assert f[f"{schema.KEY_META_SECTION}/{schema.KEY_META_TEL_DIAMETER_M}"][()] == np.float32(8.0)
+        assert np.all(np.isfinite(f[f"{schema.KEY_META_SECTION}/{schema.KEY_META_TEL_PUPIL}"][...]))
         assert np.all(np.isnan(f[f"{schema.KEY_PSFS_SECTION}/{schema.KEY_PSFS_DATA}"][0]))
 
 

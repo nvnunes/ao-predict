@@ -321,6 +321,7 @@ def _populate_result_stats(simulation: Simulation, context: Any) -> None:
         context.result.psfs,
         simulation,
         context.setup,
+        context.options,
         context.result.meta,
     )
 

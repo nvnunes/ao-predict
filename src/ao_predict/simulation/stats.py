@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Any, Mapping, TypeAlias
+from collections.abc import Mapping
+from typing import Any, TypeAlias
 
 import numpy as np
 
@@ -21,8 +22,9 @@ StatValue: TypeAlias = np.ndarray | float
 def _prepare_stats_inputs(
     psfs: np.ndarray,
     setup: Mapping[str, Any] | SimulationSetup,
+    options: Mapping[str, Any],
     meta: Mapping[str, Any],
-) -> tuple[np.ndarray, bool, float, np.ndarray, str, str]:
+) -> tuple[np.ndarray, bool, float, float, str, np.ndarray, str]:
     """Validate inputs and return normalized stats-computation prerequisites."""
     psf_cube = np.asarray(psfs, dtype=np.float32)
     scalar_output = False
@@ -40,6 +42,13 @@ def _prepare_stats_inputs(
     pixel_scale_mas = float(pixel_scale_mas)
     if not np.isfinite(pixel_scale_mas) or pixel_scale_mas <= 0.0:
         raise ValueError(f"meta['{schema.KEY_META_PIXEL_SCALE_MAS}'] must be finite and > 0.")
+
+    wavelength_um = options.get(schema.KEY_OPTION_WAVELENGTH_UM)
+    if wavelength_um is None:
+        raise ValueError(f"options['{schema.KEY_OPTION_WAVELENGTH_UM}'] is required for PSF stats computation.")
+    wavelength_um = float(wavelength_um)
+    if not np.isfinite(wavelength_um) or wavelength_um <= 0.0:
+        raise ValueError(f"options['{schema.KEY_OPTION_WAVELENGTH_UM}'] must be finite and > 0.")
 
     try:
         ee_apertures_mas = get_ee_apertures(setup)
@@ -68,7 +77,7 @@ def _prepare_stats_inputs(
             f"setup['{schema.KEY_SETUP_FWHM_SUMMARY}'] must be one of: {', '.join(schema.SETUP_STATS_FWHM_SUMMARIES)}."
         )
 
-    return psf_cube, scalar_output, pixel_scale_mas, sr_method, ee_apertures_mas, fwhm_summary
+    return psf_cube, scalar_output, pixel_scale_mas, wavelength_um, sr_method, ee_apertures_mas, fwhm_summary
 
 
 # Placeholder metric stages
@@ -144,6 +153,7 @@ def compute_psf_stats(
     psfs: np.ndarray,
     simulation: Simulation,
     setup: Mapping[str, Any] | SimulationSetup,
+    options: Mapping[str, Any],
     meta: Mapping[str, Any],
 ) -> tuple[StatValue, StatValue, StatValue]:
     """Return placeholder core PSF statistics through the staged Pass 2 flow.
@@ -152,12 +162,19 @@ def compute_psf_stats(
         psfs: PSF image or PSF cube.
         simulation: Bound simulation implementation providing preprocessing.
         setup: Setup payload or typed setup object.
+        options: Per-simulation options mapping used by downstream stats algorithms.
         meta: Persisted PSF metadata mapping.
 
     Returns:
         Tuple ``(sr, ee, fwhm_mas)`` matching the shared core stats contract.
     """
-    psf_cube, scalar_output, pixel_scale_mas, sr_method, ee_apertures_mas, fwhm_summary = _prepare_stats_inputs(psfs, setup, meta)
+    psf_cube, scalar_output, pixel_scale_mas, wavelength_um, sr_method, ee_apertures_mas, fwhm_summary = _prepare_stats_inputs(
+        psfs,
+        setup,
+        options,
+        meta,
+    )
+    del wavelength_um
     psf_cube = simulation.prepare_psfs_for_stats(psf_cube, setup, meta)
 
     sr, peak_locations_yx = _compute_strehl(psf_cube, sr_method, pixel_scale_mas)

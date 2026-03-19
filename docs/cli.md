@@ -209,6 +209,11 @@ Setup-level stats selectors:
 Core state dataset:
 - `/status/state`: `uint8[N]`
 
+Core metadata layout:
+- `/meta/pixel_scale_mas`: per-simulation `[N]`
+- `/meta/tel_diameter_m`: dataset-level scalar
+- `/meta/tel_pupil`: dataset-level `[Ny, Nx]`
+
 State values:
 - `0`: pending
 - `1`: success
