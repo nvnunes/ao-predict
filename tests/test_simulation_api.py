@@ -202,7 +202,8 @@ def test_api_full_pipeline_with_test_simulation(tmp_path: Path):
 
     with h5py.File(dataset_path, "r") as f:
         sr = np.asarray(f[f"{schema.KEY_STATS_SECTION}/{schema.KEY_STATS_SR}"][:], dtype=float)
-        np.testing.assert_allclose(sr[:, 0], np.zeros(3, dtype=float), rtol=1e-6, atol=1e-6)
+        assert np.all(np.isfinite(sr))
+        np.testing.assert_allclose(sr[:, 0], np.full((3,), sr[0, 0], dtype=float), rtol=1e-6, atol=1e-6)
         assert f[f"{schema.KEY_SETUP_SECTION}/{schema.KEY_SETUP_SR_METHOD}"][()].decode("utf-8") == schema.DEFAULT_SETUP_SR_METHOD
         assert (
             f[f"{schema.KEY_SETUP_SECTION}/{schema.KEY_SETUP_FWHM_SUMMARY}"][()].decode("utf-8")

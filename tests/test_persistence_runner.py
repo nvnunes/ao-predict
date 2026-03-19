@@ -76,6 +76,14 @@ def _options_row(index: int = 0) -> dict:
     return {key: np.asarray(value)[index].copy() for key, value in options.items()}
 
 
+def _stats_meta(pixel_scale_mas: float = 4.0) -> dict:
+    return {
+        schema.KEY_META_PIXEL_SCALE_MAS: float(pixel_scale_mas),
+        schema.KEY_META_TEL_DIAMETER_M: 8.0,
+        schema.KEY_META_TEL_PUPIL: np.ones((6, 6), dtype=np.float32),
+    }
+
+
 def _success_result(
     m: int = 3,
     a: int = 2,
@@ -332,7 +340,7 @@ def test_compute_psf_stats_rejects_missing_ee_apertures():
             _ExtraStatsSimulation({}),
             {},
             _options_row(),
-            {schema.KEY_META_PIXEL_SCALE_MAS: 4.0},
+            _stats_meta(),
         )
 
 
@@ -349,7 +357,7 @@ def test_compute_psf_stats_rejects_missing_sr_method():
                 schema.KEY_SETUP_FWHM_SUMMARY: schema.DEFAULT_SETUP_FWHM_SUMMARY,
             },
             _options_row(),
-            {schema.KEY_META_PIXEL_SCALE_MAS: 4.0},
+            _stats_meta(),
         )
 
 
@@ -366,7 +374,7 @@ def test_compute_psf_stats_rejects_missing_fwhm_summary():
                 schema.KEY_SETUP_SR_METHOD: schema.DEFAULT_SETUP_SR_METHOD,
             },
             _options_row(),
-            {schema.KEY_META_PIXEL_SCALE_MAS: 4.0},
+            _stats_meta(),
         )
 
 
@@ -380,23 +388,39 @@ def test_compute_psf_stats_rejects_missing_wavelength_option():
             _ExtraStatsSimulation({}),
             _setup(),
             {},
-            {schema.KEY_META_PIXEL_SCALE_MAS: 4.0},
+            _stats_meta(),
+        )
+
+
+def test_compute_psf_stats_rejects_missing_tel_pupil_meta():
+    meta = _stats_meta()
+    meta.pop(schema.KEY_META_TEL_PUPIL)
+    with pytest.raises(
+        ValueError,
+        match=r"meta\['tel_pupil'\] is required for PSF stats computation\.",
+    ):
+        compute_psf_stats(
+            np.zeros((3, 4, 4), dtype=np.float32),
+            _ExtraStatsSimulation({}),
+            _setup(),
+            _options_row(),
+            meta,
         )
 
 
 def test_compute_psf_stats_dispatches_selected_strehl_method(monkeypatch):
     calls: list[str] = []
 
-    def _pixel_fit(psfs, pixel_scale_mas):
-        del pixel_scale_mas
+    def _pixel_fit(psfs, pixel_scale_mas, wavelength_um, tel_diameter_m, tel_pupil):
+        del pixel_scale_mas, wavelength_um, tel_diameter_m, tel_pupil
         calls.append(schema.STATS_SR_METHOD_PIXEL_FIT)
         return (
             np.zeros((psfs.shape[0],), dtype=np.float32),
             np.zeros((psfs.shape[0], 2), dtype=np.float32),
         )
 
-    def _pixel_max(psfs, pixel_scale_mas):
-        del pixel_scale_mas
+    def _pixel_max(psfs, pixel_scale_mas, wavelength_um, tel_diameter_m, tel_pupil):
+        del pixel_scale_mas, wavelength_um, tel_diameter_m, tel_pupil
         calls.append(schema.STATS_SR_METHOD_PIXEL_MAX)
         return (
             np.zeros((psfs.shape[0],), dtype=np.float32),
@@ -414,7 +438,7 @@ def test_compute_psf_stats_dispatches_selected_strehl_method(monkeypatch):
             schema.KEY_SETUP_SR_METHOD: schema.STATS_SR_METHOD_PIXEL_MAX,
         },
         _options_row(),
-        {schema.KEY_META_PIXEL_SCALE_MAS: 4.0},
+        _stats_meta(),
     )
 
     assert calls == [schema.STATS_SR_METHOD_PIXEL_MAX]
@@ -428,7 +452,7 @@ def test_compute_psf_stats_dispatches_selected_strehl_method(monkeypatch):
             schema.KEY_SETUP_SR_METHOD: schema.STATS_SR_METHOD_PIXEL_FIT,
         },
         _options_row(),
-        {schema.KEY_META_PIXEL_SCALE_MAS: 4.0},
+        _stats_meta(),
     )
 
     assert calls == [schema.STATS_SR_METHOD_PIXEL_FIT]
@@ -437,15 +461,15 @@ def test_compute_psf_stats_dispatches_selected_strehl_method(monkeypatch):
 def test_compute_psf_stats_reuses_fit_peak_locations_for_ee(monkeypatch):
     ee_peak_locations: list[np.ndarray | None] = []
 
-    def _pixel_fit(psfs, pixel_scale_mas):
-        del pixel_scale_mas
+    def _pixel_fit(psfs, pixel_scale_mas, wavelength_um, tel_diameter_m, tel_pupil):
+        del pixel_scale_mas, wavelength_um, tel_diameter_m, tel_pupil
         return (
             np.zeros((psfs.shape[0],), dtype=np.float32),
             np.full((psfs.shape[0], 2), 1.5, dtype=np.float32),
         )
 
-    def _pixel_max(psfs, pixel_scale_mas):
-        del pixel_scale_mas
+    def _pixel_max(psfs, pixel_scale_mas, wavelength_um, tel_diameter_m, tel_pupil):
+        del pixel_scale_mas, wavelength_um, tel_diameter_m, tel_pupil
         return (
             np.zeros((psfs.shape[0],), dtype=np.float32),
             np.full((psfs.shape[0], 2), 2.5, dtype=np.float32),
@@ -468,7 +492,7 @@ def test_compute_psf_stats_reuses_fit_peak_locations_for_ee(monkeypatch):
             schema.KEY_SETUP_SR_METHOD: schema.STATS_SR_METHOD_PIXEL_FIT,
         },
         _options_row(),
-        {schema.KEY_META_PIXEL_SCALE_MAS: 4.0},
+        _stats_meta(),
     )
 
     assert len(ee_peak_locations) == 1
@@ -483,7 +507,7 @@ def test_compute_psf_stats_reuses_fit_peak_locations_for_ee(monkeypatch):
             schema.KEY_SETUP_SR_METHOD: schema.STATS_SR_METHOD_PIXEL_MAX,
         },
         _options_row(),
-        {schema.KEY_META_PIXEL_SCALE_MAS: 4.0},
+        _stats_meta(),
     )
 
     assert len(ee_peak_locations) == 1
@@ -516,7 +540,7 @@ def test_compute_psf_stats_selects_requested_fwhm_summary(monkeypatch):
             schema.KEY_SETUP_FWHM_SUMMARY: schema.STATS_FWHM_SUMMARY_MAX,
         },
         _options_row(),
-        {schema.KEY_META_PIXEL_SCALE_MAS: 4.0},
+        _stats_meta(),
     )
 
     assert requested == [schema.STATS_FWHM_SUMMARY_MAX]
@@ -531,8 +555,8 @@ def test_compute_psf_stats_uses_simulation_psf_preprocessing_hook(monkeypatch):
             del setup, meta
             return np.asarray(psfs, dtype=np.float32) + 2.0
 
-    def _compute_strehl(psfs, sr_method, pixel_scale_mas):
-        del sr_method, pixel_scale_mas
+    def _compute_strehl(psfs, sr_method, pixel_scale_mas, wavelength_um, tel_diameter_m, tel_pupil):
+        del sr_method, pixel_scale_mas, wavelength_um, tel_diameter_m, tel_pupil
         observed_psfs.append(np.asarray(psfs, dtype=np.float32))
         return np.zeros((psfs.shape[0],), dtype=np.float32), np.zeros((psfs.shape[0], 2), dtype=np.float32)
 
@@ -543,11 +567,56 @@ def test_compute_psf_stats_uses_simulation_psf_preprocessing_hook(monkeypatch):
         _PreprocessSimulation({}),
         _setup(),
         _options_row(),
-        {schema.KEY_META_PIXEL_SCALE_MAS: 4.0},
+        _stats_meta(),
     )
 
     assert len(observed_psfs) == 1
     np.testing.assert_allclose(observed_psfs[0], np.full((2, 4, 4), 2.0, dtype=np.float32))
+
+
+def test_compute_strehl_pixel_max_matches_diffraction_limited_peak():
+    tel_pupil = np.ones((6, 6), dtype=np.float32)
+    psf_dl = stats_module._get_diffraction_limited_psf(
+        8.0,
+        tel_pupil,
+        1.65,
+        4.0,
+        center_in_one_pix=True,
+    )
+
+    sr, peak_locations_yx = stats_module._compute_strehl_pixel_max(
+        psf_dl[None, :, :],
+        4.0,
+        1.65,
+        8.0,
+        tel_pupil,
+    )
+    expected_peak = np.array(np.unravel_index(np.argmax(psf_dl), psf_dl.shape), dtype=np.float32)[None, :]
+
+    np.testing.assert_allclose(sr, np.array([1.0], dtype=np.float32), rtol=1e-5, atol=1e-5)
+    np.testing.assert_allclose(peak_locations_yx, expected_peak, atol=0.0)
+
+
+def test_compute_strehl_pixel_fit_matches_diffraction_limited_peak():
+    tel_pupil = np.ones((6, 6), dtype=np.float32)
+    psf_dl = stats_module._get_diffraction_limited_psf(
+        8.0,
+        tel_pupil,
+        1.65,
+        4.0,
+        center_in_one_pix=False,
+    )
+
+    sr, peak_locations_yx = stats_module._compute_strehl_pixel_fit(
+        psf_dl[None, :, :],
+        4.0,
+        1.65,
+        8.0,
+        tel_pupil,
+    )
+
+    np.testing.assert_allclose(sr, np.array([1.0], dtype=np.float32), rtol=1e-4, atol=1e-4)
+    np.testing.assert_allclose(peak_locations_yx, np.array([[psf_dl.shape[0] / 2.0 - 0.5, psf_dl.shape[1] / 2.0 - 0.5]], dtype=np.float32), atol=0.1)
 
 
 def test_store_create_and_row_writes(tmp_path):
