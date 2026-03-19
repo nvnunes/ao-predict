@@ -204,9 +204,19 @@ Stats layout:
   measurement is unrecoverable.
 - Additional `/stats/*` datasets may appear when declared by the simulation in `/simulation/extra_stat_names`; each extra stat dataset is `[N, M]`.
 
+Implemented core metric family:
+- Strehl: image-domain `pixel_fit` (default) or `pixel_max`, selected by `/setup/sr_method`
+- EE: fixed peak-centered image-domain square-box accumulation
+- FWHM: fixed native contour measurement summarized by `/setup/fwhm_summary`
+
 Setup-level stats selectors:
 - `/setup/sr_method`: dataset-level Strehl selector, `pixel_fit` or `pixel_max`
 - `/setup/fwhm_summary`: dataset-level contour-summary selector, `geom`, `mean`, `max`, or `min`
+
+Stats input note:
+- Per-simulation `/options/wavelength_um` is required at execution time because
+  the Strehl calculation builds a diffraction-limited reference PSF for each
+  simulation.
 
 Core state dataset:
 - `/status/state`: `uint8[N]`

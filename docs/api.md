@@ -25,6 +25,10 @@ Stats note:
 - Successful runs may persist `fwhm_mas = NaN` when contour-based FWHM cannot be
   recovered; `sr` and `ee` remain finite for successful results.
 - Dataset-level stats selectors live under `/setup` as `sr_method` and `fwhm_summary`.
+- The implemented core stats family is:
+  - Strehl: image-domain `pixel_fit` (default) or `pixel_max`
+  - EE: fixed peak-centered image-domain square-box accumulation
+  - FWHM: fixed native contour measurement summarized by `/setup/fwhm_summary`
 - Core metadata under `/meta` mixes one per-simulation field and invariant telescope fields:
   - `/meta/pixel_scale_mas` is `[N]`
   - `/meta/tel_diameter_m` is a scalar
@@ -85,6 +89,8 @@ For `TiptopSimulation`, provide `specific_fields["config_path"]` and optionally
 
 Core typed setup fields are `ee_apertures_mas`, `sr_method`, and `fwhm_summary`. All other setup fields can be passed in `specific_fields`.
 For `TiptopSimulation`, include `specific_fields["ngs_mag_zeropoint"]`.
+These setup fields control how persisted `/stats/sr` and `/stats/fwhm_mas`
+are computed and interpreted across the whole dataset.
 
 ### `OptionsConfig`
 - `option_arrays: dict[str, np.ndarray | list[object] | tuple[object, ...]]`
@@ -132,6 +138,8 @@ Notes:
 - Use columnar arrays when calling `init_dataset` from Python code.
 - API mapping keys are case-sensitive and must be lowercase (`simulation`, `setup`, and options keys).
 - `TableOptionsConfig.columns` and `TableOptionsConfig.broadcast` keys must be lowercase.
+- `wavelength_um` is required at execution time because the core Strehl
+  calculation builds a diffraction-limited reference PSF for each simulation.
 - The persisted `/options` payload always contains the NGS triplet (`ngs_r_arcsec`, `ngs_theta_deg`, `ngs_mag`).
 - If NGS input is provided explicitly, provide the full triplet. Unused star slots may be represented with `NaN`, but each slot must be either all finite or all `NaN` across the triplet.
 - If explicit NGS input is omitted, the selected simulation must supply the persisted NGS triplet during options preparation.

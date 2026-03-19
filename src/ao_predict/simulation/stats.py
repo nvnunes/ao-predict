@@ -544,17 +544,27 @@ def compute_psf_stats(
     options: Mapping[str, Any],
     meta: Mapping[str, Any],
 ) -> tuple[StatValue, StatValue, StatValue]:
-    """Return placeholder core PSF statistics through the staged Pass 2 flow.
+    """Compute the core AO Predict PSF statistics for one PSF image or cube.
 
     Args:
         psfs: PSF image or PSF cube.
         simulation: Bound simulation implementation providing preprocessing.
-        setup: Setup payload or typed setup object.
-        options: Per-simulation options mapping used by downstream stats algorithms.
+        setup: Setup payload or typed setup object containing the dataset-level
+            stats selectors and EE apertures.
+        options: Per-simulation options mapping. ``wavelength_um`` is required
+            for the diffraction-limited Strehl reference PSF.
         meta: Persisted PSF metadata mapping.
 
     Returns:
         Tuple ``(sr, ee, fwhm_mas)`` matching the shared core stats contract.
+        The implemented metric family is:
+        - Strehl: image-domain `pixel_fit` or `pixel_max`
+        - EE: fixed peak-centered image-domain square-box accumulation
+        - FWHM: fixed native contour measurement summarized by
+          ``setup['fwhm_summary']``
+
+        Successful results may return ``NaN`` in ``fwhm_mas`` when the
+        contour-based FWHM is not scientifically recoverable.
     """
     psf_cube, scalar_output, wavelength_um, pixel_scale_mas, tel_diameter_m, tel_pupil, sr_method, ee_apertures_mas, fwhm_summary = _prepare_stats_inputs(
         psfs,
