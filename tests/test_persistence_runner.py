@@ -1,7 +1,12 @@
 from __future__ import annotations
 
+import importlib.util
+import sys
+import types
 from collections.abc import Mapping
+from pathlib import Path
 
+import contourpy
 import h5py
 import numpy as np
 import pytest
@@ -23,6 +28,8 @@ from ao_predict.simulation.stats import compute_psf_stats
 from ao_predict.simulation.validation import validate_successful_result
 from helpers import run_pending_with_callback
 from mock_simulation import MockSimulation
+
+_GIRMOS_AOSTATS = None
 
 
 def _simulation(*, extra_stat_names: tuple[str, ...] = ()) -> dict:
@@ -146,6 +153,93 @@ def _setup_obj() -> SimulationSetup:
     )
 
 
+def _stub_unavailable_girmos_dependencies() -> None:
+    """Install test-only stubs for upstream imports not needed by AO Predict paths."""
+    if "skimage.measure" not in sys.modules:
+        skimage_module = types.ModuleType("skimage")
+        skimage_measure = types.ModuleType("skimage.measure")
+
+        def _find_contours(z: np.ndarray, level: float) -> list[np.ndarray]:
+            generator = contourpy.contour_generator(z=np.asarray(z, dtype=float))
+            return [line[:, [1, 0]] for line in generator.lines(float(level))]
+
+        skimage_measure.find_contours = _find_contours
+        skimage_module.measure = skimage_measure
+        sys.modules["skimage"] = skimage_module
+        sys.modules["skimage.measure"] = skimage_measure
+
+    if "mastsel.mavisPsf" not in sys.modules:
+        mastsel_module = types.ModuleType("mastsel")
+        mastsel_mavis = types.ModuleType("mastsel.mavisPsf")
+
+        def _unused(*args, **kwargs):
+            raise RuntimeError("Legacy-only upstream dependency should not be used in AO Predict regression tests.")
+
+        mastsel_mavis.Field = object
+        mastsel_mavis.convolve = _unused
+        mastsel_mavis.residualToSpectrum = _unused
+        mastsel_module.mavisPsf = mastsel_mavis
+        sys.modules["mastsel"] = mastsel_module
+        sys.modules["mastsel.mavisPsf"] = mastsel_mavis
+
+    if "p3.aoSystem.FourierUtils" not in sys.modules:
+        p3_module = types.ModuleType("p3")
+        p3_aosystem = types.ModuleType("p3.aoSystem")
+        p3_fourier = types.ModuleType("p3.aoSystem.FourierUtils")
+
+        def _unused(*args, **kwargs):
+            raise RuntimeError("Legacy-only upstream dependency should not be used in AO Predict regression tests.")
+
+        p3_fourier.otf2psf = _unused
+        p3_fourier.telescopeOtf = _unused
+        p3_fourier.find_contour_points = _unused
+        p3_fourier.fwhm_1d = _unused
+        p3_aosystem.FourierUtils = p3_fourier
+        p3_module.aoSystem = p3_aosystem
+        sys.modules["p3"] = p3_module
+        sys.modules["p3.aoSystem"] = p3_aosystem
+        sys.modules["p3.aoSystem.FourierUtils"] = p3_fourier
+
+    if "ao_tools" not in sys.modules:
+        ao_tools_module = types.ModuleType("ao_tools")
+        ao_tools_module.simulate = types.SimpleNamespace()
+        sys.modules["ao_tools"] = ao_tools_module
+
+
+def _load_girmos_aostats_for_regression():
+    """Load the locked downstream AO stats module for regression comparisons."""
+    global _GIRMOS_AOSTATS
+    if _GIRMOS_AOSTATS is not None:
+        return _GIRMOS_AOSTATS
+
+    path = Path("/Users/nelsonnunes/Library/CloudStorage/Dropbox/Projects/girmos-aosims/ao_tools/aostats.py")
+    if not path.exists():
+        pytest.skip(f"Downstream regression source not available: {path}")
+
+    _stub_unavailable_girmos_dependencies()
+    spec = importlib.util.spec_from_file_location("girmos_aostats_regression", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    _GIRMOS_AOSTATS = module
+    return module
+
+
+def _gaussian_psf(
+    ny: int,
+    nx: int,
+    center_y: float,
+    center_x: float,
+    sigma_y: float,
+    sigma_x: float,
+) -> np.ndarray:
+    y, x = np.indices((ny, nx), dtype=np.float32)
+    return np.exp(
+        -0.5 * (((y - center_y) / sigma_y) ** 2 + ((x - center_x) / sigma_x) ** 2),
+        dtype=np.float32,
+    )
+
+
 class _ExtraStatsSimulation(Simulation):
     _NAME = "ao_predict.simulation.tiptop:TiptopSimulation"
     _VERSION = "x.y"
@@ -207,6 +301,12 @@ class _ExtraStatsSimulation(Simulation):
 
 def test_validate_success_result_accepts_valid_success_result():
     validate_successful_result(_success_result(), 3, 2, require_psfs=True)
+
+
+def test_validate_success_result_accepts_nan_fwhm():
+    result = _success_result()
+    result.stats[schema.KEY_STATS_FWHM_MAS] = np.full((3,), np.nan, dtype=np.float32)
+    validate_successful_result(result, 3, 2, require_psfs=True)
 
 
 def test_validate_success_result_requires_declared_extra_stats():
@@ -687,6 +787,142 @@ def test_measure_peak_centered_ee_curves_limits_radius_to_requested_aperture():
     )
 
     assert curves.shape == (1, 4)
+
+
+def test_measure_contour_fwhms_returns_expected_widths_for_square_ring():
+    psf = np.zeros((1, 7, 7), dtype=np.float32)
+    psf[0, 1:6, 1:6] = 1.0
+    psf[0, 2:5, 2:5] = 0.0
+
+    fwhm_min, fwhm_max = stats_module._measure_contour_fwhms(psf, 2.0)
+
+    np.testing.assert_allclose(fwhm_min, np.array([10.0], dtype=np.float32), atol=1e-6)
+    np.testing.assert_allclose(fwhm_max, np.array([12.806249], dtype=np.float32), atol=1e-6)
+
+
+def test_compute_fwhm_summary_selects_geom_mean_max_min():
+    fwhm_min = np.array([4.0], dtype=np.float32)
+    fwhm_max = np.array([9.0], dtype=np.float32)
+
+    np.testing.assert_allclose(
+        stats_module._compute_fwhm_summary(schema.STATS_FWHM_SUMMARY_GEOM, fwhm_min, fwhm_max),
+        np.array([6.0], dtype=np.float32),
+        atol=1e-6,
+    )
+    np.testing.assert_allclose(
+        stats_module._compute_fwhm_summary(schema.STATS_FWHM_SUMMARY_MEAN, fwhm_min, fwhm_max),
+        np.array([6.5], dtype=np.float32),
+        atol=1e-6,
+    )
+    np.testing.assert_allclose(
+        stats_module._compute_fwhm_summary(schema.STATS_FWHM_SUMMARY_MAX, fwhm_min, fwhm_max),
+        np.array([9.0], dtype=np.float32),
+        atol=1e-6,
+    )
+    np.testing.assert_allclose(
+        stats_module._compute_fwhm_summary(schema.STATS_FWHM_SUMMARY_MIN, fwhm_min, fwhm_max),
+        np.array([4.0], dtype=np.float32),
+        atol=1e-6,
+    )
+
+
+def test_measure_contour_fwhms_returns_nan_on_invalid_cases():
+    truncated = np.zeros((1, 5, 5), dtype=np.float32)
+    truncated[0, :, :3] = 1.0
+
+    non_crossing = np.full((1, 4, 4), 1.0, dtype=np.float32)
+
+    non_finite = np.zeros((1, 5, 5), dtype=np.float32)
+    non_finite[0, 2, 2] = np.nan
+
+    for psf in (truncated, non_crossing, non_finite):
+        fwhm_min, fwhm_max = stats_module._measure_contour_fwhms(psf, 2.0)
+        assert np.isnan(fwhm_min[0])
+        assert np.isnan(fwhm_max[0])
+
+
+def test_measure_contour_fwhms_returns_nan_for_zero_peak_threshold():
+    psf = np.zeros((1, 5, 5), dtype=np.float32)
+
+    fwhm_min, fwhm_max = stats_module._measure_contour_fwhms(psf, 2.0)
+
+    assert np.isnan(fwhm_min[0])
+    assert np.isnan(fwhm_max[0])
+
+
+def test_measure_contour_fwhms_returns_nan_for_collapsed_contour_geometry(monkeypatch):
+    psf = np.zeros((1, 7, 7), dtype=np.float32)
+    psf[0, 3, 3] = 1.0
+
+    monkeypatch.setattr(
+        stats_module,
+        "_find_contours",
+        lambda _psf, _level: [np.array([[3.0, 2.0], [3.0, 3.0], [3.0, 4.0]], dtype=float)],
+    )
+
+    fwhm_min, fwhm_max = stats_module._measure_contour_fwhms(psf, 2.0)
+
+    assert np.isnan(fwhm_min[0])
+    assert np.isnan(fwhm_max[0])
+
+
+@pytest.mark.parametrize(
+    ("sr_method", "fwhm_summary"),
+    [
+        (schema.STATS_SR_METHOD_PIXEL_FIT, schema.STATS_FWHM_SUMMARY_GEOM),
+        (schema.STATS_SR_METHOD_PIXEL_FIT, schema.STATS_FWHM_SUMMARY_MEAN),
+        (schema.STATS_SR_METHOD_PIXEL_MAX, schema.STATS_FWHM_SUMMARY_MAX),
+        (schema.STATS_SR_METHOD_PIXEL_MAX, schema.STATS_FWHM_SUMMARY_MIN),
+    ],
+)
+def test_compute_psf_stats_matches_girmos_aopredict_regression(sr_method, fwhm_summary):
+    upstream = _load_girmos_aostats_for_regression()
+    simulation = MockSimulation()
+
+    psfs = np.stack(
+        [
+            _gaussian_psf(31, 31, 15.2, 14.7, 2.1, 1.7),
+            _gaussian_psf(31, 31, 13.8, 16.1, 2.5, 2.2),
+        ],
+        axis=0,
+    ).astype(np.float32)
+    options = {schema.KEY_OPTION_WAVELENGTH_UM: np.float32(1.65)}
+    meta = _stats_meta(pixel_scale_mas=4.0)
+    setup = {
+        schema.KEY_SETUP_EE_APERTURES_MAS: np.array([12.0, 28.0, 44.0], dtype=float),
+        schema.KEY_SETUP_SR_METHOD: sr_method,
+        schema.KEY_SETUP_FWHM_SUMMARY: fwhm_summary,
+    }
+
+    sr, ee, fwhm = compute_psf_stats(psfs, simulation, setup=setup, options=options, meta=meta)
+
+    sr_method_upstream = {
+        schema.STATS_SR_METHOD_PIXEL_FIT: upstream.SRMethod.PixelFit,
+        schema.STATS_SR_METHOD_PIXEL_MAX: upstream.SRMethod.PixelMax,
+    }[sr_method]
+    fwhm_summary_upstream = {
+        schema.STATS_FWHM_SUMMARY_GEOM: upstream.FWHMSummary.GeoM,
+        schema.STATS_FWHM_SUMMARY_MEAN: upstream.FWHMSummary.Mean,
+        schema.STATS_FWHM_SUMMARY_MAX: upstream.FWHMSummary.Max,
+        schema.STATS_FWHM_SUMMARY_MIN: upstream.FWHMSummary.Min,
+    }[fwhm_summary]
+
+    sr_expected, fwhm_expected, ee_expected = upstream._compute_psf_stats(
+        None,
+        psfs,
+        4.0,
+        1.65e-6,
+        8.0,
+        meta[schema.KEY_META_TEL_PUPIL],
+        method=upstream.StatsMethod.AOPredict,
+        sr_method=sr_method_upstream,
+        ee_apertures_mas=setup[schema.KEY_SETUP_EE_APERTURES_MAS],
+        fwhm_summary=fwhm_summary_upstream,
+    )
+
+    np.testing.assert_allclose(sr, np.asarray(sr_expected, dtype=np.float32), rtol=1e-5, atol=1e-6)
+    np.testing.assert_allclose(ee, np.asarray(ee_expected, dtype=np.float32), rtol=1e-5, atol=1e-6)
+    np.testing.assert_allclose(fwhm, np.asarray(fwhm_expected, dtype=np.float32), rtol=1e-5, atol=1e-6)
 
 
 def test_store_create_and_row_writes(tmp_path):
@@ -1249,6 +1485,27 @@ def test_store_write_success_clears_optional_outputs_on_rerun(tmp_path):
         )
         assert np.all(np.isfinite(f[f"{schema.KEY_STATS_SECTION}/{schema.KEY_STATS_FWHM_MAS}"][0]))
         assert np.all(np.isfinite(f[f"{schema.KEY_PSFS_SECTION}/{schema.KEY_PSFS_DATA}"][0]))
+
+
+def test_store_write_success_accepts_nan_fwhm(tmp_path):
+    data_path = tmp_path / "sim_data_nan_fwhm.h5"
+    store = SimulationStore(data_path)
+    store.create(_simulation(), _setup(), _options(), save_psfs=True)
+
+    result = _success_result()
+    result.stats[schema.KEY_STATS_FWHM_MAS][:] = np.nan
+    store.write_simulation_success(0, result)
+
+    with h5py.File(data_path, "r") as f:
+        np.testing.assert_allclose(
+            f[f"{schema.KEY_STATS_SECTION}/{schema.KEY_STATS_SR}"][0],
+            result.stats[schema.KEY_STATS_SR],
+        )
+        np.testing.assert_allclose(
+            f[f"{schema.KEY_STATS_SECTION}/{schema.KEY_STATS_EE}"][0],
+            result.stats[schema.KEY_STATS_EE],
+        )
+        assert np.all(np.isnan(f[f"{schema.KEY_STATS_SECTION}/{schema.KEY_STATS_FWHM_MAS}"][0]))
 
 
 def test_store_write_success_rejects_psf_science_dimension_mismatch(tmp_path):

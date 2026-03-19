@@ -22,6 +22,8 @@ Simulation payload note:
 
 Stats note:
 - Core stats under `/stats` are `sr`, `ee`, and `fwhm_mas`.
+- Successful runs may persist `fwhm_mas = NaN` when contour-based FWHM cannot be
+  recovered; `sr` and `ee` remain finite for successful results.
 - Dataset-level stats selectors live under `/setup` as `sr_method` and `fwhm_summary`.
 - Core metadata under `/meta` mixes one per-simulation field and invariant telescope fields:
   - `/meta/pixel_scale_mas` is `[N]`

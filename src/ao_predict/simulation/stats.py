@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from typing import Any, TypeAlias
 import warnings
 
+import contourpy
 import numpy as np
 from scipy.interpolate import interp1d
 from scipy.ndimage import shift
@@ -442,14 +443,82 @@ def _compute_ensquared_energy(
 
 # FWHM helpers
 
+def _find_contours(psf: np.ndarray, level: float) -> list[np.ndarray]:
+    """Return contour vertices in `[N, 2]` arrays with `(x, y)` columns."""
+    generator = contourpy.contour_generator(z=np.asarray(psf, dtype=float))
+    return [np.asarray(line, dtype=float) for line in generator.lines(float(level))]
+
 def _measure_contour_fwhms(psfs: np.ndarray, pixel_scale_mas: float) -> tuple[np.ndarray, np.ndarray]:
-    """Return placeholder contour-derived minimum and maximum FWHM vectors."""
-    del pixel_scale_mas
-    num_sci = int(psfs.shape[0])
-    return (
-        np.zeros((num_sci,), dtype=np.float32),
-        np.zeros((num_sci,), dtype=np.float32),
-    )
+    """Measure AO Predict contour-derived minimum and maximum FWHM vectors."""
+    psfs = np.asarray(psfs, dtype=np.float32)
+    num_sci, ny, nx = psfs.shape
+    fwhm_min = np.full((num_sci,), np.nan, dtype=np.float32)
+    fwhm_max = np.full((num_sci,), np.nan, dtype=np.float32)
+    edge_eps = 1e-6
+
+    for i, psf in enumerate(psfs):
+        # Non-finite PSFs do not define a usable half-max contour.
+        if not np.all(np.isfinite(psf)):
+            continue
+
+        max_val = float(np.max(psf))
+        min_val = float(np.min(psf))
+        half_max = 0.5 * max_val
+        # Non-positive peaks have no scientifically meaningful FWHM threshold.
+        if max_val <= 0.0:
+            continue
+        # If the image never drops below half max, no contour crossing exists.
+        if min_val >= half_max:
+            continue
+
+        contours = _find_contours(psf, half_max)
+        # No extracted contour means the half-max geometry is unrecoverable.
+        if not contours:
+            continue
+        contour_points = max(contours, key=len)
+        # At least three vertices are required to define a 2D contour shape.
+        if len(contour_points) < 3:
+            continue
+
+        x_coords = contour_points[:, 0]
+        y_coords = contour_points[:, 1]
+        # Edge-touching contours are treated as truncated and therefore invalid.
+        if x_coords.min() <= edge_eps or x_coords.max() >= (nx - 1) - edge_eps:
+            continue
+        if y_coords.min() <= edge_eps or y_coords.max() >= (ny - 1) - edge_eps:
+            continue
+
+        x_span = x_coords.max() - x_coords.min()
+        y_span = y_coords.max() - y_coords.min()
+        # Collapsed spans indicate degenerate contour geometry on the native grid.
+        if x_span <= edge_eps or y_span <= edge_eps:
+            continue
+        rounded_points = np.round(contour_points, decimals=6)
+        # Too few distinct vertices after rounding means the contour is numerically degenerate.
+        if np.unique(rounded_points, axis=0).shape[0] < 3:
+            continue
+
+        contour_center = 0.5 * np.array(
+            [
+                x_coords.max() + x_coords.min(),
+                y_coords.max() + y_coords.min(),
+            ],
+            dtype=float,
+        )
+        radial_distances = np.hypot(
+            x_coords - contour_center[0],
+            y_coords - contour_center[1],
+        ) * pixel_scale_mas
+        radial_max = float(radial_distances.max())
+        radial_min = float(radial_distances.min())
+        # Non-positive radial widths indicate collapsed contour-derived FWHM.
+        if radial_max <= 0.0 or radial_min <= 0.0:
+            continue
+
+        fwhm_max[i] = np.float32(2.0 * radial_max)
+        fwhm_min[i] = np.float32(2.0 * radial_min)
+
+    return fwhm_min, fwhm_max
 
 
 def _compute_fwhm_summary(fwhm_summary: str, fwhm_min: np.ndarray, fwhm_max: np.ndarray) -> np.ndarray:

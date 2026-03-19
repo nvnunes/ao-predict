@@ -357,15 +357,15 @@ def validate_successful_result(
             "result.stats must include sr, ee, and fwhm_mas for successful results."
         )
 
-    for key in (
-        schema.KEY_STATS_SR,
-        schema.KEY_STATS_FWHM_MAS,
-    ):
-        value = np.asarray(result.stats[key], dtype=np.float32)
-        if value.shape != (int(num_sci),):
-            raise ValueError(f"result.{key} must have shape ({int(num_sci)},), got {value.shape}")
-        if not np.all(np.isfinite(value)):
-            raise ValueError(f"result.{key} must contain only finite values.")
+    sr = np.asarray(result.stats[schema.KEY_STATS_SR], dtype=np.float32)
+    if sr.shape != (int(num_sci),):
+        raise ValueError(f"result.{schema.KEY_STATS_SR} must have shape ({int(num_sci)},), got {sr.shape}")
+    if not np.all(np.isfinite(sr)):
+        raise ValueError(f"result.{schema.KEY_STATS_SR} must contain only finite values.")
+
+    fwhm = np.asarray(result.stats[schema.KEY_STATS_FWHM_MAS], dtype=np.float32)
+    if fwhm.shape != (int(num_sci),):
+        raise ValueError(f"result.{schema.KEY_STATS_FWHM_MAS} must have shape ({int(num_sci)},), got {fwhm.shape}")
 
     ee = np.asarray(result.stats[schema.KEY_STATS_EE], dtype=np.float32)
 
