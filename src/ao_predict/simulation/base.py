@@ -10,7 +10,7 @@ import numpy as np
 
 from . import schema
 from . import atm
-from .helpers import _MISSING, get_num_sci, select_mapping_value
+from .helpers import _MISSING, clip_psf_non_negative, get_num_sci, normalize_psf_pixel_sum, select_mapping_value
 from .interfaces import Simulation, SimulationContext, SimulationResult, SimulationSetup, SimulationState
 from ..utils import as_array_dict, as_float_vector
 
@@ -555,3 +555,27 @@ class BaseSimulation(Simulation, ABC):
                 schema.KEY_META_TEL_PUPIL: psf_parameters.tel_pupil,
             },
         )
+
+    def prepare_psfs_for_stats(
+        self,
+        psfs: np.ndarray,
+        setup: Mapping[str, Any] | SimulationSetup,
+        meta: Mapping[str, Any],
+    ) -> np.ndarray:
+        """Apply the default shared PSF preprocessing path for core stats.
+
+        The base implementation keeps preprocessing limited to the shared
+        non-negative clipping and pixel-sum normalization stages. Subclasses
+        may override this hook when they need simulation-specific stats
+        preprocessing.
+
+        Args:
+            psfs: Validated PSF cube with shape ``[M, Ny, Nx]``.
+            setup: Bound setup payload used for stats computation.
+            meta: Per-simulation PSF metadata mapping.
+
+        Returns:
+            Preprocessed PSF cube ready for the core stats stages.
+        """
+        del setup, meta
+        return normalize_psf_pixel_sum(clip_psf_non_negative(psfs))

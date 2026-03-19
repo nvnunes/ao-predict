@@ -305,6 +305,29 @@ class Simulation(ABC):
             context: Runtime context for one simulation.
         """
 
+    @abstractmethod
+    def prepare_psfs_for_stats(
+        self,
+        psfs: np.ndarray,
+        setup: Mapping[str, Any] | SimulationSetup,
+        meta: Mapping[str, Any],
+    ) -> np.ndarray:
+        """Prepare PSFs for core stats computation.
+
+        This hook owns simulation-specific PSF preprocessing used by the core
+        stats pipeline. Implementations may apply alternate normalization,
+        centering, or compatibility preprocessing, but they must return a PSF
+        cube with the same ``[M, Ny, Nx]`` shape as the input.
+
+        Args:
+            psfs: Validated PSF cube with shape ``[M, Ny, Nx]``.
+            setup: Bound setup payload used for stats computation.
+            meta: Per-simulation PSF metadata mapping.
+
+        Returns:
+            Preprocessed PSF cube ready for core Strehl, EE, and FWHM stages.
+        """
+
     def build_extra_stats(self, context: SimulationContext) -> Mapping[str, Any]:
         """Build declared simulation-specific extra stats for one completed result.
 

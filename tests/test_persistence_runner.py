@@ -7,6 +7,7 @@ import numpy as np
 import pytest
 
 from ao_predict.persistence import SimulationStore
+from ao_predict.simulation.helpers import normalize_psf_pixel_sum
 from ao_predict.simulation import (
     Simulation,
     SimulationContext,
@@ -17,6 +18,7 @@ from ao_predict.simulation import (
 )
 from ao_predict.simulation.runner import _populate_result_stats
 from ao_predict.simulation.runner import create_simulation_from_config, run_pending_simulations
+import ao_predict.simulation.stats as stats_module
 from ao_predict.simulation.stats import compute_psf_stats
 from ao_predict.simulation.validation import validate_successful_result
 from helpers import run_pending_with_callback
@@ -181,6 +183,10 @@ class _ExtraStatsSimulation(Simulation):
         del context
         raise NotImplementedError
 
+    def prepare_psfs_for_stats(self, psfs, setup, meta):
+        del setup, meta
+        return np.asarray(psfs, dtype=np.float32)
+
     def build_extra_stats(self, context: SimulationContext):
         del context
         return dict(self._extra_stats)
@@ -287,6 +293,7 @@ def test_compute_psf_stats_rejects_missing_ee_apertures():
     ):
         compute_psf_stats(
             np.zeros((3, 4, 4), dtype=np.float32),
+            _ExtraStatsSimulation({}),
             {},
             {schema.KEY_META_PIXEL_SCALE_MAS: 4.0},
         )
@@ -299,6 +306,7 @@ def test_compute_psf_stats_rejects_missing_sr_method():
     ):
         compute_psf_stats(
             np.zeros((3, 4, 4), dtype=np.float32),
+            _ExtraStatsSimulation({}),
             {
                 schema.KEY_SETUP_EE_APERTURES_MAS: np.array([50.0], dtype=float),
                 schema.KEY_SETUP_FWHM_SUMMARY: schema.DEFAULT_SETUP_FWHM_SUMMARY,
@@ -314,12 +322,173 @@ def test_compute_psf_stats_rejects_missing_fwhm_summary():
     ):
         compute_psf_stats(
             np.zeros((3, 4, 4), dtype=np.float32),
+            _ExtraStatsSimulation({}),
             {
                 schema.KEY_SETUP_EE_APERTURES_MAS: np.array([50.0], dtype=float),
                 schema.KEY_SETUP_SR_METHOD: schema.DEFAULT_SETUP_SR_METHOD,
             },
             {schema.KEY_META_PIXEL_SCALE_MAS: 4.0},
         )
+
+
+def test_compute_psf_stats_dispatches_selected_strehl_method(monkeypatch):
+    calls: list[str] = []
+
+    def _pixel_fit(psfs, pixel_scale_mas):
+        del pixel_scale_mas
+        calls.append(schema.STATS_SR_METHOD_PIXEL_FIT)
+        return (
+            np.zeros((psfs.shape[0],), dtype=np.float32),
+            np.zeros((psfs.shape[0], 2), dtype=np.float32),
+        )
+
+    def _pixel_max(psfs, pixel_scale_mas):
+        del pixel_scale_mas
+        calls.append(schema.STATS_SR_METHOD_PIXEL_MAX)
+        return (
+            np.zeros((psfs.shape[0],), dtype=np.float32),
+            np.zeros((psfs.shape[0], 2), dtype=np.float32),
+        )
+
+    monkeypatch.setattr(stats_module, "_compute_strehl_pixel_fit", _pixel_fit)
+    monkeypatch.setattr(stats_module, "_compute_strehl_pixel_max", _pixel_max)
+
+    compute_psf_stats(
+        np.zeros((3, 4, 4), dtype=np.float32),
+        _ExtraStatsSimulation({}),
+        {
+            **_setup(),
+            schema.KEY_SETUP_SR_METHOD: schema.STATS_SR_METHOD_PIXEL_MAX,
+        },
+        {schema.KEY_META_PIXEL_SCALE_MAS: 4.0},
+    )
+
+    assert calls == [schema.STATS_SR_METHOD_PIXEL_MAX]
+    calls.clear()
+
+    compute_psf_stats(
+        np.zeros((2, 4, 4), dtype=np.float32),
+        _ExtraStatsSimulation({}),
+        {
+            **_setup(),
+            schema.KEY_SETUP_SR_METHOD: schema.STATS_SR_METHOD_PIXEL_FIT,
+        },
+        {schema.KEY_META_PIXEL_SCALE_MAS: 4.0},
+    )
+
+    assert calls == [schema.STATS_SR_METHOD_PIXEL_FIT]
+
+
+def test_compute_psf_stats_reuses_fit_peak_locations_for_ee(monkeypatch):
+    ee_peak_locations: list[np.ndarray | None] = []
+
+    def _pixel_fit(psfs, pixel_scale_mas):
+        del pixel_scale_mas
+        return (
+            np.zeros((psfs.shape[0],), dtype=np.float32),
+            np.full((psfs.shape[0], 2), 1.5, dtype=np.float32),
+        )
+
+    def _pixel_max(psfs, pixel_scale_mas):
+        del pixel_scale_mas
+        return (
+            np.zeros((psfs.shape[0],), dtype=np.float32),
+            np.full((psfs.shape[0], 2), 2.5, dtype=np.float32),
+        )
+
+    def _ee(psfs, ee_apertures_mas, pixel_scale_mas, peak_locations_xy=None):
+        del pixel_scale_mas
+        ee_peak_locations.append(None if peak_locations_xy is None else np.asarray(peak_locations_xy, dtype=np.float32))
+        return np.zeros((psfs.shape[0], ee_apertures_mas.shape[0]), dtype=np.float32)
+
+    monkeypatch.setattr(stats_module, "_compute_strehl_pixel_fit", _pixel_fit)
+    monkeypatch.setattr(stats_module, "_compute_strehl_pixel_max", _pixel_max)
+    monkeypatch.setattr(stats_module, "_compute_ensquared_energy", _ee)
+
+    compute_psf_stats(
+        np.zeros((2, 4, 4), dtype=np.float32),
+        _ExtraStatsSimulation({}),
+        {
+            **_setup(),
+            schema.KEY_SETUP_SR_METHOD: schema.STATS_SR_METHOD_PIXEL_FIT,
+        },
+        {schema.KEY_META_PIXEL_SCALE_MAS: 4.0},
+    )
+
+    assert len(ee_peak_locations) == 1
+    np.testing.assert_allclose(ee_peak_locations[0], np.full((2, 2), 1.5, dtype=np.float32))
+    ee_peak_locations.clear()
+
+    compute_psf_stats(
+        np.zeros((2, 4, 4), dtype=np.float32),
+        _ExtraStatsSimulation({}),
+        {
+            **_setup(),
+            schema.KEY_SETUP_SR_METHOD: schema.STATS_SR_METHOD_PIXEL_MAX,
+        },
+        {schema.KEY_META_PIXEL_SCALE_MAS: 4.0},
+    )
+
+    assert len(ee_peak_locations) == 1
+    np.testing.assert_allclose(ee_peak_locations[0], np.full((2, 2), 2.5, dtype=np.float32))
+
+
+def test_compute_psf_stats_selects_requested_fwhm_summary(monkeypatch):
+    requested: list[str] = []
+    select_impl = stats_module._compute_fwhm_summary
+
+    def _measure(psfs, pixel_scale_mas):
+        del pixel_scale_mas
+        return (
+            np.full((psfs.shape[0],), 4.0, dtype=np.float32),
+            np.full((psfs.shape[0],), 3.0, dtype=np.float32),
+        )
+
+    def _select(fwhm_summary, fwhm_min, fwhm_max):
+        requested.append(fwhm_summary)
+        return select_impl(fwhm_summary, fwhm_min, fwhm_max)
+
+    monkeypatch.setattr(stats_module, "_measure_contour_fwhms", _measure)
+    monkeypatch.setattr(stats_module, "_compute_fwhm_summary", _select)
+
+    _sr, _ee, fwhm = compute_psf_stats(
+        np.zeros((2, 4, 4), dtype=np.float32),
+        _ExtraStatsSimulation({}),
+        {
+            **_setup(),
+            schema.KEY_SETUP_FWHM_SUMMARY: schema.STATS_FWHM_SUMMARY_MAX,
+        },
+        {schema.KEY_META_PIXEL_SCALE_MAS: 4.0},
+    )
+
+    assert requested == [schema.STATS_FWHM_SUMMARY_MAX]
+    np.testing.assert_allclose(fwhm, np.full((2,), 3.0, dtype=np.float32))
+
+
+def test_compute_psf_stats_uses_simulation_psf_preprocessing_hook(monkeypatch):
+    observed_psfs: list[np.ndarray] = []
+
+    class _PreprocessSimulation(_ExtraStatsSimulation):
+        def prepare_psfs_for_stats(self, psfs, setup, meta):
+            del setup, meta
+            return np.asarray(psfs, dtype=np.float32) + 2.0
+
+    def _compute_strehl(psfs, sr_method, pixel_scale_mas):
+        del sr_method, pixel_scale_mas
+        observed_psfs.append(np.asarray(psfs, dtype=np.float32))
+        return np.zeros((psfs.shape[0],), dtype=np.float32), np.zeros((psfs.shape[0], 2), dtype=np.float32)
+
+    monkeypatch.setattr(stats_module, "_compute_strehl", _compute_strehl)
+
+    compute_psf_stats(
+        np.zeros((2, 4, 4), dtype=np.float32),
+        _PreprocessSimulation({}),
+        _setup(),
+        {schema.KEY_META_PIXEL_SCALE_MAS: 4.0},
+    )
+
+    assert len(observed_psfs) == 1
+    np.testing.assert_allclose(observed_psfs[0], np.full((2, 4, 4), 2.0, dtype=np.float32))
 
 
 def test_store_create_and_row_writes(tmp_path):
@@ -536,6 +705,10 @@ def test_runner_with_simulation_interface(tmp_path):
         def finalize(self, context: SimulationContext) -> None:
             context.result = _success_result(ny=2, nx=2, populate_stats=False, extra_stats=None)
 
+        def prepare_psfs_for_stats(self, psfs, setup, meta):
+            del setup, meta
+            return normalize_psf_pixel_sum(np.asarray(psfs, dtype=np.float32))
+
     sim = TiptopSimulation()
     simulation_payload = store.read_simulation()
     sim.load_simulation_payload(simulation_payload)
@@ -616,6 +789,10 @@ def test_runner_with_simulation_interface_filtered_indexes(tmp_path):
 
         def finalize(self, context: SimulationContext) -> None:
             context.result = _success_result(ny=2, nx=2, populate_stats=False, extra_stats=None)
+
+        def prepare_psfs_for_stats(self, psfs, setup, meta):
+            del setup, meta
+            return normalize_psf_pixel_sum(np.asarray(psfs, dtype=np.float32))
 
     sim = TiptopSimulation()
     sim.load_simulation_payload(store.read_simulation())
@@ -703,6 +880,10 @@ def test_runner_persists_declared_extra_stats(tmp_path):
         def build_extra_stats(self, context: SimulationContext):
             del context
             return {"halo_mas": np.full((3,), 7.0, dtype=np.float32)}
+
+        def prepare_psfs_for_stats(self, psfs, setup, meta):
+            del setup, meta
+            return normalize_psf_pixel_sum(np.asarray(psfs, dtype=np.float32))
 
     sim = TiptopSimulation()
     sim.load_simulation_payload(store.read_simulation())

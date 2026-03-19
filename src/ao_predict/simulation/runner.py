@@ -319,6 +319,7 @@ def _populate_result_stats(simulation: Simulation, context: Any) -> None:
 
     sr, ee, fwhm_mas = compute_psf_stats(
         context.result.psfs,
+        simulation,
         context.setup,
         context.result.meta,
     )

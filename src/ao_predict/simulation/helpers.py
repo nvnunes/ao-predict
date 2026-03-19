@@ -84,6 +84,24 @@ def get_fwhm_summary(setup: Mapping[str, Any] | SimulationSetup) -> str:
     return value
 
 
+# Stats preprocessing helpers
+
+
+def clip_psf_non_negative(psfs: np.ndarray) -> np.ndarray:
+    """Return PSFs after applying the shared non-negative clipping stage."""
+    return np.maximum(psfs, 0.0)
+
+
+def normalize_psf_pixel_sum(psfs: np.ndarray) -> np.ndarray:
+    """Return PSFs normalized by per-PSF pixel sum when that sum is positive."""
+    psf_cube = psfs.copy()
+    denom = np.sum(psf_cube, axis=(-2, -1), dtype=np.float32)
+    positive = denom > 0.0
+    if np.any(positive):
+        psf_cube[positive] /= denom[positive, np.newaxis, np.newaxis]
+    return psf_cube
+
+
 # Atmosphere helpers
 
 def r0_to_seeing_arcsec(r0_m: float, wavelength_m: float) -> float:

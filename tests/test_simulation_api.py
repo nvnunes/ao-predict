@@ -8,6 +8,7 @@ import numpy as np
 import pytest
 
 import ao_predict.simulation.api as sim_api
+from ao_predict.simulation.helpers import normalize_psf_pixel_sum
 from ao_predict.simulation import (
     Simulation,
     SimulationContext,
@@ -150,6 +151,10 @@ class FakeSimulation(Simulation):
 
     def finalize(self, context: SimulationContext) -> None:
         context.result = _success_result(with_stats=False)
+
+    def prepare_psfs_for_stats(self, psfs, setup, meta):
+        del setup, meta
+        return normalize_psf_pixel_sum(np.asarray(psfs, dtype=np.float32))
 
 
 def test_api_init_and_check(tmp_path: Path):
