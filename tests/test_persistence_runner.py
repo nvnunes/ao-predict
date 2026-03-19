@@ -619,6 +619,76 @@ def test_compute_strehl_pixel_fit_matches_diffraction_limited_peak():
     np.testing.assert_allclose(peak_locations_yx, np.array([[psf_dl.shape[0] / 2.0 - 0.5, psf_dl.shape[1] / 2.0 - 0.5]], dtype=np.float32), atol=0.1)
 
 
+def test_compute_ensquared_energy_uses_integer_peak_locations():
+    psf = np.zeros((1, 5, 5), dtype=np.float32)
+    psf[0, 2, 2] = 1.0
+
+    ee = stats_module._compute_ensquared_energy(
+        psf,
+        np.array([2.0, 6.0], dtype=float),
+        2.0,
+        np.array([[2, 2]], dtype=np.int64),
+    )
+
+    np.testing.assert_allclose(ee, np.array([[1.0, 1.0]], dtype=np.float32), atol=1e-6)
+
+
+def test_compute_ensquared_energy_shifts_subpixel_peak_locations():
+    psf = np.zeros((1, 5, 5), dtype=np.float32)
+    psf[0, 2, 2] = 0.25
+    psf[0, 2, 3] = 0.25
+    psf[0, 3, 2] = 0.25
+    psf[0, 3, 3] = 0.25
+
+    ee_subpixel = stats_module._compute_ensquared_energy(
+        psf,
+        np.array([2.0], dtype=float),
+        2.0,
+        np.array([[2.5, 2.5]], dtype=np.float32),
+    )
+    ee_argmax = stats_module._compute_ensquared_energy(
+        psf,
+        np.array([2.0], dtype=float),
+        2.0,
+        None,
+    )
+
+    assert np.all(np.isfinite(ee_subpixel))
+    assert ee_subpixel.shape == (1, 1)
+    assert float(ee_subpixel[0, 0]) >= float(ee_argmax[0, 0])
+
+
+def test_compute_ensquared_energy_single_aperture_returns_matrix():
+    psf = np.zeros((2, 5, 5), dtype=np.float32)
+    psf[:, 2, 2] = 1.0
+
+    ee = stats_module._compute_ensquared_energy(
+        psf,
+        np.array([2.0], dtype=float),
+        2.0,
+        np.array([[2, 2], [2, 2]], dtype=np.int64),
+    )
+
+    assert ee.shape == (2, 1)
+    np.testing.assert_allclose(ee, np.array([[1.0], [1.0]], dtype=np.float32), atol=1e-6)
+
+
+def test_measure_peak_centered_ee_curves_limits_radius_to_requested_aperture():
+    psf = np.zeros((1, 21, 21), dtype=np.float32)
+    psf[0, 10, 10] = 1.0
+
+    curves = stats_module._measure_peak_centered_ee_curves(
+        psf,
+        np.array([10], dtype=np.int64),
+        np.array([10], dtype=np.int64),
+        max_ee_radius_mas=3.0,
+        pixel_scale_mas=1.0,
+        extra_box_radii=2,
+    )
+
+    assert curves.shape == (1, 4)
+
+
 def test_store_create_and_row_writes(tmp_path):
     data_path = tmp_path / "sim_data.h5"
     store = SimulationStore(data_path)

@@ -7,6 +7,8 @@ from typing import Any, TypeAlias
 import warnings
 
 import numpy as np
+from scipy.interpolate import interp1d
+from scipy.ndimage import shift
 from scipy.optimize import curve_fit
 from scipy.optimize import OptimizeWarning
 
@@ -100,7 +102,6 @@ def _prepare_stats_inputs(
 
 
 # Strehl helpers
-
 
 def _axis_indices_and_coords(length: int, nbox: int) -> tuple[np.ndarray, np.ndarray]:
     """Return centered patch indices and coordinates for one PSF axis."""
@@ -218,7 +219,7 @@ def _get_diffraction_limited_psf(
 ) -> np.ndarray:
     """Compute the AO Predict diffraction-limited PSF from the pupil."""
     wavelength_m = float(wavelength_um) * 1e-6
-    pixel_scale_rad = float(pixel_scale_mas) / 1000.0 / 3600.0 / 180.0 * np.pi
+    pixel_scale_rad = pixel_scale_mas / 1000.0 / 3600.0 / 180.0 * np.pi
     sampling = wavelength_m / float(tel_diameter_m) / pixel_scale_rad
 
     pupil = np.abs(np.asarray(tel_pupil, dtype=float))
@@ -317,16 +318,129 @@ def _compute_strehl(
     raise ValueError(f"Unsupported Strehl method: {sr_method}")
 
 
+# Ensquared Energy helpers
+
+def _anchor_psfs_for_ee(
+    psfs: np.ndarray,
+    peak_locations_yx: np.ndarray | None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Return PSFs plus integer peak anchors for AO Predict EE."""
+    psfs = np.asarray(psfs, dtype=np.float32)
+    num_sci, ny, nx = psfs.shape
+
+    if peak_locations_yx is not None:
+        peak_locations_yx = np.asarray(peak_locations_yx)
+        if np.issubdtype(peak_locations_yx.dtype, np.integer):
+            peak_y = peak_locations_yx[:, 0].astype(np.int64, copy=False)
+            peak_x = peak_locations_yx[:, 1].astype(np.int64, copy=False)
+        elif np.issubdtype(peak_locations_yx.dtype, np.floating):
+            eps = 1e-12
+            anchor_yx = np.floor(peak_locations_yx + 0.5 - eps).astype(np.int64)
+            shift_yx = anchor_yx - peak_locations_yx
+            shifted_psfs = np.empty_like(psfs)
+            for i in range(num_sci):
+                shifted_psfs[i] = shift(
+                    psfs[i],
+                    shift=tuple(shift_yx[i]),
+                    order=3,
+                    mode="constant",
+                    cval=0.0,
+                    prefilter=True,
+                )
+            psfs = np.clip(shifted_psfs, 0.0, None)
+            peak_y = anchor_yx[:, 0]
+            peak_x = anchor_yx[:, 1]
+        else:
+            raise TypeError("peak_locations_yx must have an integer or floating dtype")
+    else:
+        peak_idx = np.argmax(psfs.reshape(num_sci, -1), axis=1)
+        peak_y, peak_x = np.divmod(peak_idx, nx)
+
+    return psfs, peak_y, peak_x
+
+
+def _measure_peak_centered_ee_curves(
+    psfs: np.ndarray,
+    peak_y: np.ndarray,
+    peak_x: np.ndarray,
+    max_ee_radius_mas: float,
+    pixel_scale_mas: float,
+    *,
+    extra_box_radii: int = 3,
+) -> np.ndarray:
+    """Measure cumulative odd-sized square-box EE curves about integer anchors."""
+    num_sci, ny, nx = psfs.shape
+    integral = np.pad(
+        psfs.cumsum(axis=1).cumsum(axis=2),
+        ((0, 0), (1, 0), (1, 0)),
+        mode="constant",
+    )
+
+    def _rect_sum(idx: np.ndarray, y0: np.ndarray, y1: np.ndarray, x0: np.ndarray, x1: np.ndarray) -> np.ndarray:
+        return (
+            integral[idx, y1, x1]
+            - integral[idx, y0, x1]
+            - integral[idx, y1, x0]
+            + integral[idx, y0, x0]
+        )
+
+    edge_limited_radius = int(np.min(np.stack([peak_y, ny - 1 - peak_y, peak_x, nx - 1 - peak_x])))
+    required_radius = int(np.ceil((max_ee_radius_mas / pixel_scale_mas - 1.0) * 0.5))
+    max_radius = min(edge_limited_radius, max(0, required_radius) + int(extra_box_radii))
+    radii = np.arange(max_radius + 1, dtype=np.int64)
+    ee_curves = np.zeros((num_sci, radii.size), dtype=psfs.dtype)
+    idx = np.arange(num_sci, dtype=np.int64)
+
+    for j, radius in enumerate(radii):
+        y0 = peak_y - radius
+        y1 = peak_y + radius + 1
+        x0 = peak_x - radius
+        x1 = peak_x + radius + 1
+        ee_curves[:, j] = _rect_sum(idx, y0, y1, x0, x1)
+    return ee_curves
+
+
+def _interpolate_ee_at_radii(
+    ee_curves: np.ndarray,
+    pixel_scale_mas: float,
+    ee_radii: np.ndarray,
+) -> np.ndarray:
+    """Interpolate cumulative EE curves onto requested physical half-widths."""
+    rr = np.arange(1, ee_curves.shape[1] * 2, 2, dtype=float) * pixel_scale_mas * 0.5
+    ee_at_radius = np.empty((ee_curves.shape[0], ee_radii.size), dtype=float)
+    for i, values in enumerate(ee_curves):
+        if rr.size == 1:
+            interpolated = np.full(ee_radii.shape, float(values[0]), dtype=float)
+        else:
+            interp_kind = "cubic" if rr.size >= 4 else "linear"
+            interpolated = interp1d(rr, values, kind=interp_kind, bounds_error=False, fill_value="extrapolate")(ee_radii)
+        ee_at_radius[i, :] = np.clip(interpolated, 0.0, 1.0)
+    return ee_at_radius
+
+
 def _compute_ensquared_energy(
     psfs: np.ndarray,
     ee_apertures_mas: np.ndarray,
     pixel_scale_mas: float,
-    peak_locations_xy: np.ndarray,
+    peak_locations_yx: np.ndarray | None
 ) -> np.ndarray:
-    """Return placeholder EE values with the correct `[M, A]` shape."""
-    del pixel_scale_mas, peak_locations_xy
-    return np.zeros((int(psfs.shape[0]), int(ee_apertures_mas.shape[0])), dtype=np.float32)
+    """Compute AO Predict EE using peak-centered odd-sized square apertures."""
+    ee_apertures_mas = np.asarray(ee_apertures_mas, dtype=float)
+    ee_radii = ee_apertures_mas / 2.0
 
+    psfs, peak_y, peak_x = _anchor_psfs_for_ee(psfs, peak_locations_yx)
+    ee_curves = _measure_peak_centered_ee_curves(
+        psfs,
+        peak_y,
+        peak_x,
+        ee_radii.max(),
+        pixel_scale_mas,
+    )
+    ee_at_radius = _interpolate_ee_at_radii(ee_curves, pixel_scale_mas, ee_radii)
+    return np.asarray(ee_at_radius, dtype=np.float32)
+
+
+# FWHM helpers
 
 def _measure_contour_fwhms(psfs: np.ndarray, pixel_scale_mas: float) -> tuple[np.ndarray, np.ndarray]:
     """Return placeholder contour-derived minimum and maximum FWHM vectors."""
