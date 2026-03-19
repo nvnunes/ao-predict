@@ -57,10 +57,16 @@ class SetupConfig:
 
     Attributes:
         ee_apertures_mas: Core EE aperture list (mas).
+        sr_method: Optional dataset-level Strehl selector. Defaults to
+            ``pixel_fit`` when omitted.
+        fwhm_summary: Optional dataset-level FWHM contour summary selector.
+            Defaults to ``geom`` when omitted.
         specific_fields: Additional simulation-specific passthrough fields.
     """
 
     ee_apertures_mas: list[float]
+    sr_method: str | None = None
+    fwhm_summary: str | None = None
     specific_fields: dict[str, object] = field(default_factory=dict)
 
 

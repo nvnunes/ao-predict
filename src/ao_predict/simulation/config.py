@@ -496,6 +496,14 @@ def normalize_setup_config(setup: object) -> dict[str, object]:
         out: dict[str, object] = {
             schema.KEY_SETUP_EE_APERTURES_MAS: getattr(setup, schema.KEY_SETUP_EE_APERTURES_MAS)
         }
+        if hasattr(setup, schema.KEY_SETUP_SR_METHOD):
+            sr_method = getattr(setup, schema.KEY_SETUP_SR_METHOD)
+            if sr_method is not None:
+                out[schema.KEY_SETUP_SR_METHOD] = sr_method
+        if hasattr(setup, schema.KEY_SETUP_FWHM_SUMMARY):
+            fwhm_summary = getattr(setup, schema.KEY_SETUP_FWHM_SUMMARY)
+            if fwhm_summary is not None:
+                out[schema.KEY_SETUP_FWHM_SUMMARY] = fwhm_summary
         sim_fields = getattr(setup, schema.KEY_CFG_SETUP_SPECIFIC_FIELDS, {})
         if isinstance(sim_fields, Mapping):
             require_lowercase_mapping_keys(

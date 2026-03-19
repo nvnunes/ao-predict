@@ -199,8 +199,12 @@ Top-level groups:
 Stats layout:
 - `/stats/sr`: core `[N, M]`
 - `/stats/ee`: core `[N, M, A]`
-- `/stats/fwhm_mas`: core `[N, M]`
+- `/stats/fwhm_mas`: core `[N, M]`, selected by `/setup/fwhm_summary`
 - Additional `/stats/*` datasets may appear when declared by the simulation in `/simulation/extra_stat_names`; each extra stat dataset is `[N, M]`.
+
+Setup-level stats selectors:
+- `/setup/sr_method`: dataset-level Strehl selector, `pixel_fit` or `pixel_max`
+- `/setup/fwhm_summary`: dataset-level contour-summary selector, `geom`, `mean`, `max`, or `min`
 
 Core state dataset:
 - `/status/state`: `uint8[N]`

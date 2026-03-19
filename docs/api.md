@@ -22,6 +22,7 @@ Simulation payload note:
 
 Stats note:
 - Core stats under `/stats` are `sr`, `ee`, and `fwhm_mas`.
+- Dataset-level stats selectors live under `/setup` as `sr_method` and `fwhm_summary`.
 - Simulations may also declare extra 2D stats with shape `[N, M]`.
 - The declared extra stat registry is persisted in `/simulation/extra_stat_names`.
 - During execution, successful simulations expose PSFs and metadata in `finalize(...)` and leave `result.stats` empty.
@@ -72,9 +73,11 @@ For `TiptopSimulation`, provide `specific_fields["config_path"]` and optionally
 
 ### `SetupConfig`
 - `ee_apertures_mas: list[float]`
+- `sr_method: str | None = None`
+- `fwhm_summary: str | None = None`
 - `specific_fields: dict[str, object] = {}`
 
-Core typed setup field is `ee_apertures_mas`. All other setup fields can be passed in `specific_fields`.
+Core typed setup fields are `ee_apertures_mas`, `sr_method`, and `fwhm_summary`. All other setup fields can be passed in `specific_fields`.
 For `TiptopSimulation`, include `specific_fields["ngs_mag_zeropoint"]`.
 
 ### `OptionsConfig`
@@ -127,6 +130,7 @@ Notes:
 - If NGS input is provided explicitly, provide the full triplet. Unused star slots may be represented with `NaN`, but each slot must be either all finite or all `NaN` across the triplet.
 - If explicit NGS input is omitted, the selected simulation must supply the persisted NGS triplet during options preparation.
 - During execution, ao-predict derives a runtime-only `ngs_used` boolean vector from the persisted NGS triplet. This field is not persisted in `/options`.
+- If omitted, setup defaults `sr_method` to `pixel_fit` and `fwhm_summary` to `geom`.
 
 Atmospheric input note:
 - `r0_m` is the canonical persisted per-sim atmospheric option.
@@ -160,6 +164,8 @@ request = InitDatasetRequest(
     ),
     setup=SetupConfig(
         ee_apertures_mas=[50.0, 100.0],
+        sr_method="pixel_fit",
+        fwhm_summary="geom",
         specific_fields={"ngs_mag_zeropoint": 3.0e10},
     ),
     options=TableOptionsConfig(

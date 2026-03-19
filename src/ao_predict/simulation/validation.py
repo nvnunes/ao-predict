@@ -118,6 +118,22 @@ def validate_setup_payload_core(setup: Mapping[str, Any]) -> None:
     if ee_apertures_mas.size == 0 or not np.all(np.isfinite(ee_apertures_mas)):
         raise ValueError("setup['ee_apertures_mas'] must be a non-empty 1D finite array.")
 
+    sr_method = str(setup[schema.KEY_SETUP_SR_METHOD]).strip()
+    if sr_method not in schema.SETUP_STATS_SR_METHODS:
+        raise ValueError(
+            "setup['sr_method'] must be one of: "
+            + ", ".join(schema.SETUP_STATS_SR_METHODS)
+            + "."
+        )
+
+    fwhm_summary = str(setup[schema.KEY_SETUP_FWHM_SUMMARY]).strip()
+    if fwhm_summary not in schema.SETUP_STATS_FWHM_SUMMARIES:
+        raise ValueError(
+            "setup['fwhm_summary'] must be one of: "
+            + ", ".join(schema.SETUP_STATS_FWHM_SUMMARIES)
+            + "."
+        )
+
     atm_wavelength_um = as_float_scalar(
         setup[schema.KEY_SETUP_ATM_WAVELENGTH_UM],
         label=f"setup['{schema.KEY_SETUP_ATM_WAVELENGTH_UM}']",

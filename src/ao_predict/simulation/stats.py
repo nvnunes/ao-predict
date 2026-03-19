@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Mapping, TypeAlias
 
-from .helpers import get_ee_apertures
+from .helpers import get_ee_apertures, get_fwhm_summary, get_sr_method
 from .interfaces import SimulationSetup
 
 import numpy as np
@@ -55,6 +55,24 @@ def compute_psf_stats(
         raise ValueError("ee_apertures_mas must be non-empty.")
     if not np.all(np.isfinite(apertures)) or np.any(apertures <= 0.0):
         raise ValueError("ee_apertures_mas must contain only finite values > 0.")
+
+    try:
+        sr_method = get_sr_method(setup)
+    except (KeyError, AttributeError) as exc:
+        raise ValueError(f"setup['{schema.KEY_SETUP_SR_METHOD}'] is required for PSF stats computation.") from exc
+    if sr_method not in schema.SETUP_STATS_SR_METHODS:
+        raise ValueError(
+            f"setup['{schema.KEY_SETUP_SR_METHOD}'] must be one of: {', '.join(schema.SETUP_STATS_SR_METHODS)}."
+        )
+
+    try:
+        fwhm_summary = get_fwhm_summary(setup)
+    except (KeyError, AttributeError) as exc:
+        raise ValueError(f"setup['{schema.KEY_SETUP_FWHM_SUMMARY}'] is required for PSF stats computation.") from exc
+    if fwhm_summary not in schema.SETUP_STATS_FWHM_SUMMARIES:
+        raise ValueError(
+            f"setup['{schema.KEY_SETUP_FWHM_SUMMARY}'] must be one of: {', '.join(schema.SETUP_STATS_FWHM_SUMMARIES)}."
+        )
 
     num_sci = int(cube.shape[0])
 

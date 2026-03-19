@@ -66,6 +66,24 @@ def get_ee_apertures(setup: Mapping[str, Any] | SimulationSetup) -> np.ndarray:
     return ee
 
 
+def get_sr_method(setup: Mapping[str, Any] | SimulationSetup) -> str:
+    """Return the dataset-level Strehl selector from setup."""
+    sr_method = setup[schema.KEY_SETUP_SR_METHOD] if isinstance(setup, Mapping) else getattr(setup, schema.KEY_SETUP_SR_METHOD)
+    value = str(sr_method).strip()
+    if not value:
+        raise ValueError(f"setup['{schema.KEY_SETUP_SR_METHOD}'] must be a non-empty string.")
+    return value
+
+
+def get_fwhm_summary(setup: Mapping[str, Any] | SimulationSetup) -> str:
+    """Return the dataset-level FWHM summary selector from setup."""
+    fwhm_summary = setup[schema.KEY_SETUP_FWHM_SUMMARY] if isinstance(setup, Mapping) else getattr(setup, schema.KEY_SETUP_FWHM_SUMMARY)
+    value = str(fwhm_summary).strip()
+    if not value:
+        raise ValueError(f"setup['{schema.KEY_SETUP_FWHM_SUMMARY}'] must be a non-empty string.")
+    return value
+
+
 # Atmosphere helpers
 
 def r0_to_seeing_arcsec(r0_m: float, wavelength_m: float) -> float:

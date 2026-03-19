@@ -217,6 +217,8 @@ def _prepare_base_setup_payload(base_setup: dict[str, Any]) -> dict[str, Any]:
     setup = dict(base_setup)
     if "ee_apertures_mas" in setup:
         setup["ee_apertures_mas"] = as_float_vector(setup["ee_apertures_mas"], label="setup.ee_apertures_mas")
+    setup.setdefault(schema.KEY_SETUP_SR_METHOD, schema.DEFAULT_SETUP_SR_METHOD)
+    setup.setdefault(schema.KEY_SETUP_FWHM_SUMMARY, schema.DEFAULT_SETUP_FWHM_SUMMARY)
     return setup
 
 

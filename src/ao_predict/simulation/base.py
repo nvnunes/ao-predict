@@ -278,6 +278,22 @@ class BaseSimulation(Simulation, ABC):
 
         return {
             schema.KEY_SETUP_EE_APERTURES_MAS: ee_apertures_mas,
+            schema.KEY_SETUP_SR_METHOD: str(
+                select_mapping_value(
+                    base_setup_payload,
+                    setup_cfg,
+                    schema.KEY_SETUP_SR_METHOD,
+                    default=schema.DEFAULT_SETUP_SR_METHOD,
+                )
+            ).strip(),
+            schema.KEY_SETUP_FWHM_SUMMARY: str(
+                select_mapping_value(
+                    base_setup_payload,
+                    setup_cfg,
+                    schema.KEY_SETUP_FWHM_SUMMARY,
+                    default=schema.DEFAULT_SETUP_FWHM_SUMMARY,
+                )
+            ).strip(),
             schema.KEY_SETUP_ATM_WAVELENGTH_UM: atm_wavelength_um_scalar,
             schema.KEY_SETUP_ATM_PROFILES: atm_profiles_map,
             self.KEY_SETUP_LGS_R_ARCSEC: lgs_r_arcsec,
@@ -300,6 +316,8 @@ class BaseSimulation(Simulation, ABC):
                 setup_payload[schema.KEY_SETUP_EE_APERTURES_MAS],
                 label=schema.KEY_SETUP_EE_APERTURES_MAS,
             ),
+            sr_method=str(setup_payload[schema.KEY_SETUP_SR_METHOD]).strip(),
+            fwhm_summary=str(setup_payload[schema.KEY_SETUP_FWHM_SUMMARY]).strip(),
             atm_wavelength_um=float(setup_payload[schema.KEY_SETUP_ATM_WAVELENGTH_UM]),
             atm_profiles=atm.parse_atm_profiles(setup_payload[schema.KEY_SETUP_ATM_PROFILES]),
             lgs_r_arcsec=as_float_vector(lgs_r_raw, label=self.KEY_SETUP_LGS_R_ARCSEC),

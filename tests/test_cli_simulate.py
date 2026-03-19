@@ -17,6 +17,7 @@ from ao_predict.simulation import (
     SimulationResult,
     SimulationSetup,
     SimulationState,
+    schema,
 )
 
 TIPTOP_INI_TEXT = (
@@ -65,6 +66,8 @@ def _write_config_yaml(path: Path, ini_path: Path, *, options_cfg: dict[str, obj
         },
         "setup": {
             "ee_apertures_mas": [50.0, 100.0],
+            "sr_method": schema.DEFAULT_SETUP_SR_METHOD,
+            "fwhm_summary": schema.DEFAULT_SETUP_FWHM_SUMMARY,
             "ngs_mag_zeropoint": 1.1e13 / 368.0,
             "sci_r_arcsec": [0.0, 10.0, 20.0],
             "sci_theta_deg": [0.0, 90.0, 180.0],
@@ -170,6 +173,8 @@ class TiptopSimulation(Simulation):
     def load_setup_payload(self, setup_payload):
         self._setup = SimulationSetup(
             ee_apertures_mas=np.asarray(setup_payload["ee_apertures_mas"], dtype=float).reshape(-1),
+            sr_method=str(setup_payload["sr_method"]),
+            fwhm_summary=str(setup_payload["fwhm_summary"]),
             atm_wavelength_um=float(setup_payload["atm_wavelength_um"]),
             atm_profiles=dict(setup_payload["atm_profiles"]),
             lgs_r_arcsec=np.asarray(setup_payload["lgs_r_arcsec"], dtype=float).reshape(-1),
@@ -181,6 +186,8 @@ class TiptopSimulation(Simulation):
     def validate_setup_payload(self, setup_payload):
         _ = SimulationSetup(
             ee_apertures_mas=np.asarray(setup_payload["ee_apertures_mas"], dtype=float).reshape(-1),
+            sr_method=str(setup_payload["sr_method"]),
+            fwhm_summary=str(setup_payload["fwhm_summary"]),
             atm_wavelength_um=float(setup_payload["atm_wavelength_um"]),
             atm_profiles=dict(setup_payload["atm_profiles"]),
             lgs_r_arcsec=np.asarray(setup_payload["lgs_r_arcsec"], dtype=float).reshape(-1),
@@ -213,6 +220,8 @@ def test_cli_simulate_init_and_run(tmp_path: Path, monkeypatch):
 
     with h5py.File(dataset_path, "r") as f:
         assert float(f["setup/ngs_mag_zeropoint"][()]) > 0.0
+        assert f["setup/sr_method"][()].decode("utf-8") == schema.DEFAULT_SETUP_SR_METHOD
+        assert f["setup/fwhm_summary"][()].decode("utf-8") == schema.DEFAULT_SETUP_FWHM_SUMMARY
         np.testing.assert_array_equal(f["status/state"][:], np.array([1, 1, 1], dtype=np.uint8))
 
 

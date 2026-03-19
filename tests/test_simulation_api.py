@@ -42,6 +42,8 @@ def _base_request(tmp_path: Path) -> InitDatasetRequest:
         simulation=SimulationConfig(name="Tiptop", base_path=str(Path(ini_path).parent), specific_fields={"config_path": str(ini_path)}),
         setup=SetupConfig(
             ee_apertures_mas=[50.0, 100.0],
+            sr_method=schema.DEFAULT_SETUP_SR_METHOD,
+            fwhm_summary=schema.DEFAULT_SETUP_FWHM_SUMMARY,
             specific_fields={"ngs_mag_zeropoint": 1.1e13 / 368.0},
         ),
         options=OptionsConfig(
@@ -125,6 +127,8 @@ class FakeSimulation(Simulation):
     def load_setup_payload(self, setup_payload):
         self._setup = SimulationSetup(
             ee_apertures_mas=np.asarray(setup_payload["ee_apertures_mas"], dtype=float).reshape(-1),
+            sr_method=str(setup_payload["sr_method"]),
+            fwhm_summary=str(setup_payload["fwhm_summary"]),
             atm_wavelength_um=float(setup_payload["atm_wavelength_um"]),
             atm_profiles=dict(setup_payload["atm_profiles"]),
             lgs_r_arcsec=np.asarray(setup_payload["lgs_r_arcsec"], dtype=float).reshape(-1),
@@ -194,6 +198,52 @@ def test_api_full_pipeline_with_test_simulation(tmp_path: Path):
     with h5py.File(dataset_path, "r") as f:
         sr = np.asarray(f[f"{schema.KEY_STATS_SECTION}/{schema.KEY_STATS_SR}"][:], dtype=float)
         np.testing.assert_allclose(sr[:, 0], np.zeros(3, dtype=float), rtol=1e-6, atol=1e-6)
+        assert f[f"{schema.KEY_SETUP_SECTION}/{schema.KEY_SETUP_SR_METHOD}"][()].decode("utf-8") == schema.DEFAULT_SETUP_SR_METHOD
+        assert (
+            f[f"{schema.KEY_SETUP_SECTION}/{schema.KEY_SETUP_FWHM_SUMMARY}"][()].decode("utf-8")
+            == schema.DEFAULT_SETUP_FWHM_SUMMARY
+        )
+
+
+def test_api_init_persists_explicit_setup_stats_selectors(tmp_path: Path):
+    request = _base_request(tmp_path)
+    request = InitDatasetRequest(
+        dataset_path=request.dataset_path,
+        simulation=request.simulation,
+        setup=SetupConfig(
+            ee_apertures_mas=[50.0, 100.0],
+            sr_method=schema.STATS_SR_METHOD_PIXEL_MAX,
+            fwhm_summary=schema.STATS_FWHM_SUMMARY_MAX,
+            specific_fields={"ngs_mag_zeropoint": 1.1e13 / 368.0},
+        ),
+        options=request.options,
+    )
+
+    sim_api.init_dataset(request)
+
+    with h5py.File(request.dataset_path, "r") as f:
+        assert f[f"{schema.KEY_SETUP_SECTION}/{schema.KEY_SETUP_SR_METHOD}"][()].decode("utf-8") == schema.STATS_SR_METHOD_PIXEL_MAX
+        assert (
+            f[f"{schema.KEY_SETUP_SECTION}/{schema.KEY_SETUP_FWHM_SUMMARY}"][()].decode("utf-8")
+            == schema.STATS_FWHM_SUMMARY_MAX
+        )
+
+
+def test_api_init_rejects_invalid_setup_stats_selector(tmp_path: Path):
+    request = _base_request(tmp_path)
+    request = InitDatasetRequest(
+        dataset_path=request.dataset_path,
+        simulation=request.simulation,
+        setup=SetupConfig(
+            ee_apertures_mas=[50.0, 100.0],
+            sr_method="bad_selector",
+            specific_fields={"ngs_mag_zeropoint": 1.1e13 / 368.0},
+        ),
+        options=request.options,
+    )
+
+    with pytest.raises(ValueError, match="setup\\['sr_method'\\] must be one of: pixel_fit, pixel_max\\."):
+        sim_api.init_dataset(request)
 
 
 def test_api_run_and_retry(tmp_path: Path, monkeypatch):
