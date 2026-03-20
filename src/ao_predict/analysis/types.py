@@ -4,12 +4,10 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any
 
 import numpy as np
 
-from ..persistence import SimulationStore
 from ._immutability import freeze_array, freeze_mapping
 
 
@@ -70,18 +68,6 @@ class AnalysisDataset:
     stats_rows: tuple[Mapping[str, Any], ...]
     extra_stat_names: tuple[str, ...]
     _psf_loaders: tuple[Callable[[], np.ndarray] | None, ...] = field(repr=False, compare=False)
-
-    @classmethod
-    def from_path(cls, dataset_path: str | Path) -> AnalysisDataset:
-        """Load an analysis dataset from a dataset file path."""
-        return cls.from_store(SimulationStore(dataset_path))
-
-    @classmethod
-    def from_store(cls, store: SimulationStore) -> AnalysisDataset:
-        """Load an analysis dataset from a validated simulation store."""
-        from ._compose import load_analysis_dataset
-
-        return load_analysis_dataset(store)
 
     def __post_init__(self) -> None:
         num_sims = len(self.options_rows)

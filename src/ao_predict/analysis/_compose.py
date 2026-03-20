@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from pathlib import Path
 
 import numpy as np
 
@@ -25,10 +26,8 @@ def _build_psf_loader(store: SimulationStore, sim_idx: int) -> Callable[[], np.n
     return _load_psfs
 
 
-def load_analysis_dataset(store: SimulationStore) -> AnalysisDataset:
-    """Load an immutable analysis dataset from a validated store."""
-    store.validate_schema()
-
+def _load_analysis_dataset_from_store(store: SimulationStore) -> AnalysisDataset:
+    """Build an immutable analysis dataset from a validated simulation store."""
     num_sims = store.num_sims()
     simulation_payload = freeze_mapping(store.read_simulation())
     setup = freeze_mapping(store.read_setup())
@@ -48,3 +47,10 @@ def load_analysis_dataset(store: SimulationStore) -> AnalysisDataset:
         extra_stat_names=extra_stat_names,
         _psf_loaders=psf_loaders,
     )
+
+
+def load_analysis_dataset(dataset_path: str | Path) -> AnalysisDataset:
+    """Load an immutable analysis dataset from a dataset file path."""
+    store = SimulationStore(dataset_path)
+    store.validate_schema()
+    return _load_analysis_dataset_from_store(store)

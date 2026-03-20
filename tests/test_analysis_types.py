@@ -6,10 +6,12 @@ from types import MappingProxyType
 import numpy as np
 import pytest
 
-from ao_predict.analysis import AnalysisDataset, AnalysisSimulation
+import ao_predict.simulation.api as sim_api
+from ao_predict.analysis import AnalysisDataset, AnalysisSimulation, load_analysis_dataset
 from ao_predict.analysis._immutability import freeze_array, freeze_mapping
 from ao_predict.persistence import SimulationStore
-from ao_predict.simulation import schema
+from ao_predict.simulation import SimulationState, schema
+from ao_predict.simulation.api import InitDatasetRequest, OptionsConfig, SetupConfig, SimulationConfig
 
 
 def test_freeze_array_returns_non_writeable_copy() -> None:
@@ -39,6 +41,12 @@ def test_freeze_mapping_recursively_freezes_nested_values() -> None:
 
     with pytest.raises(TypeError):
         frozen["extra"] = 1
+
+
+def test_analysis_package_exports() -> None:
+    assert AnalysisDataset.__name__ == "AnalysisDataset"
+    assert AnalysisSimulation.__name__ == "AnalysisSimulation"
+    assert load_analysis_dataset.__name__ == "load_analysis_dataset"
 
 
 def test_analysis_simulation_psfs_lazy_loads_once() -> None:
@@ -116,7 +124,7 @@ def test_analysis_dataset_rejects_out_of_range_indexes() -> None:
         dataset.sim(1)
 
 
-def test_analysis_dataset_from_store_loads_eager_non_psf_payloads(tmp_path: Path) -> None:
+def test_load_analysis_dataset_loads_eager_non_psf_payloads(tmp_path: Path) -> None:
     data_path = tmp_path / "analysis_dataset.h5"
     store = SimulationStore(data_path)
     store.create(
@@ -186,7 +194,7 @@ def test_analysis_dataset_from_store_loads_eager_non_psf_payloads(tmp_path: Path
         _success_result(stats=result1_stats, meta=result_meta, psfs=np.full((3, 4, 4), 0.2, dtype=np.float32)),
     )
 
-    dataset = AnalysisDataset.from_store(store)
+    dataset = load_analysis_dataset(data_path)
     sim0 = dataset.sim(0)
     sim1 = dataset.sim(1)
 
@@ -208,7 +216,7 @@ def test_analysis_dataset_from_store_loads_eager_non_psf_payloads(tmp_path: Path
     assert sim0.stats[schema.KEY_STATS_SR].flags.writeable is False
 
 
-def test_analysis_dataset_from_path_matches_store_loading(tmp_path: Path) -> None:
+def test_load_analysis_dataset_matches_store_loading(tmp_path: Path) -> None:
     data_path = tmp_path / "analysis_dataset_from_path.h5"
     store = SimulationStore(data_path)
     store.create(
@@ -268,11 +276,57 @@ def test_analysis_dataset_from_path_matches_store_loading(tmp_path: Path) -> Non
         ),
     )
 
-    dataset = AnalysisDataset.from_path(data_path)
+    dataset = load_analysis_dataset(data_path)
 
     assert len(dataset) == 1
     assert dataset.path == data_path
     assert dataset.sim(0).meta[schema.KEY_META_PIXEL_SCALE_MAS] == np.float32(4.0)
+
+
+def test_load_analysis_dataset_fails_early_on_invalid_schema(tmp_path: Path) -> None:
+    data_path = tmp_path / "invalid_analysis_dataset.h5"
+    data_path.write_text("not an hdf5 dataset", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="Schema validation failed"):
+        load_analysis_dataset(data_path)
+
+
+def test_load_analysis_dataset_reads_dataset_built_via_init_and_run_pipeline(tmp_path: Path) -> None:
+    dataset_path = tmp_path / "analysis_pipeline_dataset.h5"
+    request = InitDatasetRequest(
+        dataset_path=dataset_path,
+        simulation=SimulationConfig(name="mock_simulation:MockSimulation"),
+        setup=SetupConfig(ee_apertures_mas=[50.0, 100.0]),
+        options=OptionsConfig(
+            option_arrays={
+                "zenith_angle_deg": np.array([15.0, 25.0, 35.0], dtype=float),
+            }
+        ),
+        save_psfs=True,
+    )
+
+    num_sims = sim_api.init_dataset(request)
+    assert num_sims == 3
+
+    summary = sim_api.run_simulations_by_state(dataset_path, state=SimulationState.PENDING)
+    assert summary.attempted == 3
+    assert summary.succeeded == 3
+    assert summary.failed == 0
+
+    dataset = load_analysis_dataset(dataset_path)
+    sim0 = dataset.sim(0)
+    sim1 = dataset.sim(1)
+
+    assert len(dataset) == 3
+    assert dataset.path == dataset_path
+    assert sim0.config["options"]["zenith_angle_deg"] == np.float64(15.0)
+    assert sim1.config["options"]["zenith_angle_deg"] == np.float64(25.0)
+    assert sim0.meta[schema.KEY_META_PIXEL_SCALE_MAS] == np.float32(5.0)
+    assert sim0.stats[schema.KEY_STATS_SR].shape == (1,)
+    assert np.all(np.isfinite(sim0.stats[schema.KEY_STATS_SR]))
+    np.testing.assert_allclose(sim0.psfs, np.full((1, 4, 4), 0.1, dtype=np.float32))
+    np.testing.assert_allclose(sim1.psfs, np.full((1, 4, 4), 0.2, dtype=np.float32))
+    assert sim0.psfs.flags.writeable is False
 
 
 def test_analysis_simulation_views_are_read_only_to_callers(tmp_path: Path) -> None:
@@ -415,15 +469,15 @@ def test_analysis_dataset_psfs_remain_lazy_until_simulation_access(tmp_path: Pat
     )
 
     calls: list[int] = []
-    original_reader = store.read_simulation_psfs
+    original_reader = SimulationStore.read_simulation_psfs
 
-    def _recording_reader(sim_idx: int) -> np.ndarray:
+    def _recording_reader(self: SimulationStore, sim_idx: int) -> np.ndarray:
         calls.append(sim_idx)
-        return original_reader(sim_idx)
+        return original_reader(self, sim_idx)
 
-    monkeypatch.setattr(store, "read_simulation_psfs", _recording_reader)
+    monkeypatch.setattr(SimulationStore, "read_simulation_psfs", _recording_reader)
 
-    dataset = AnalysisDataset.from_store(store)
+    dataset = load_analysis_dataset(data_path)
     sim = dataset.sim(0)
 
     assert calls == []
@@ -498,10 +552,79 @@ def test_analysis_simulation_psfs_raises_clear_error_when_dataset_has_no_psfs(tm
         ),
     )
 
-    dataset = AnalysisDataset.from_store(store)
+    dataset = load_analysis_dataset(data_path)
 
     with pytest.raises(ValueError, match="PSFs are not available in this dataset"):
         _ = dataset.sim(0).psfs
+
+
+def test_analysis_dataset_classmethods_still_delegate_to_loader(tmp_path: Path) -> None:
+    data_path = tmp_path / "analysis_dataset_classmethods.h5"
+    store = SimulationStore(data_path)
+    store.create(
+        {
+            "name": "ao_predict.simulation.tiptop:TiptopSimulation",
+            "version": "x.y",
+            "extra_stat_names": np.array([], dtype=str),
+            "base_config": "[section]\nvalue=1\n",
+        },
+        {
+            "ee_apertures_mas": np.array([50.0, 100.0], dtype=float),
+            "sr_method": schema.DEFAULT_SETUP_SR_METHOD,
+            "fwhm_summary": schema.DEFAULT_SETUP_FWHM_SUMMARY,
+            "atm_wavelength_um": 0.5,
+            "ngs_mag_zeropoint": 3.0e10,
+            "sci_r_arcsec": np.array([0.0, 10.0, 20.0], dtype=float),
+            "sci_theta_deg": np.array([0.0, 90.0, 180.0], dtype=float),
+            "lgs_r_arcsec": np.array([30.0, 30.0, 30.0, 30.0], dtype=float),
+            "lgs_theta_deg": np.array([45.0, 135.0, 225.0, 315.0], dtype=float),
+            "atm_profiles": {
+                "0": {
+                    "name": "default",
+                    "r0_m": 0.16,
+                    "L0_m": 25.0,
+                    "cn2_heights_m": np.array([0.0, 5000.0], dtype=float),
+                    "cn2_weights": np.array([0.6, 0.4], dtype=float),
+                    "wind_speed_mps": np.array([5.0, 10.0], dtype=float),
+                    "wind_direction_deg": np.array([0.0, 90.0], dtype=float),
+                }
+            },
+        },
+        {
+            "wavelength_um": np.full((1,), 1.65, dtype=float),
+            "atm_profile_id": np.zeros((1,), dtype=np.int32),
+            "zenith_angle_deg": np.full((1,), 20.0, dtype=float),
+            "r0_m": np.full((1,), 0.16, dtype=float),
+            "ngs_r_arcsec": np.ones((1, 3), dtype=float),
+            "ngs_theta_deg": np.zeros((1, 3), dtype=float),
+            "ngs_mag": np.full((1, 3), 15.0, dtype=float),
+        },
+        save_psfs=False,
+    )
+    store.write_simulation_success(
+        0,
+        _success_result(
+            psfs=np.full((3, 4, 4), 0.1, dtype=np.float32),
+            stats={
+                schema.KEY_STATS_SR: np.array([0.1, 0.2, 0.3], dtype=np.float32),
+                schema.KEY_STATS_EE: np.full((3, 2), 0.5, dtype=np.float32),
+                schema.KEY_STATS_FWHM_MAS: np.full((3,), 60.0, dtype=np.float32),
+            },
+            meta={
+                schema.KEY_META_PIXEL_SCALE_MAS: 4.0,
+                schema.KEY_META_TEL_DIAMETER_M: 8.0,
+                schema.KEY_META_TEL_PUPIL: np.ones((6, 6), dtype=np.float32),
+            },
+        ),
+    )
+
+    from_path = AnalysisDataset.from_path(data_path)
+    from_store = AnalysisDataset.from_store(store)
+
+    assert len(from_path) == 1
+    assert len(from_store) == 1
+    assert from_path.path == data_path
+    assert from_store.path == data_path
 
 
 def _success_result(

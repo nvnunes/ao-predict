@@ -2,6 +2,7 @@
 
 # Public re-exports
 
+from .analysis import AnalysisDataset, AnalysisSimulation, load_analysis_dataset
 from .simulation import (
     BaseSimulation,
     Simulation,
@@ -51,6 +52,9 @@ __all__ = [
     "SimulationState",
     "TiptopBaseConfig",
     "TiptopSimulation",
+    "AnalysisDataset",
+    "AnalysisSimulation",
+    "load_analysis_dataset",
 ]
 
 # Package metadata

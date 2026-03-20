@@ -3,6 +3,12 @@
 This document describes the primary code-first simulation API exposed at
 `ao_predict` and implemented in `ao_predict.simulation.api`.
 
+For analysis reads from an existing dataset, use
+`ao_predict.load_analysis_dataset(...)` or
+`ao_predict.analysis.load_analysis_dataset(...)`. That is the supported
+upstream analysis read path; callers should not need to construct
+`SimulationStore` directly just to load analysis views.
+
 ## Lifecycle Functions
 
 ### `init_dataset(request: InitDatasetRequest) -> int`
@@ -213,6 +219,20 @@ See also:
 - Invalid payload structure and schema mismatches raise `ValueError`/`TypeError`.
 - Existing dataset without `overwrite=True` raises `FileExistsError`.
 - `check_dataset` returns issues in `DatasetStatus` for schema/state problems instead of raising, unless the file cannot be opened/read at all.
+
+## Analysis Read Path
+
+`load_analysis_dataset(path)` returns an immutable `AnalysisDataset` built from
+store-backed reads after schema validation succeeds.
+
+Use:
+- `len(dataset)` for the dataset size
+- `dataset.sim(i)` to get one `AnalysisSimulation`
+- `sim.config`, `sim.meta`, and `sim.stats` for persisted payloads
+- `sim.psfs` for lazy PSF access when PSFs were saved
+
+If the dataset was initialized without persisted PSFs, `sim.psfs` raises a
+clear error instead of falling back silently.
 
 ## Current Limits
 - Execution mode is serial.
