@@ -1560,3 +1560,104 @@ def test_store_rejects_negative_simulation_indexes(tmp_path):
         store.write_simulation_failure(-1)
     with np.testing.assert_raises(IndexError):
         store.write_simulation_success(-1, _success_result(ny=2, nx=2))
+
+
+def test_store_read_extra_stat_names(tmp_path):
+    data_path = tmp_path / "sim_data_read_extra_stats.h5"
+    store = SimulationStore(data_path)
+    store.create(_simulation(extra_stat_names=("halo_mas", "encircled_bg")), _setup(), _options(), save_psfs=False)
+
+    assert store.read_extra_stat_names() == ("halo_mas", "encircled_bg")
+
+
+def test_store_read_simulation_meta_includes_dataset_level_telescope_metadata(tmp_path):
+    data_path = tmp_path / "sim_data_read_meta.h5"
+    store = SimulationStore(data_path)
+    store.create(_simulation(), _setup(), _options(), save_psfs=False)
+    store.write_simulation_success(0, _success_result())
+
+    meta = store.read_simulation_meta(0)
+
+    assert meta[schema.KEY_META_PIXEL_SCALE_MAS] == np.float32(4.0)
+    assert meta[schema.KEY_META_TEL_DIAMETER_M] == np.float32(8.0)
+    np.testing.assert_allclose(meta[schema.KEY_META_TEL_PUPIL], np.ones((6, 6), dtype=np.float32))
+
+
+def test_store_read_simulation_stats_without_declared_extra_stats(tmp_path):
+    data_path = tmp_path / "sim_data_read_stats_core.h5"
+    store = SimulationStore(data_path)
+    store.create(_simulation(), _setup(), _options(), save_psfs=False)
+    result = _success_result()
+    store.write_simulation_success(0, result)
+
+    stats = store.read_simulation_stats(0)
+
+    assert tuple(stats.keys()) == schema.CORE_STATS_KEYS
+    np.testing.assert_allclose(stats[schema.KEY_STATS_SR], result.stats[schema.KEY_STATS_SR])
+    np.testing.assert_allclose(stats[schema.KEY_STATS_EE], result.stats[schema.KEY_STATS_EE])
+    np.testing.assert_allclose(stats[schema.KEY_STATS_FWHM_MAS], result.stats[schema.KEY_STATS_FWHM_MAS])
+
+
+def test_store_read_simulation_stats_with_declared_extra_stats(tmp_path):
+    data_path = tmp_path / "sim_data_read_stats_extra.h5"
+    store = SimulationStore(data_path)
+    store.create(_simulation(extra_stat_names=("halo_mas",)), _setup(), _options(), save_psfs=False)
+    result = _success_result(extra_stats={"halo_mas": np.full((3,), 7.0, dtype=np.float32)})
+    store.write_simulation_success(0, result)
+
+    stats = store.read_simulation_stats(0)
+
+    assert tuple(stats.keys()) == schema.CORE_STATS_KEYS + ("halo_mas",)
+    np.testing.assert_allclose(stats["halo_mas"], np.full((3,), 7.0, dtype=np.float32))
+
+
+def test_store_read_simulation_psfs(tmp_path):
+    data_path = tmp_path / "sim_data_read_psfs.h5"
+    store = SimulationStore(data_path)
+    store.create(_simulation(), _setup(), _options(), save_psfs=True)
+    result = _success_result()
+    store.write_simulation_success(0, result)
+
+    psfs = store.read_simulation_psfs(0)
+
+    np.testing.assert_allclose(psfs, result.psfs)
+
+
+def test_store_read_simulation_psfs_rejects_missing_psf_dataset(tmp_path):
+    data_path = tmp_path / "sim_data_missing_psfs.h5"
+    store = SimulationStore(data_path)
+    store.create(_simulation(), _setup(), _options(), save_psfs=False)
+
+    with pytest.raises(ValueError, match=r"Missing required dataset '/psfs/data'\."):
+        store.read_simulation_psfs(0)
+
+
+def test_store_read_simulation_stats_rejects_missing_declared_extra_stat_dataset(tmp_path):
+    data_path = tmp_path / "sim_data_missing_declared_stat.h5"
+    store = SimulationStore(data_path)
+    store.create(_simulation(extra_stat_names=("halo_mas",)), _setup(), _options(), save_psfs=False)
+
+    with h5py.File(data_path, "r+") as f:
+        del f[f"{schema.KEY_STATS_SECTION}/halo_mas"]
+
+    with pytest.raises(ValueError, match=r"Missing required dataset '/stats/halo_mas'\."):
+        store.read_simulation_stats(0)
+
+
+@pytest.mark.parametrize(
+    "reader",
+    [
+        lambda store: store.read_sim_options(99),
+        lambda store: store.read_simulation_meta(99),
+        lambda store: store.read_simulation_stats(99),
+        lambda store: store.read_simulation_psfs(99),
+    ],
+)
+def test_store_read_methods_validate_out_of_range_indexes(tmp_path, reader):
+    data_path = tmp_path / "sim_data_read_index_oob.h5"
+    store = SimulationStore(data_path)
+    store.create(_simulation(), _setup(), _options(), save_psfs=True)
+    store.write_simulation_success(0, _success_result())
+
+    with pytest.raises(IndexError, match=r"sim_idx 99 out of range"):
+        reader(store)

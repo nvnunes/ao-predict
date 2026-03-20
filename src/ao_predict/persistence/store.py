@@ -133,15 +133,46 @@ def _ensure_psfs_data(f: h5py.File, psfs: np.ndarray) -> None:
     grp.create_dataset(schema.KEY_PSFS_DATA, data=np.full(shape, np.nan, dtype=np.float32))
 
 
-def _require_all_finite(name: str, arr: np.ndarray) -> None:
-    """Raise when an array contains ``NaN`` or ``Inf`` values."""
-    if not np.all(np.isfinite(arr)):
-        raise ValueError(f"{name} must contain only finite values.")
-
-
 def _read_extra_stat_names(simulation: Mapping[str, Any]) -> tuple[str, ...]:
     """Read declared extra stat names from an already-validated ``/simulation`` payload."""
     return tuple(str(name) for name in np.asarray(simulation[schema.KEY_SIMULATION_EXTRA_STAT_NAMES]).reshape(-1).tolist())
+
+
+def _read_declared_extra_stat_names(f: h5py.File) -> tuple[str, ...]:
+    """Read declared extra stat names from the persisted ``/simulation`` payload."""
+    return _read_extra_stat_names(_read_node(f[schema.KEY_SIMULATION_SECTION]))
+
+
+def _read_declared_stat_names(f: h5py.File) -> tuple[str, ...]:
+    """Read the full declared stats key set in stable store order."""
+    return schema.CORE_STATS_KEYS + _read_declared_extra_stat_names(f)
+
+
+def _require_dataset(f: h5py.File | h5py.Group, path: str) -> h5py.Dataset:
+    """Return a dataset by path or raise a clear contract error."""
+    if path not in f:
+        raise ValueError(f"Missing required dataset '{path}'.")
+    ds = f[path]
+    if not isinstance(ds, h5py.Dataset):
+        raise ValueError(f"{path} must be a dataset.")
+    return ds
+
+
+def _require_dataset_ndim(ds: h5py.Dataset, *, path: str, ndim: int) -> h5py.Dataset:
+    """Validate dataset dimensionality for a specific persisted contract."""
+    if ds.ndim != ndim:
+        raise ValueError(f"{path} must be {ndim}D.")
+    return ds
+
+
+def _read_simulation_dataset_row(ds: h5py.Dataset, sim_idx: int, *, path: str) -> Any:
+    """Read one per-simulation dataset row with shared index and shape checks."""
+    sim_idx = _ensure_sim_idx(sim_idx)
+    if ds.ndim == 0:
+        raise ValueError(f"{path} must be per-simulation with first dim N.")
+    if sim_idx >= ds.shape[0]:
+        raise IndexError(f"sim_idx {sim_idx} out of range for {path} shape {ds.shape}")
+    return ds[sim_idx]
 
 
 def _clear_simulation_outputs(f: h5py.File, sim_idx: int) -> None:
@@ -149,10 +180,7 @@ def _clear_simulation_outputs(f: h5py.File, sim_idx: int) -> None:
     stats = f[schema.KEY_STATS_SECTION]
     meta = f[schema.KEY_META_SECTION]
 
-    stats[schema.KEY_STATS_SR][sim_idx, ...] = np.nan
-    stats[schema.KEY_STATS_EE][sim_idx, ...] = np.nan
-    stats[schema.KEY_STATS_FWHM_MAS][sim_idx, ...] = np.nan
-    for key in _read_extra_stat_names(_read_node(f[schema.KEY_SIMULATION_SECTION])):
+    for key in _read_declared_stat_names(f):
         stats[key][sim_idx, ...] = np.nan
 
     meta[schema.KEY_META_PIXEL_SCALE_MAS][sim_idx] = np.nan
@@ -304,6 +332,12 @@ class SimulationStore:
         with h5py.File(self.path, "r") as f:
             return _read_node(f[schema.KEY_SIMULATION_SECTION])
 
+    def read_extra_stat_names(self) -> tuple[str, ...]:
+        """Read declared extra stat names from ``/simulation``."""
+
+        with h5py.File(self.path, "r") as f:
+            return _read_declared_extra_stat_names(f)
+
     def read_sim_options(self, sim_idx: int) -> dict[str, Any]:
         """Read one simulation's options from ``/options``.
 
@@ -317,8 +351,6 @@ class SimulationStore:
             IndexError: If ``sim_idx`` is out of range.
             ValueError: If ``/options`` datasets are malformed.
         """
-        sim_idx = _ensure_sim_idx(sim_idx)
-
         row: dict[str, Any] = {}
         with h5py.File(self.path, "r") as f:
             g = f[schema.KEY_OPTION_SECTION]
@@ -327,17 +359,63 @@ class SimulationStore:
                 if not isinstance(ds, h5py.Dataset):
                     raise ValueError(f"/options/{key} must be a dataset.")
 
-                if ds.ndim == 0:
-                    raise ValueError(f"/options/{key} must be per-simulation with first dim N.")
-                if sim_idx >= ds.shape[0]:
-                    raise IndexError(f"sim_idx {sim_idx} out of range for /options/{key} shape {ds.shape}")
-
-                value = ds[sim_idx]
+                value = _read_simulation_dataset_row(ds, sim_idx, path=f"/options/{key}")
                 if isinstance(value, bytes):
                     value = value.decode("utf-8")
                 row[key] = value
 
         return row
+
+    def read_simulation_meta(self, sim_idx: int) -> dict[str, Any]:
+        """Read one simulation's persisted meta view."""
+
+        with h5py.File(self.path, "r") as f:
+            pixel_scale_path = f"/{schema.KEY_META_SECTION}/{schema.KEY_META_PIXEL_SCALE_MAS}"
+            tel_diameter_path = f"/{schema.KEY_META_SECTION}/{schema.KEY_META_TEL_DIAMETER_M}"
+            tel_pupil_path = f"/{schema.KEY_META_SECTION}/{schema.KEY_META_TEL_PUPIL}"
+
+            pixel_scale_mas = _read_simulation_dataset_row(
+                _require_dataset_ndim(_require_dataset(f, pixel_scale_path), path=pixel_scale_path, ndim=1),
+                sim_idx,
+                path=pixel_scale_path,
+            )
+            tel_diameter_m = _require_dataset_ndim(
+                _require_dataset(f, tel_diameter_path),
+                path=tel_diameter_path,
+                ndim=0,
+            )[()]
+            tel_pupil = _require_dataset_ndim(
+                _require_dataset(f, tel_pupil_path),
+                path=tel_pupil_path,
+                ndim=2,
+            )[...,]
+
+        return {
+            schema.KEY_META_PIXEL_SCALE_MAS: pixel_scale_mas,
+            schema.KEY_META_TEL_DIAMETER_M: tel_diameter_m,
+            schema.KEY_META_TEL_PUPIL: tel_pupil,
+        }
+
+    def read_simulation_stats(self, sim_idx: int) -> dict[str, Any]:
+        """Read one simulation's persisted stats view."""
+
+        stats_row: dict[str, Any] = {}
+        with h5py.File(self.path, "r") as f:
+            for key in _read_declared_stat_names(f):
+                path = f"/{schema.KEY_STATS_SECTION}/{key}"
+                expected_ndim = 3 if key == schema.KEY_STATS_EE else 2
+                ds = _require_dataset_ndim(_require_dataset(f, path), path=path, ndim=expected_ndim)
+                stats_row[key] = _read_simulation_dataset_row(ds, sim_idx, path=path)
+
+        return stats_row
+
+    def read_simulation_psfs(self, sim_idx: int) -> np.ndarray:
+        """Read one simulation's persisted PSF cube from ``/psfs/data``."""
+
+        with h5py.File(self.path, "r") as f:
+            path = f"/{schema.KEY_PSFS_SECTION}/{schema.KEY_PSFS_DATA}"
+            ds = _require_dataset_ndim(_require_dataset(f, path), path=path, ndim=4)
+            return np.asarray(_read_simulation_dataset_row(ds, sim_idx, path=path))
 
     # State and index access
 
@@ -642,7 +720,7 @@ class SimulationStore:
             if ee_ds.ndim != 3:
                 raise ValueError("/stats/ee must be 3D [N, M, A].")
             num_ee = int(ee_ds.shape[2])
-            extra_stat_names = _read_extra_stat_names(_read_node(f[schema.KEY_SIMULATION_SECTION]))
+            extra_stat_names = _read_declared_extra_stat_names(f)
             require_psfs = schema.KEY_PSFS_SECTION in f
 
             validate_successful_result(
