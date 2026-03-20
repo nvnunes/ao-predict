@@ -228,11 +228,19 @@ store-backed reads after schema validation succeeds.
 Use:
 - `len(dataset)` for the dataset size
 - `dataset.sim(i)` to get one `AnalysisSimulation`
-- `sim.config`, `sim.meta`, and `sim.stats` for persisted payloads
+- `sim.config` for the persisted simulation view with exactly `setup` and `options`
+- `sim.meta` for persisted scientific metadata, including per-simulation
+  `pixel_scale_mas` plus dataset-level telescope metadata such as
+  `tel_diameter_m` and `tel_pupil`
+- `sim.stats` for the persisted scientific stats surface, including core
+  `sr`, `ee`, and `fwhm_mas` plus any declared extra stats
 - `sim.psfs` for lazy PSF access when PSFs were saved
 
 If the dataset was initialized without persisted PSFs, `sim.psfs` raises a
 clear error instead of falling back silently.
+
+Compatibility adapters, legacy shaping, and downstream-specific analysis helpers
+remain downstream in `girmos-aosims`.
 
 ## Current Limits
 - Execution mode is serial.

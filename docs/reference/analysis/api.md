@@ -14,9 +14,12 @@ Public analysis behavior:
 - `load_analysis_dataset(path) -> AnalysisDataset`
 - `len(dataset)`
 - `dataset.sim(i) -> AnalysisSimulation`
-- `sim.config`
-- `sim.meta`
-- `sim.stats`
+- `sim.config` with exactly `setup` and `options`
+- `sim.meta` with per-simulation scientific metadata plus dataset-level
+  telescope metadata such as `pixel_scale_mas`, `tel_diameter_m`, and
+  `tel_pupil`
+- `sim.stats` with core `sr`, `ee`, and `fwhm_mas` plus any declared extra
+  stats
 - lazy `sim.psfs`
 
 PSFs are optional. If the dataset was created without persisted PSFs,
