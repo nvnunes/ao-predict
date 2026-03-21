@@ -8,7 +8,14 @@ import numpy as np
 import pytest
 
 import ao_predict.simulation.api as sim_api
-from ao_predict.analysis import AnalysisDataset, AnalysisSimulation, load_analysis_dataset
+from ao_predict.analysis import (
+    AnalysisDataset,
+    AnalysisDatasetLoadPayload,
+    AnalysisSimulation,
+    AnalysisSimulationLoadContext,
+    AnalysisSimulationLoadPayload,
+    load_analysis_dataset,
+)
 from ao_predict.analysis._immutability import freeze_array, freeze_mapping
 from ao_predict.persistence import SimulationStore
 from ao_predict.simulation import SimulationState, schema
@@ -94,7 +101,7 @@ def test_analysis_dataset_sim_reuses_frozen_payloads() -> None:
         meta_rows=meta,
         stats_rows=stats,
         extra_stat_names=(),
-        _psf_loaders=(None,),
+        _simulation_contexts=(AnalysisSimulationLoadContext(),),
     )
 
     sim = dataset.sim(0)
@@ -115,7 +122,7 @@ def test_analysis_dataset_rejects_out_of_range_indexes() -> None:
         meta_rows=(freeze_mapping({}),),
         stats_rows=(freeze_mapping({}),),
         extra_stat_names=(),
-        _psf_loaders=(None,),
+        _simulation_contexts=(AnalysisSimulationLoadContext(),),
     )
 
     with pytest.raises(IndexError, match=">= 0"):
@@ -315,6 +322,162 @@ def test_load_analysis_dataset_preserves_analysis_visible_store_slice(tmp_path: 
     np.testing.assert_allclose(sim.psfs, expected_psfs)
 
 
+def test_load_analysis_dataset_supports_custom_dataset_factory(tmp_path: Path) -> None:
+    data_path = tmp_path / "analysis_dataset_custom_dataset.h5"
+    store = SimulationStore(data_path)
+    _write_single_analysis_result(store, save_psfs=False)
+
+    class CustomAnalysisDataset(AnalysisDataset):
+        @property
+        def label(self) -> str:
+            return "custom-dataset"
+
+    def _build_dataset(
+        payload: AnalysisDatasetLoadPayload,
+        simulation_factory,
+    ) -> CustomAnalysisDataset:
+        return CustomAnalysisDataset(
+            path=payload.path,
+            simulation_payload=payload.simulation_payload,
+            setup=payload.setup,
+            options_rows=payload.options_rows,
+            meta_rows=payload.meta_rows,
+            stats_rows=payload.stats_rows,
+            extra_stat_names=payload.extra_stat_names,
+            _simulation_contexts=payload.simulation_contexts,
+            _simulation_factory=simulation_factory,
+        )
+
+    dataset = load_analysis_dataset(data_path, dataset_factory=_build_dataset)
+
+    assert isinstance(dataset, CustomAnalysisDataset)
+    assert dataset.label == "custom-dataset"
+    assert len(dataset) == 1
+    assert dataset.path == data_path
+    assert dataset.simulation_payload["name"] == "ao_predict.simulation.tiptop:TiptopSimulation"
+
+
+def test_load_analysis_dataset_supports_custom_simulation_factory(tmp_path: Path) -> None:
+    data_path = tmp_path / "analysis_dataset_custom_simulation.h5"
+    store = SimulationStore(data_path)
+    _write_single_analysis_result(store, save_psfs=True)
+
+    class CustomAnalysisSimulation(AnalysisSimulation):
+        @property
+        def pixel_scale(self) -> np.float32:
+            return self.meta[schema.KEY_META_PIXEL_SCALE_MAS]
+
+    def _build_simulation(payload: AnalysisSimulationLoadPayload) -> CustomAnalysisSimulation:
+        return CustomAnalysisSimulation(
+            _config=payload.config,
+            _meta=payload.meta,
+            _stats=payload.stats,
+            _psf_loader=payload.context.psf_loader,
+        )
+
+    dataset = load_analysis_dataset(data_path, simulation_factory=_build_simulation)
+    sim = dataset.sim(0)
+
+    assert isinstance(sim, CustomAnalysisSimulation)
+    assert sim.config["options"]["wavelength_um"] == np.float64(1.65)
+    assert sim.pixel_scale == np.float32(4.0)
+    np.testing.assert_allclose(sim.stats[schema.KEY_STATS_SR], np.array([0.1, 0.2, 0.3], dtype=np.float32))
+    np.testing.assert_allclose(sim.psfs, np.full((3, 4, 4), 0.1, dtype=np.float32))
+
+
+def test_load_analysis_dataset_supports_combined_dataset_and_simulation_factories(tmp_path: Path) -> None:
+    data_path = tmp_path / "analysis_dataset_combined_factories.h5"
+    store = SimulationStore(data_path)
+    _write_single_analysis_result(store, save_psfs=False)
+
+    calls: list[str] = []
+
+    class CustomAnalysisDataset(AnalysisDataset):
+        pass
+
+    class CustomAnalysisSimulation(AnalysisSimulation):
+        pass
+
+    def _build_dataset(
+        payload: AnalysisDatasetLoadPayload,
+        simulation_factory,
+    ) -> CustomAnalysisDataset:
+        calls.append("dataset")
+        return CustomAnalysisDataset(
+            path=payload.path,
+            simulation_payload=payload.simulation_payload,
+            setup=payload.setup,
+            options_rows=payload.options_rows,
+            meta_rows=payload.meta_rows,
+            stats_rows=payload.stats_rows,
+            extra_stat_names=payload.extra_stat_names,
+            _simulation_contexts=payload.simulation_contexts,
+            _simulation_factory=simulation_factory,
+        )
+
+    def _build_simulation(payload: AnalysisSimulationLoadPayload) -> CustomAnalysisSimulation:
+        calls.append("simulation")
+        return CustomAnalysisSimulation(
+            _config=payload.config,
+            _meta=payload.meta,
+            _stats=payload.stats,
+            _psf_loader=payload.context.psf_loader,
+        )
+
+    dataset = load_analysis_dataset(
+        data_path,
+        dataset_factory=_build_dataset,
+        simulation_factory=_build_simulation,
+    )
+    sim = dataset.sim(0)
+
+    assert isinstance(dataset, CustomAnalysisDataset)
+    assert isinstance(sim, CustomAnalysisSimulation)
+    assert calls == ["dataset", "simulation"]
+
+
+def test_load_analysis_dataset_custom_simulation_factory_receives_generic_lazy_extra_loader(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data_path = tmp_path / "analysis_dataset_extra_loader.h5"
+    store = SimulationStore(data_path)
+    _write_single_analysis_result(store, save_psfs=False)
+
+    extra_calls: list[int] = []
+
+    class CustomAnalysisSimulation(AnalysisSimulation):
+        _extra_loader: Any = None
+
+    def _build_context(store: SimulationStore, sim_idx: int) -> AnalysisSimulationLoadContext:
+        return AnalysisSimulationLoadContext(
+            psf_loader=None,
+            extra_loaders={
+                "extra_cube": lambda: _record_extra_loader(extra_calls, sim_idx),
+            },
+        )
+
+    def _build_simulation(payload: AnalysisSimulationLoadPayload) -> CustomAnalysisSimulation:
+        simulation = CustomAnalysisSimulation(
+            _config=payload.config,
+            _meta=payload.meta,
+            _stats=payload.stats,
+            _psf_loader=payload.context.psf_loader,
+        )
+        object.__setattr__(simulation, "_extra_loader", payload.context.extra_loaders["extra_cube"])
+        return simulation
+
+    monkeypatch.setattr("ao_predict.analysis._compose._build_simulation_load_context", _build_context)
+
+    dataset = load_analysis_dataset(data_path, simulation_factory=_build_simulation)
+    sim = dataset.sim(0)
+
+    assert extra_calls == []
+    assert isinstance(sim, CustomAnalysisSimulation)
+    np.testing.assert_allclose(sim._extra_loader(), np.array([0.0], dtype=np.float32))
+    assert extra_calls == [0]
+
+
 def test_load_analysis_dataset_fails_early_on_invalid_schema(tmp_path: Path) -> None:
     data_path = tmp_path / "invalid_analysis_dataset.h5"
     data_path.write_text("not an hdf5 dataset", encoding="utf-8")
@@ -331,7 +494,7 @@ def test_load_analysis_dataset_does_not_build_analysis_objects_before_schema_val
     data_path.write_text("not an hdf5 dataset", encoding="utf-8")
     calls: list[SimulationStore] = []
 
-    def _unexpected_builder(store: SimulationStore) -> AnalysisDataset:
+    def _unexpected_builder(store: SimulationStore, **_: Any) -> AnalysisDataset:
         calls.append(store)
         raise AssertionError("analysis composition should not run before schema validation")
 
@@ -796,4 +959,68 @@ def _success_result(
         stats=stats,
         meta=dict(meta),
         psfs=psfs,
+    )
+
+
+def _record_extra_loader(calls: list[int], sim_idx: int) -> np.ndarray:
+    calls.append(sim_idx)
+    return np.array([float(sim_idx)], dtype=np.float32)
+
+
+def _write_single_analysis_result(store: SimulationStore, *, save_psfs: bool) -> None:
+    store.create(
+        {
+            "name": "ao_predict.simulation.tiptop:TiptopSimulation",
+            "version": "x.y",
+            "extra_stat_names": np.array([], dtype=str),
+            "base_config": "[section]\nvalue=1\n",
+        },
+        {
+            "ee_apertures_mas": np.array([50.0, 100.0], dtype=float),
+            "sr_method": schema.DEFAULT_SETUP_SR_METHOD,
+            "fwhm_summary": schema.DEFAULT_SETUP_FWHM_SUMMARY,
+            "atm_wavelength_um": 0.5,
+            "ngs_mag_zeropoint": 3.0e10,
+            "sci_r_arcsec": np.array([0.0, 10.0, 20.0], dtype=float),
+            "sci_theta_deg": np.array([0.0, 90.0, 180.0], dtype=float),
+            "lgs_r_arcsec": np.array([30.0, 30.0, 30.0, 30.0], dtype=float),
+            "lgs_theta_deg": np.array([45.0, 135.0, 225.0, 315.0], dtype=float),
+            "atm_profiles": {
+                "0": {
+                    "name": "default",
+                    "r0_m": 0.16,
+                    "L0_m": 25.0,
+                    "cn2_heights_m": np.array([0.0, 5000.0], dtype=float),
+                    "cn2_weights": np.array([0.6, 0.4], dtype=float),
+                    "wind_speed_mps": np.array([5.0, 10.0], dtype=float),
+                    "wind_direction_deg": np.array([0.0, 90.0], dtype=float),
+                }
+            },
+        },
+        {
+            "wavelength_um": np.full((1,), 1.65, dtype=float),
+            "atm_profile_id": np.zeros((1,), dtype=np.int32),
+            "zenith_angle_deg": np.full((1,), 20.0, dtype=float),
+            "r0_m": np.full((1,), 0.16, dtype=float),
+            "ngs_r_arcsec": np.ones((1, 3), dtype=float),
+            "ngs_theta_deg": np.zeros((1, 3), dtype=float),
+            "ngs_mag": np.full((1, 3), 15.0, dtype=float),
+        },
+        save_psfs=save_psfs,
+    )
+    store.write_simulation_success(
+        0,
+        _success_result(
+            psfs=np.full((3, 4, 4), 0.1, dtype=np.float32),
+            stats={
+                schema.KEY_STATS_SR: np.array([0.1, 0.2, 0.3], dtype=np.float32),
+                schema.KEY_STATS_EE: np.full((3, 2), 0.5, dtype=np.float32),
+                schema.KEY_STATS_FWHM_MAS: np.full((3,), 60.0, dtype=np.float32),
+            },
+            meta={
+                schema.KEY_META_PIXEL_SCALE_MAS: 4.0,
+                schema.KEY_META_TEL_DIAMETER_M: 8.0,
+                schema.KEY_META_TEL_PUPIL: np.ones((6, 6), dtype=np.float32),
+            },
+        ),
     )

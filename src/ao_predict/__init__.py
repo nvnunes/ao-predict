@@ -2,7 +2,16 @@
 
 # Public re-exports
 
-from .analysis import AnalysisDataset, AnalysisSimulation, load_analysis_dataset
+from .analysis import (
+    AnalysisDataset,
+    AnalysisDatasetFactory,
+    AnalysisDatasetLoadPayload,
+    AnalysisSimulation,
+    AnalysisSimulationFactory,
+    AnalysisSimulationLoadContext,
+    AnalysisSimulationLoadPayload,
+    load_analysis_dataset,
+)
 from .simulation import (
     BaseSimulation,
     Simulation,
@@ -53,7 +62,12 @@ __all__ = [
     "TiptopBaseConfig",
     "TiptopSimulation",
     "AnalysisDataset",
+    "AnalysisDatasetFactory",
+    "AnalysisDatasetLoadPayload",
     "AnalysisSimulation",
+    "AnalysisSimulationFactory",
+    "AnalysisSimulationLoadContext",
+    "AnalysisSimulationLoadPayload",
     "load_analysis_dataset",
 ]
 
