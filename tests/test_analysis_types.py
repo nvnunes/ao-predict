@@ -322,33 +322,27 @@ def test_load_analysis_dataset_preserves_analysis_visible_store_slice(tmp_path: 
     np.testing.assert_allclose(sim.psfs, expected_psfs)
 
 
-def test_load_analysis_dataset_supports_custom_dataset_factory(tmp_path: Path) -> None:
+def test_load_analysis_dataset_supports_custom_dataset_cls(tmp_path: Path) -> None:
     data_path = tmp_path / "analysis_dataset_custom_dataset.h5"
     store = SimulationStore(data_path)
     _write_single_analysis_result(store, save_psfs=False)
 
     class CustomAnalysisDataset(AnalysisDataset):
+        @classmethod
+        def from_load_payload(
+            cls,
+            payload: AnalysisDatasetLoadPayload,
+            simulation_cls: type[AnalysisSimulation] = AnalysisSimulation,
+        ) -> "CustomAnalysisDataset":
+            dataset = super().from_load_payload(payload, simulation_cls=simulation_cls)
+            object.__setattr__(dataset, "_label", "custom-dataset")
+            return dataset
+
         @property
         def label(self) -> str:
-            return "custom-dataset"
+            return self._label
 
-    def _build_dataset(
-        payload: AnalysisDatasetLoadPayload,
-        simulation_factory,
-    ) -> CustomAnalysisDataset:
-        return CustomAnalysisDataset(
-            path=payload.path,
-            simulation_payload=payload.simulation_payload,
-            setup=payload.setup,
-            options_rows=payload.options_rows,
-            meta_rows=payload.meta_rows,
-            stats_rows=payload.stats_rows,
-            extra_stat_names=payload.extra_stat_names,
-            _simulation_contexts=payload.simulation_contexts,
-            _simulation_factory=simulation_factory,
-        )
-
-    dataset = load_analysis_dataset(data_path, dataset_factory=_build_dataset)
+    dataset = load_analysis_dataset(data_path, dataset_cls=CustomAnalysisDataset)
 
     assert isinstance(dataset, CustomAnalysisDataset)
     assert dataset.label == "custom-dataset"
@@ -357,25 +351,29 @@ def test_load_analysis_dataset_supports_custom_dataset_factory(tmp_path: Path) -
     assert dataset.simulation_payload["name"] == "ao_predict.simulation.tiptop:TiptopSimulation"
 
 
-def test_load_analysis_dataset_supports_custom_simulation_factory(tmp_path: Path) -> None:
+def test_load_analysis_dataset_supports_custom_simulation_cls(tmp_path: Path) -> None:
     data_path = tmp_path / "analysis_dataset_custom_simulation.h5"
     store = SimulationStore(data_path)
     _write_single_analysis_result(store, save_psfs=True)
 
     class CustomAnalysisSimulation(AnalysisSimulation):
+        @classmethod
+        def from_load_payload(
+            cls,
+            payload: AnalysisSimulationLoadPayload,
+        ) -> "CustomAnalysisSimulation":
+            return cls(
+                _config=payload.config,
+                _meta=payload.meta,
+                _stats=payload.stats,
+                _psf_loader=payload.context.psf_loader,
+            )
+
         @property
         def pixel_scale(self) -> np.float32:
             return self.meta[schema.KEY_META_PIXEL_SCALE_MAS]
 
-    def _build_simulation(payload: AnalysisSimulationLoadPayload) -> CustomAnalysisSimulation:
-        return CustomAnalysisSimulation(
-            _config=payload.config,
-            _meta=payload.meta,
-            _stats=payload.stats,
-            _psf_loader=payload.context.psf_loader,
-        )
-
-    dataset = load_analysis_dataset(data_path, simulation_factory=_build_simulation)
+    dataset = load_analysis_dataset(data_path, simulation_cls=CustomAnalysisSimulation)
     sim = dataset.sim(0)
 
     assert isinstance(sim, CustomAnalysisSimulation)
@@ -385,49 +383,36 @@ def test_load_analysis_dataset_supports_custom_simulation_factory(tmp_path: Path
     np.testing.assert_allclose(sim.psfs, np.full((3, 4, 4), 0.1, dtype=np.float32))
 
 
-def test_load_analysis_dataset_supports_combined_dataset_and_simulation_factories(tmp_path: Path) -> None:
-    data_path = tmp_path / "analysis_dataset_combined_factories.h5"
+def test_load_analysis_dataset_supports_combined_dataset_and_simulation_classes(tmp_path: Path) -> None:
+    data_path = tmp_path / "analysis_dataset_combined_classes.h5"
     store = SimulationStore(data_path)
     _write_single_analysis_result(store, save_psfs=False)
 
     calls: list[str] = []
 
     class CustomAnalysisDataset(AnalysisDataset):
-        pass
+        @classmethod
+        def from_load_payload(
+            cls,
+            payload: AnalysisDatasetLoadPayload,
+            simulation_cls: type[AnalysisSimulation] = AnalysisSimulation,
+        ) -> "CustomAnalysisDataset":
+            calls.append("dataset")
+            return super().from_load_payload(payload, simulation_cls=simulation_cls)
 
     class CustomAnalysisSimulation(AnalysisSimulation):
-        pass
-
-    def _build_dataset(
-        payload: AnalysisDatasetLoadPayload,
-        simulation_factory,
-    ) -> CustomAnalysisDataset:
-        calls.append("dataset")
-        return CustomAnalysisDataset(
-            path=payload.path,
-            simulation_payload=payload.simulation_payload,
-            setup=payload.setup,
-            options_rows=payload.options_rows,
-            meta_rows=payload.meta_rows,
-            stats_rows=payload.stats_rows,
-            extra_stat_names=payload.extra_stat_names,
-            _simulation_contexts=payload.simulation_contexts,
-            _simulation_factory=simulation_factory,
-        )
-
-    def _build_simulation(payload: AnalysisSimulationLoadPayload) -> CustomAnalysisSimulation:
-        calls.append("simulation")
-        return CustomAnalysisSimulation(
-            _config=payload.config,
-            _meta=payload.meta,
-            _stats=payload.stats,
-            _psf_loader=payload.context.psf_loader,
-        )
+        @classmethod
+        def from_load_payload(
+            cls,
+            payload: AnalysisSimulationLoadPayload,
+        ) -> "CustomAnalysisSimulation":
+            calls.append("simulation")
+            return super().from_load_payload(payload)
 
     dataset = load_analysis_dataset(
         data_path,
-        dataset_factory=_build_dataset,
-        simulation_factory=_build_simulation,
+        dataset_cls=CustomAnalysisDataset,
+        simulation_cls=CustomAnalysisSimulation,
     )
     sim = dataset.sim(0)
 
@@ -436,7 +421,32 @@ def test_load_analysis_dataset_supports_combined_dataset_and_simulation_factorie
     assert calls == ["dataset", "simulation"]
 
 
-def test_load_analysis_dataset_custom_simulation_factory_receives_generic_lazy_extra_loader(
+def test_load_analysis_dataset_subclasses_can_use_load_payload_without_restating_dataset_fields(
+    tmp_path: Path,
+) -> None:
+    data_path = tmp_path / "analysis_dataset_subclass_payload_helper.h5"
+    store = SimulationStore(data_path)
+    _write_single_analysis_result(store, save_psfs=False)
+
+    class CustomAnalysisDataset(AnalysisDataset):
+        @classmethod
+        def from_load_payload(
+            cls,
+            payload: AnalysisDatasetLoadPayload,
+            simulation_cls: type[AnalysisSimulation] = AnalysisSimulation,
+        ) -> "CustomAnalysisDataset":
+            dataset = super().from_load_payload(payload, simulation_cls=simulation_cls)
+            object.__setattr__(dataset, "_payload_path", payload.path)
+            return dataset
+
+    dataset = load_analysis_dataset(data_path, dataset_cls=CustomAnalysisDataset)
+
+    assert isinstance(dataset, CustomAnalysisDataset)
+    assert dataset._payload_path == data_path
+    assert len(dataset) == 1
+
+
+def test_load_analysis_dataset_custom_simulation_cls_receives_generic_lazy_extra_loader(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -448,6 +458,17 @@ def test_load_analysis_dataset_custom_simulation_factory_receives_generic_lazy_e
 
     class CustomAnalysisSimulation(AnalysisSimulation):
         _extra_loader: Any = None
+        _extra_loaders: Any = None
+
+        @classmethod
+        def from_load_payload(
+            cls,
+            payload: AnalysisSimulationLoadPayload,
+        ) -> "CustomAnalysisSimulation":
+            simulation = super().from_load_payload(payload)
+            object.__setattr__(simulation, "_extra_loader", payload.context.extra_loaders["extra_cube"])
+            object.__setattr__(simulation, "_extra_loaders", payload.context.extra_loaders)
+            return simulation
 
     def _build_context(store: SimulationStore, sim_idx: int) -> AnalysisSimulationLoadContext:
         return AnalysisSimulationLoadContext(
@@ -457,23 +478,14 @@ def test_load_analysis_dataset_custom_simulation_factory_receives_generic_lazy_e
             },
         )
 
-    def _build_simulation(payload: AnalysisSimulationLoadPayload) -> CustomAnalysisSimulation:
-        simulation = CustomAnalysisSimulation(
-            _config=payload.config,
-            _meta=payload.meta,
-            _stats=payload.stats,
-            _psf_loader=payload.context.psf_loader,
-        )
-        object.__setattr__(simulation, "_extra_loader", payload.context.extra_loaders["extra_cube"])
-        return simulation
-
     monkeypatch.setattr("ao_predict.analysis._compose._build_simulation_load_context", _build_context)
 
-    dataset = load_analysis_dataset(data_path, simulation_factory=_build_simulation)
+    dataset = load_analysis_dataset(data_path, simulation_cls=CustomAnalysisSimulation)
     sim = dataset.sim(0)
 
     assert extra_calls == []
     assert isinstance(sim, CustomAnalysisSimulation)
+    assert sim._extra_loaders["extra_cube"] is sim._extra_loader
     np.testing.assert_allclose(sim._extra_loader(), np.array([0.0], dtype=np.float32))
     assert extra_calls == [0]
 

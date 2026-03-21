@@ -11,7 +11,7 @@ sim = dataset.sim(0)
 ```
 
 Public analysis behavior:
-- `load_analysis_dataset(path, *, dataset_factory=None, simulation_factory=None) -> AnalysisDataset`
+- `load_analysis_dataset(path, *, dataset_cls=AnalysisDataset, simulation_cls=AnalysisSimulation) -> AnalysisDataset`
 - `len(dataset)`
 - `dataset.sim(i) -> AnalysisSimulation`
 - `sim.config` with exactly `setup` and `options`
@@ -26,9 +26,10 @@ PSFs are optional. If the dataset was created without persisted PSFs,
 accessing `sim.psfs` raises a clear error explaining that PSFs were not saved.
 
 The loader extension seam is generic and intended for downstream subclassing.
-Downstream packages can pass dataset/simulation factories to construct custom
-loaded analysis objects without duplicating upstream load logic or exposing raw
-HDF5 objects on the public analysis surface.
+Downstream packages can pass dataset/simulation subclasses and override
+`from_load_payload(...)` to construct custom loaded analysis objects without
+duplicating upstream load logic or exposing raw HDF5 objects on the public
+analysis surface.
 
 Compatibility wrappers, legacy shaping, plotting, and downstream-specific
 helpers remain outside `ao_predict` and should stay downstream in

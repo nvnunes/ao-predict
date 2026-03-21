@@ -11,11 +11,9 @@ from ..persistence import SimulationStore
 from ._immutability import freeze_mapping
 from .types import (
     AnalysisDataset,
-    AnalysisDatasetFactory,
     AnalysisDatasetLoadPayload,
-    AnalysisSimulationFactory,
     AnalysisSimulationLoadContext,
-    _build_default_analysis_simulation,
+    AnalysisSimulation,
 )
 
 
@@ -41,34 +39,14 @@ def _build_simulation_load_context(
     return AnalysisSimulationLoadContext(psf_loader=_build_psf_loader(store, sim_idx))
 
 
-def _build_default_analysis_dataset(
-    payload: AnalysisDatasetLoadPayload,
-    simulation_factory: AnalysisSimulationFactory,
-) -> AnalysisDataset:
-    """Build the default immutable analysis dataset from one loaded payload."""
-    return AnalysisDataset(
-        path=payload.path,
-        simulation_payload=payload.simulation_payload,
-        setup=payload.setup,
-        options_rows=payload.options_rows,
-        meta_rows=payload.meta_rows,
-        stats_rows=payload.stats_rows,
-        extra_stat_names=payload.extra_stat_names,
-        _simulation_contexts=payload.simulation_contexts,
-        _simulation_factory=simulation_factory,
-    )
-
-
 def _load_analysis_dataset_from_store(
     store: SimulationStore,
     *,
-    dataset_factory: AnalysisDatasetFactory | None = None,
-    simulation_factory: AnalysisSimulationFactory | None = None,
+    dataset_cls: type[AnalysisDataset] = AnalysisDataset,
+    simulation_cls: type[AnalysisSimulation] = AnalysisSimulation,
 ) -> AnalysisDataset:
     """Build an immutable analysis dataset from a validated simulation store."""
     num_sims = store.num_sims()
-    chosen_simulation_factory = simulation_factory or _build_default_analysis_simulation
-    chosen_dataset_factory = dataset_factory or _build_default_analysis_dataset
     payload = AnalysisDatasetLoadPayload(
         path=store.path,
         simulation_payload=freeze_mapping(store.read_simulation()),
@@ -79,22 +57,22 @@ def _load_analysis_dataset_from_store(
         extra_stat_names=store.read_extra_stat_names(),
         simulation_contexts=tuple(_build_simulation_load_context(store, sim_idx) for sim_idx in range(num_sims)),
     )
-    return chosen_dataset_factory(payload, chosen_simulation_factory)
+    return dataset_cls.from_load_payload(payload, simulation_cls=simulation_cls)
 
 
 def load_analysis_dataset(
     dataset_path: str | Path,
     *,
-    dataset_factory: AnalysisDatasetFactory | None = None,
-    simulation_factory: AnalysisSimulationFactory | None = None,
+    dataset_cls: type[AnalysisDataset] = AnalysisDataset,
+    simulation_cls: type[AnalysisSimulation] = AnalysisSimulation,
 ) -> AnalysisDataset:
     """Load an immutable analysis dataset from a dataset file path.
 
-    When no factories are passed, this returns the standard
+    When no subclasses are passed, this returns the standard
     :class:`AnalysisDataset` and ``dataset.sim(i)`` returns the standard
     :class:`AnalysisSimulation`.
 
-    Optional factories let downstream packages wrap the loaded generic analysis
+    Optional subclasses let downstream packages wrap the loaded generic analysis
     payload in custom dataset and simulation types without reimplementing store
     reads or exposing HDF5 handles on the public loaded objects.
     """
@@ -102,6 +80,6 @@ def load_analysis_dataset(
     store.validate_schema()
     return _load_analysis_dataset_from_store(
         store,
-        dataset_factory=dataset_factory,
-        simulation_factory=simulation_factory,
+        dataset_cls=dataset_cls,
+        simulation_cls=simulation_cls,
     )

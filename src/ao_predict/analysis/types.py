@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 import numpy as np
 
@@ -13,6 +13,8 @@ from ._immutability import freeze_array, freeze_mapping
 
 
 _PSF_UNSET = object()
+AnalysisSimulationT = TypeVar("AnalysisSimulationT", bound="AnalysisSimulation")
+AnalysisDatasetT = TypeVar("AnalysisDatasetT", bound="AnalysisDataset")
 
 
 @dataclass(frozen=True)
@@ -20,7 +22,7 @@ class AnalysisSimulationLoadContext:
     """Generic lazy-load callbacks bound for one loaded simulation row.
 
     This context keeps analysis objects HDF5-agnostic while allowing loader
-    factories to attach additional lazy readers during dataset load.
+    subclasses to attach additional lazy readers during dataset load.
 
     Public fields are exposed as read-only properties:
     - ``psf_loader``: lazy loader for persisted PSFs, or ``None`` when absent
@@ -49,12 +51,13 @@ class AnalysisSimulationLoadPayload:
     context: AnalysisSimulationLoadContext = field(repr=False, compare=False)
 
 
-AnalysisSimulationFactory = Callable[[AnalysisSimulationLoadPayload], "AnalysisSimulation"]
-
-
 @dataclass(frozen=True)
 class AnalysisSimulation:
     """Immutable per-simulation analysis view.
+
+    Subclasses may override :meth:`from_load_payload` to bind additional
+    immutable state from the generic load payload/context while preserving the
+    public analysis contract.
 
     Public fields are exposed as read-only properties:
     - ``config``: immutable mapping with exactly ``setup`` and ``options``
@@ -72,6 +75,19 @@ class AnalysisSimulation:
     def __post_init__(self) -> None:
         if tuple(self._config.keys()) != ("setup", "options"):
             raise ValueError("AnalysisSimulation.config must contain exactly 'setup' and 'options'.")
+
+    @classmethod
+    def from_load_payload(
+        cls: type[AnalysisSimulationT],
+        payload: AnalysisSimulationLoadPayload,
+    ) -> AnalysisSimulationT:
+        """Build one immutable loaded simulation view from a generic row payload."""
+        return cls(
+            _config=payload.config,
+            _meta=payload.meta,
+            _stats=payload.stats,
+            _psf_loader=payload.context.psf_loader,
+        )
 
     @property
     def config(self) -> Mapping[str, Any]:
@@ -94,16 +110,6 @@ class AnalysisSimulation:
         return self._psfs_cache  # type: ignore[return-value]
 
 
-def _build_default_analysis_simulation(payload: AnalysisSimulationLoadPayload) -> AnalysisSimulation:
-    """Build the default immutable simulation view from one loaded row payload."""
-    return AnalysisSimulation(
-        _config=payload.config,
-        _meta=payload.meta,
-        _stats=payload.stats,
-        _psf_loader=payload.context.psf_loader,
-    )
-
-
 @dataclass(frozen=True)
 class AnalysisDatasetLoadPayload:
     """Frozen generic payload for constructing one loaded analysis dataset."""
@@ -118,18 +124,15 @@ class AnalysisDatasetLoadPayload:
     simulation_contexts: tuple[AnalysisSimulationLoadContext, ...] = field(repr=False, compare=False)
 
 
-AnalysisDatasetFactory = Callable[[AnalysisDatasetLoadPayload, AnalysisSimulationFactory], "AnalysisDataset"]
-
-
 @dataclass(frozen=True)
 class AnalysisDataset:
     """Immutable dataset-level owner of loaded analysis payloads.
 
     The default dataset returned by :func:`load_analysis_dataset` stores the
     fully loaded generic analysis payload and builds immutable per-row
-    simulations through a configured simulation factory. Downstream loaders may
-    substitute that factory, or the dataset object itself, without reloading the
-    dataset.
+    simulations through a configured simulation class. Downstream subclasses may
+    override :meth:`from_load_payload` to bind additional immutable state
+    without reloading the dataset.
     """
 
     path: Path
@@ -140,11 +143,30 @@ class AnalysisDataset:
     stats_rows: tuple[Mapping[str, Any], ...]
     extra_stat_names: tuple[str, ...]
     _simulation_contexts: tuple[AnalysisSimulationLoadContext, ...] = field(repr=False, compare=False)
-    _simulation_factory: AnalysisSimulationFactory = field(
-        default=_build_default_analysis_simulation,
+    _simulation_cls: type[AnalysisSimulation] = field(
+        default=AnalysisSimulation,
         repr=False,
         compare=False,
     )
+
+    @classmethod
+    def from_load_payload(
+        cls: type[AnalysisDatasetT],
+        payload: AnalysisDatasetLoadPayload,
+        simulation_cls: type[AnalysisSimulation] = AnalysisSimulation,
+    ) -> AnalysisDatasetT:
+        """Build one immutable loaded dataset from a generic dataset payload."""
+        return cls(
+            path=payload.path,
+            simulation_payload=payload.simulation_payload,
+            setup=payload.setup,
+            options_rows=payload.options_rows,
+            meta_rows=payload.meta_rows,
+            stats_rows=payload.stats_rows,
+            extra_stat_names=payload.extra_stat_names,
+            _simulation_contexts=payload.simulation_contexts,
+            _simulation_cls=simulation_cls,
+        )
 
     def __post_init__(self) -> None:
         num_sims = len(self.options_rows)
@@ -164,7 +186,7 @@ class AnalysisDataset:
         if idx >= len(self):
             raise IndexError(f"simulation index {idx} out of range for dataset of size {len(self)}.")
 
-        return self._simulation_factory(
+        return self._simulation_cls.from_load_payload(
             AnalysisSimulationLoadPayload(
                 config=freeze_mapping(
                     {
