@@ -89,6 +89,89 @@ def test_analysis_simulation_requires_exact_config_shape() -> None:
         )
 
 
+def test_analysis_simulation_require_config_field_reads_setup_value() -> None:
+    simulation = AnalysisSimulation(
+        _config=freeze_mapping({"setup": {"mode": "LTAO"}, "options": {}}),
+        _meta=freeze_mapping({}),
+        _stats=freeze_mapping({}),
+    )
+
+    assert simulation._require_config_field("mode") == "LTAO"
+
+
+def test_analysis_simulation_require_meta_field_reads_meta_value() -> None:
+    simulation = AnalysisSimulation(
+        _config=freeze_mapping({"setup": {}, "options": {}}),
+        _meta=freeze_mapping({"mode": "SCAO"}),
+        _stats=freeze_mapping({}),
+    )
+
+    assert simulation._require_meta_field("mode") == "SCAO"
+
+
+def test_analysis_simulation_require_persisted_field_prefers_setup_over_meta() -> None:
+    simulation = AnalysisSimulation(
+        _config=freeze_mapping({"setup": {"mode": "LTAO"}, "options": {}}),
+        _meta=freeze_mapping({"mode": "SCAO"}),
+        _stats=freeze_mapping({}),
+    )
+
+    assert simulation._require_persisted_field("mode") == "LTAO"
+
+
+def test_analysis_simulation_require_persisted_field_can_fall_back_to_meta() -> None:
+    simulation = AnalysisSimulation(
+        _config=freeze_mapping({"setup": {}, "options": {}}),
+        _meta=freeze_mapping({"mode": "SCAO"}),
+        _stats=freeze_mapping({}),
+    )
+
+    assert simulation._require_persisted_field("mode") == "SCAO"
+
+
+def test_analysis_simulation_require_persisted_string_field_normalizes() -> None:
+    simulation = AnalysisSimulation(
+        _config=freeze_mapping({"setup": {"mode": "  LTAO  "}, "options": {}}),
+        _meta=freeze_mapping({}),
+        _stats=freeze_mapping({}),
+    )
+
+    assert simulation._require_persisted_string_field("mode", normalize=True) == "ltao"
+
+
+def test_analysis_simulation_require_persisted_field_raises_on_missing_field() -> None:
+    simulation = AnalysisSimulation(
+        _config=freeze_mapping({"setup": {}, "options": {}}),
+        _meta=freeze_mapping({}),
+        _stats=freeze_mapping({}),
+    )
+
+    with pytest.raises(ValueError, match="Missing required persisted field 'mode'"):
+        simulation._require_persisted_field("mode")
+
+
+def test_analysis_simulation_require_persisted_string_field_raises_on_wrong_type() -> None:
+    simulation = AnalysisSimulation(
+        _config=freeze_mapping({"setup": {"mode": 3}, "options": {}}),
+        _meta=freeze_mapping({}),
+        _stats=freeze_mapping({}),
+    )
+
+    with pytest.raises(TypeError, match="Persisted field 'mode' must be a string"):
+        simulation._require_persisted_string_field("mode")
+
+
+def test_analysis_simulation_require_persisted_string_field_raises_on_empty_normalized_value() -> None:
+    simulation = AnalysisSimulation(
+        _config=freeze_mapping({"setup": {"mode": "   "}, "options": {}}),
+        _meta=freeze_mapping({}),
+        _stats=freeze_mapping({}),
+    )
+
+    with pytest.raises(ValueError, match="Persisted field 'mode' must be a non-empty string"):
+        simulation._require_persisted_string_field("mode", normalize=True)
+
+
 def test_analysis_dataset_sim_reuses_frozen_payloads() -> None:
     setup = freeze_mapping({"ee_apertures_mas": np.array([50.0], dtype=np.float32)})
     options = (freeze_mapping({"wavelength_um": 1.65}),)
@@ -111,6 +194,78 @@ def test_analysis_dataset_sim_reuses_frozen_payloads() -> None:
     assert sim.config["options"]["wavelength_um"] == options[0]["wavelength_um"]
     assert sim.meta["pixel_scale_mas"] == meta[0]["pixel_scale_mas"]
     assert np.array_equal(sim.stats["sr"], stats[0]["sr"])
+
+
+def test_analysis_dataset_require_setup_field_reads_present_value() -> None:
+    dataset = AnalysisDataset(
+        path=Path("/tmp/example.h5"),
+        simulation_payload=freeze_mapping({"name": "demo"}),
+        setup=freeze_mapping({"mode": "LTAO"}),
+        options_rows=(freeze_mapping({}),),
+        meta_rows=(freeze_mapping({}),),
+        stats_rows=(freeze_mapping({}),),
+        extra_stat_names=(),
+    )
+
+    assert dataset._require_setup_field("mode") == "LTAO"
+
+
+def test_analysis_dataset_require_setup_string_field_normalizes() -> None:
+    dataset = AnalysisDataset(
+        path=Path("/tmp/example.h5"),
+        simulation_payload=freeze_mapping({"name": "demo"}),
+        setup=freeze_mapping({"mode": "  LTAO  "}),
+        options_rows=(freeze_mapping({}),),
+        meta_rows=(freeze_mapping({}),),
+        stats_rows=(freeze_mapping({}),),
+        extra_stat_names=(),
+    )
+
+    assert dataset._require_setup_string_field("mode", normalize=True) == "ltao"
+
+
+def test_analysis_dataset_require_setup_field_raises_on_missing_field() -> None:
+    dataset = AnalysisDataset(
+        path=Path("/tmp/example.h5"),
+        simulation_payload=freeze_mapping({"name": "demo"}),
+        setup=freeze_mapping({}),
+        options_rows=(freeze_mapping({}),),
+        meta_rows=(freeze_mapping({}),),
+        stats_rows=(freeze_mapping({}),),
+        extra_stat_names=(),
+    )
+
+    with pytest.raises(ValueError, match="Missing required setup field 'mode'"):
+        dataset._require_setup_field("mode")
+
+
+def test_analysis_dataset_require_setup_string_field_raises_on_wrong_type() -> None:
+    dataset = AnalysisDataset(
+        path=Path("/tmp/example.h5"),
+        simulation_payload=freeze_mapping({"name": "demo"}),
+        setup=freeze_mapping({"mode": 3}),
+        options_rows=(freeze_mapping({}),),
+        meta_rows=(freeze_mapping({}),),
+        stats_rows=(freeze_mapping({}),),
+        extra_stat_names=(),
+    )
+
+    with pytest.raises(TypeError, match="Setup field 'mode' must be a string"):
+        dataset._require_setup_string_field("mode")
+
+
+def test_analysis_dataset_simulation_payload_helpers_read_present_value() -> None:
+    dataset = AnalysisDataset(
+        path=Path("/tmp/example.h5"),
+        simulation_payload=freeze_mapping({"mode": "LTAO", "name": "demo"}),
+        setup=freeze_mapping({}),
+        options_rows=(freeze_mapping({}),),
+        meta_rows=(freeze_mapping({}),),
+        stats_rows=(freeze_mapping({}),),
+        extra_stat_names=(),
+    )
+
+    assert dataset._require_simulation_payload_field("mode") == "LTAO"
 
 
 def test_analysis_dataset_rejects_out_of_range_indexes() -> None:

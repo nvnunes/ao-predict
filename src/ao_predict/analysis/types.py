@@ -16,6 +16,7 @@ from ._immutability import freeze_array, freeze_mapping
 # Constants
 
 _PSFS_FIELD = "psfs"
+_MISSING = object()
 AnalysisSimulationT = TypeVar("AnalysisSimulationT", bound="AnalysisSimulation")
 AnalysisDatasetT = TypeVar("AnalysisDatasetT", bound="AnalysisDataset")
 LazyFieldLoader = Callable[[], Any]
@@ -198,6 +199,84 @@ class AnalysisSimulation:
     def stats(self) -> Mapping[str, Any]:
         return self._stats
 
+    def _has_config_field(self, name: str, *, section: str = "setup") -> bool:
+        """Return whether one config section contains ``name``."""
+        section_mapping = self._config.get(section)
+        return isinstance(section_mapping, Mapping) and name in section_mapping
+
+    def _get_config_field(self, name: str, *, section: str = "setup", default: Any = _MISSING) -> Any:
+        """Return one config field or ``default`` when provided."""
+        section_mapping = self._config.get(section)
+        if isinstance(section_mapping, Mapping) and name in section_mapping:
+            return section_mapping[name]
+        if default is not _MISSING:
+            return default
+        raise ValueError(f"Missing required config field '{name}' in section '{section}'.")
+
+    def _require_config_field(self, name: str, *, section: str = "setup") -> Any:
+        """Return one required config field from ``section``."""
+        return self._get_config_field(name, section=section)
+
+    def _has_meta_field(self, name: str) -> bool:
+        """Return whether persisted meta contains ``name``."""
+        return name in self._meta
+
+    def _get_meta_field(self, name: str, default: Any = _MISSING) -> Any:
+        """Return one meta field or ``default`` when provided."""
+        if name in self._meta:
+            return self._meta[name]
+        if default is not _MISSING:
+            return default
+        raise ValueError(f"Missing required meta field '{name}'.")
+
+    def _require_meta_field(self, name: str) -> Any:
+        """Return one required meta field."""
+        return self._get_meta_field(name)
+
+    def _get_persisted_field(
+        self,
+        name: str,
+        *,
+        setup_first: bool = True,
+        default: Any = _MISSING,
+    ) -> Any:
+        """Return one persisted field from setup/meta using the standard lookup order."""
+        if setup_first:
+            if self._has_config_field(name, section="setup"):
+                return self._require_config_field(name, section="setup")
+            if self._has_meta_field(name):
+                return self._require_meta_field(name)
+        else:
+            if self._has_meta_field(name):
+                return self._require_meta_field(name)
+            if self._has_config_field(name, section="setup"):
+                return self._require_config_field(name, section="setup")
+        if default is not _MISSING:
+            return default
+        raise ValueError(f"Missing required persisted field '{name}'.")
+
+    def _require_persisted_field(self, name: str, *, setup_first: bool = True) -> Any:
+        """Return one required persisted field using the standard lookup order."""
+        return self._get_persisted_field(name, setup_first=setup_first)
+
+    def _require_persisted_string_field(
+        self,
+        name: str,
+        *,
+        setup_first: bool = True,
+        normalize: bool = False,
+    ) -> str:
+        """Return one required persisted string field with optional normalization."""
+        value = self._require_persisted_field(name, setup_first=setup_first)
+        if not isinstance(value, str):
+            raise TypeError(f"Persisted field '{name}' must be a string.")
+        if not normalize:
+            return value
+        value = value.strip().lower()
+        if not value:
+            raise ValueError(f"Persisted field '{name}' must be a non-empty string.")
+        return value
+
     def _has_extra_field(self, name: str) -> bool:
         """Return whether a generic eager or lazy extra field is available."""
         return name in self._extra_fields or name in self._extra_lazy_fields
@@ -310,6 +389,50 @@ class AnalysisDataset:
     def __len__(self) -> int:
         return len(self.options_rows)
 
+    def _has_setup_field(self, name: str) -> bool:
+        """Return whether persisted setup contains ``name``."""
+        return name in self.setup
+
+    def _get_setup_field(self, name: str, default: Any = _MISSING) -> Any:
+        """Return one setup field or ``default`` when provided."""
+        if name in self.setup:
+            return self.setup[name]
+        if default is not _MISSING:
+            return default
+        raise ValueError(f"Missing required setup field '{name}'.")
+
+    def _require_setup_field(self, name: str) -> Any:
+        """Return one required setup field."""
+        return self._get_setup_field(name)
+
+    def _require_setup_string_field(self, name: str, normalize: bool = False) -> str:
+        """Return one required setup string field with optional normalization."""
+        value = self._require_setup_field(name)
+        if not isinstance(value, str):
+            raise TypeError(f"Setup field '{name}' must be a string.")
+        if not normalize:
+            return value
+        value = value.strip().lower()
+        if not value:
+            raise ValueError(f"Setup field '{name}' must be a non-empty string.")
+        return value
+
+    def _has_simulation_payload_field(self, name: str) -> bool:
+        """Return whether persisted simulation payload contains ``name``."""
+        return name in self.simulation_payload
+
+    def _get_simulation_payload_field(self, name: str, default: Any = _MISSING) -> Any:
+        """Return one simulation-payload field or ``default`` when provided."""
+        if name in self.simulation_payload:
+            return self.simulation_payload[name]
+        if default is not _MISSING:
+            return default
+        raise ValueError(f"Missing required simulation payload field '{name}'.")
+
+    def _require_simulation_payload_field(self, name: str) -> Any:
+        """Return one required simulation-payload field."""
+        return self._get_simulation_payload_field(name)
+
     def _has_extra_field(self, name: str) -> bool:
         """Return whether a dataset-level eager or lazy extra field is available."""
         return name in self._dataset_extra_fields or name in self._dataset_extra_lazy_fields
@@ -403,4 +526,3 @@ def _read_simulation_dataset_row(ds: h5py.Dataset, sim_idx: int, *, path: str) -
     if isinstance(value, np.ndarray) and value.dtype.kind in {"S", "O"}:
         return value.astype(str)
     return value
-
