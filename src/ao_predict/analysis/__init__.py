@@ -6,16 +6,18 @@ from ._compose import load_analysis_dataset
 from .types import (
     AnalysisDataset,
     AnalysisDatasetLoadPayload,
+    AnalysisLoadContext,
+    AnalysisLoadContribution,
     AnalysisSimulation,
-    AnalysisSimulationLoadContext,
     AnalysisSimulationLoadPayload,
 )
 
 __all__ = [
     "AnalysisDataset",
     "AnalysisDatasetLoadPayload",
+    "AnalysisLoadContext",
+    "AnalysisLoadContribution",
     "AnalysisSimulation",
-    "AnalysisSimulationLoadContext",
     "AnalysisSimulationLoadPayload",
     "load_analysis_dataset",
 ]

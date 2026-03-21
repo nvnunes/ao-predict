@@ -222,7 +222,7 @@ See also:
 
 ## Analysis Read Path
 
-`load_analysis_dataset(path, *, dataset_cls=AnalysisDataset, simulation_cls=AnalysisSimulation)`
+`load_analysis_dataset(path, *, dataset_cls=AnalysisDataset, simulation_cls=AnalysisSimulation, extra_field_extractors=None)`
 returns an immutable `AnalysisDataset` built from store-backed reads after
 schema validation succeeds.
 
@@ -240,11 +240,13 @@ Use:
 If the dataset was initialized without persisted PSFs, `sim.psfs` raises a
 clear error instead of falling back silently.
 
-The loader also exposes a generic subclass seam for downstream extension.
+The loader also exposes a generic downstream-agnostic extension seam.
 Downstream packages can override `from_load_payload(...)` on dataset/simulation
-subclasses to build custom loaded analysis objects from the validated upstream
-payload and generic lazy-loader context without re-loading the dataset or
-exposing raw HDF5 handles.
+subclasses and register `extra_field_extractors` that read through
+`AnalysisLoadContext` and return `AnalysisLoadContribution` objects. Those
+contributions can add eager or lazy dataset/simulation fields without
+re-loading the dataset or exposing raw HDF5 handles, and downstream simulation
+properties can access them through `_require_extra_field(...)`.
 
 Compatibility adapters, legacy shaping, and downstream-specific analysis helpers
 remain downstream in `girmos-aosims`.

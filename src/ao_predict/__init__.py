@@ -5,8 +5,9 @@
 from .analysis import (
     AnalysisDataset,
     AnalysisDatasetLoadPayload,
+    AnalysisLoadContext,
+    AnalysisLoadContribution,
     AnalysisSimulation,
-    AnalysisSimulationLoadContext,
     AnalysisSimulationLoadPayload,
     load_analysis_dataset,
 )
@@ -61,8 +62,9 @@ __all__ = [
     "TiptopSimulation",
     "AnalysisDataset",
     "AnalysisDatasetLoadPayload",
+    "AnalysisLoadContext",
+    "AnalysisLoadContribution",
     "AnalysisSimulation",
-    "AnalysisSimulationLoadContext",
     "AnalysisSimulationLoadPayload",
     "load_analysis_dataset",
 ]

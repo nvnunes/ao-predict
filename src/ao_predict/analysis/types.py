@@ -7,38 +7,87 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, TypeVar
 
+import h5py
 import numpy as np
 
 from ._immutability import freeze_array, freeze_mapping
 
 
-_PSF_UNSET = object()
+# Constants
+
+_PSFS_FIELD = "psfs"
 AnalysisSimulationT = TypeVar("AnalysisSimulationT", bound="AnalysisSimulation")
 AnalysisDatasetT = TypeVar("AnalysisDatasetT", bound="AnalysisDataset")
+LazyFieldLoader = Callable[[], Any]
+
+
+# Data structures
+
+@dataclass(frozen=True)
+class AnalysisLoadContext:
+    """Generic persisted-analysis reader passed to load extractors.
+
+    The context exposes path-based read helpers without leaking an open HDF5
+    file handle onto the public loaded analysis objects. Lazy extractors may
+    safely capture this context because each read method opens the dataset only
+    for the duration of the call.
+    """
+
+    path: Path
+    num_sims: int
+
+    def has_path(self, path: str) -> bool:
+        """Return whether the persisted dataset contains ``path``."""
+        with h5py.File(self.path, "r") as f:
+            return path in f
+
+    def read_dataset_value(self, path: str) -> Any:
+        """Read any persisted node at ``path`` into plain Python objects."""
+        with h5py.File(self.path, "r") as f:
+            if path not in f:
+                raise ValueError(f"Missing required dataset '{path}'.")
+            return _read_node(f[path])
+
+    def read_sim_value(self, path: str, sim_index: int) -> Any:
+        """Read one per-simulation row from a dataset at ``path``."""
+        with h5py.File(self.path, "r") as f:
+            ds = _require_dataset(f, path)
+            return _read_simulation_dataset_row(ds, sim_index, path=path)
+
+    def read_array(self, path: str) -> np.ndarray:
+        """Read a dataset at ``path`` as a standalone NumPy array."""
+        with h5py.File(self.path, "r") as f:
+            ds = _require_dataset(f, path)
+            return np.asarray(ds[...]).copy()
+
+    def read_sim_array(self, path: str, sim_index: int) -> np.ndarray:
+        """Read one per-simulation array row from a dataset at ``path``."""
+        value = self.read_sim_value(path, sim_index)
+        return np.asarray(value).copy()
 
 
 @dataclass(frozen=True)
-class AnalysisSimulationLoadContext:
-    """Generic lazy-load callbacks bound for one loaded simulation row.
+class AnalysisLoadContribution:
+    """Structured eager/lazy additions contributed during analysis loading."""
 
-    This context keeps analysis objects HDF5-agnostic while allowing loader
-    subclasses to attach additional lazy readers during dataset load.
-
-    Public fields are exposed as read-only properties:
-    - ``psf_loader``: lazy loader for persisted PSFs, or ``None`` when absent
-    - ``extra_loaders``: immutable mapping of additional lazy loaders keyed by
-      generic dataset/feature names chosen by the loader implementation
-    """
-
-    psf_loader: Callable[[], np.ndarray] | None = field(default=None, repr=False, compare=False)
-    extra_loaders: Mapping[str, Callable[[], Any]] = field(
-        default_factory=dict,
+    dataset_fields: Mapping[str, Any] = field(default_factory=dict)
+    dataset_lazy_fields: Mapping[str, LazyFieldLoader] = field(default_factory=dict, repr=False, compare=False)
+    simulation_fields: tuple[Mapping[str, Any], ...] = ()
+    simulation_lazy_fields: tuple[Mapping[str, LazyFieldLoader], ...] = field(
+        default=(),
         repr=False,
         compare=False,
     )
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "extra_loaders", freeze_mapping(dict(self.extra_loaders)))
+        object.__setattr__(self, "dataset_fields", freeze_mapping(dict(self.dataset_fields)))
+        object.__setattr__(self, "dataset_lazy_fields", freeze_mapping(dict(self.dataset_lazy_fields)))
+        object.__setattr__(self, "simulation_fields", tuple(freeze_mapping(dict(row)) for row in self.simulation_fields))
+        object.__setattr__(
+            self,
+            "simulation_lazy_fields",
+            tuple(freeze_mapping(dict(row)) for row in self.simulation_lazy_fields),
+        )
 
 
 @dataclass(frozen=True)
@@ -48,16 +97,60 @@ class AnalysisSimulationLoadPayload:
     config: Mapping[str, Any]
     meta: Mapping[str, Any]
     stats: Mapping[str, Any]
-    context: AnalysisSimulationLoadContext = field(repr=False, compare=False)
+    extra_fields: Mapping[str, Any] = field(default_factory=dict, repr=False, compare=False)
+    extra_lazy_fields: Mapping[str, LazyFieldLoader] = field(default_factory=dict, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "extra_fields", freeze_mapping(dict(self.extra_fields)))
+        object.__setattr__(self, "extra_lazy_fields", freeze_mapping(dict(self.extra_lazy_fields)))
+
+
+@dataclass(frozen=True)
+class AnalysisDatasetLoadPayload:
+    """Frozen generic payload for constructing one loaded analysis dataset."""
+
+    path: Path
+    simulation_payload: Mapping[str, Any]
+    setup: Mapping[str, Any]
+    options_rows: tuple[Mapping[str, Any], ...]
+    meta_rows: tuple[Mapping[str, Any], ...]
+    stats_rows: tuple[Mapping[str, Any], ...]
+    extra_stat_names: tuple[str, ...]
+    dataset_extra_fields: Mapping[str, Any] = field(default_factory=dict, repr=False, compare=False)
+    dataset_extra_lazy_fields: Mapping[str, LazyFieldLoader] = field(default_factory=dict, repr=False, compare=False)
+    simulation_extra_fields: tuple[Mapping[str, Any], ...] = field(default=(), repr=False, compare=False)
+    simulation_extra_lazy_fields: tuple[Mapping[str, LazyFieldLoader], ...] = field(
+        default=(),
+        repr=False,
+        compare=False,
+    )
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "dataset_extra_fields", freeze_mapping(dict(self.dataset_extra_fields)))
+        object.__setattr__(
+            self,
+            "dataset_extra_lazy_fields",
+            freeze_mapping(dict(self.dataset_extra_lazy_fields)),
+        )
+        object.__setattr__(
+            self,
+            "simulation_extra_fields",
+            tuple(freeze_mapping(dict(row)) for row in self.simulation_extra_fields),
+        )
+        object.__setattr__(
+            self,
+            "simulation_extra_lazy_fields",
+            tuple(freeze_mapping(dict(row)) for row in self.simulation_extra_lazy_fields),
+        )
 
 
 @dataclass(frozen=True)
 class AnalysisSimulation:
     """Immutable per-simulation analysis view.
 
-    Subclasses may override :meth:`from_load_payload` to bind additional
-    immutable state from the generic load payload/context while preserving the
-    public analysis contract.
+    Subclasses may expose semantic properties backed by
+    :meth:`_require_extra_field` without reimplementing eager/lazy loader and
+    cache plumbing. The built-in ``psfs`` property uses the same mechanism.
 
     Public fields are exposed as read-only properties:
     - ``config``: immutable mapping with exactly ``setup`` and ``options``
@@ -69,12 +162,15 @@ class AnalysisSimulation:
     _config: Mapping[str, Any]
     _meta: Mapping[str, Any]
     _stats: Mapping[str, Any]
-    _psf_loader: Callable[[], np.ndarray] | None = field(default=None, repr=False, compare=False)
-    _psfs_cache: object = field(default=_PSF_UNSET, init=False, repr=False, compare=False)
+    _extra_fields: Mapping[str, Any] = field(default_factory=dict, repr=False, compare=False)
+    _extra_lazy_fields: Mapping[str, LazyFieldLoader] = field(default_factory=dict, repr=False, compare=False)
+    _extra_field_cache: dict[str, Any] = field(default_factory=dict, init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         if tuple(self._config.keys()) != ("setup", "options"):
             raise ValueError("AnalysisSimulation.config must contain exactly 'setup' and 'options'.")
+        object.__setattr__(self, "_extra_fields", freeze_mapping(dict(self._extra_fields)))
+        object.__setattr__(self, "_extra_lazy_fields", freeze_mapping(dict(self._extra_lazy_fields)))
 
     @classmethod
     def from_load_payload(
@@ -86,7 +182,8 @@ class AnalysisSimulation:
             _config=payload.config,
             _meta=payload.meta,
             _stats=payload.stats,
-            _psf_loader=payload.context.psf_loader,
+            _extra_fields=payload.extra_fields,
+            _extra_lazy_fields=payload.extra_lazy_fields,
         )
 
     @property
@@ -101,27 +198,30 @@ class AnalysisSimulation:
     def stats(self) -> Mapping[str, Any]:
         return self._stats
 
+    def _has_extra_field(self, name: str) -> bool:
+        """Return whether a generic eager or lazy extra field is available."""
+        return name in self._extra_fields or name in self._extra_lazy_fields
+
+    def _require_extra_field(self, name: str) -> Any:
+        """Return one extra field, loading and caching it on first access."""
+        if name in self._extra_fields:
+            return self._extra_fields[name]
+        if name in self._extra_field_cache:
+            return self._extra_field_cache[name]
+        if name not in self._extra_lazy_fields:
+            raise ValueError(f"Extra field '{name}' is not available in this analysis simulation.")
+        value = _freeze_loaded_value(self._extra_lazy_fields[name]())
+        self._extra_field_cache[name] = value
+        return value
+
     @property
     def psfs(self) -> np.ndarray:
-        if self._psfs_cache is _PSF_UNSET:
-            if self._psf_loader is None:
-                raise ValueError("PSFs are not available in this dataset.")
-            object.__setattr__(self, "_psfs_cache", freeze_array(self._psf_loader()))
-        return self._psfs_cache  # type: ignore[return-value]
-
-
-@dataclass(frozen=True)
-class AnalysisDatasetLoadPayload:
-    """Frozen generic payload for constructing one loaded analysis dataset."""
-
-    path: Path
-    simulation_payload: Mapping[str, Any]
-    setup: Mapping[str, Any]
-    options_rows: tuple[Mapping[str, Any], ...]
-    meta_rows: tuple[Mapping[str, Any], ...]
-    stats_rows: tuple[Mapping[str, Any], ...]
-    extra_stat_names: tuple[str, ...]
-    simulation_contexts: tuple[AnalysisSimulationLoadContext, ...] = field(repr=False, compare=False)
+        try:
+            return self._require_extra_field(_PSFS_FIELD)
+        except ValueError as exc:
+            if "Extra field 'psfs'" in str(exc):
+                raise ValueError("PSFs are not available in this dataset.") from None
+            raise
 
 
 @dataclass(frozen=True)
@@ -129,10 +229,9 @@ class AnalysisDataset:
     """Immutable dataset-level owner of loaded analysis payloads.
 
     The default dataset returned by :func:`load_analysis_dataset` stores the
-    fully loaded generic analysis payload and builds immutable per-row
-    simulations through a configured simulation class. Downstream subclasses may
-    override :meth:`from_load_payload` to bind additional immutable state
-    without reloading the dataset.
+    loaded generic analysis payload and per-simulation extra field definitions.
+    Downstream subclasses may override :meth:`from_load_payload` and expose
+    semantic properties backed by the generic dataset/simulation field storage.
     """
 
     path: Path
@@ -142,12 +241,20 @@ class AnalysisDataset:
     meta_rows: tuple[Mapping[str, Any], ...]
     stats_rows: tuple[Mapping[str, Any], ...]
     extra_stat_names: tuple[str, ...]
-    _simulation_contexts: tuple[AnalysisSimulationLoadContext, ...] = field(repr=False, compare=False)
-    _simulation_cls: type[AnalysisSimulation] = field(
-        default=AnalysisSimulation,
+    _dataset_extra_fields: Mapping[str, Any] = field(default_factory=dict, repr=False, compare=False)
+    _dataset_extra_lazy_fields: Mapping[str, LazyFieldLoader] = field(
+        default_factory=dict,
         repr=False,
         compare=False,
     )
+    _simulation_extra_fields: tuple[Mapping[str, Any], ...] = field(default=(), repr=False, compare=False)
+    _simulation_extra_lazy_fields: tuple[Mapping[str, LazyFieldLoader], ...] = field(
+        default=(),
+        repr=False,
+        compare=False,
+    )
+    _dataset_extra_field_cache: dict[str, Any] = field(default_factory=dict, init=False, repr=False, compare=False)
+    _simulation_cls: type[AnalysisSimulation] = field(default=AnalysisSimulation, repr=False, compare=False)
 
     @classmethod
     def from_load_payload(
@@ -164,7 +271,10 @@ class AnalysisDataset:
             meta_rows=payload.meta_rows,
             stats_rows=payload.stats_rows,
             extra_stat_names=payload.extra_stat_names,
-            _simulation_contexts=payload.simulation_contexts,
+            _dataset_extra_fields=payload.dataset_extra_fields,
+            _dataset_extra_lazy_fields=payload.dataset_extra_lazy_fields,
+            _simulation_extra_fields=payload.simulation_extra_fields,
+            _simulation_extra_lazy_fields=payload.simulation_extra_lazy_fields,
             _simulation_cls=simulation_cls,
         )
 
@@ -172,11 +282,49 @@ class AnalysisDataset:
         num_sims = len(self.options_rows)
         if len(self.meta_rows) != num_sims or len(self.stats_rows) != num_sims:
             raise ValueError("AnalysisDataset rows must have matching per-simulation lengths.")
-        if len(self._simulation_contexts) != num_sims:
-            raise ValueError("AnalysisDataset simulation contexts must match dataset size.")
+        if self._simulation_extra_fields and len(self._simulation_extra_fields) != num_sims:
+            raise ValueError("AnalysisDataset simulation extra fields must match dataset size.")
+        if self._simulation_extra_lazy_fields and len(self._simulation_extra_lazy_fields) != num_sims:
+            raise ValueError("AnalysisDataset simulation lazy fields must match dataset size.")
+        object.__setattr__(self, "_dataset_extra_fields", freeze_mapping(dict(self._dataset_extra_fields)))
+        object.__setattr__(
+            self,
+            "_dataset_extra_lazy_fields",
+            freeze_mapping(dict(self._dataset_extra_lazy_fields)),
+        )
+        object.__setattr__(
+            self,
+            "_simulation_extra_fields",
+            tuple(freeze_mapping(dict(row)) for row in self._simulation_extra_fields)
+            if self._simulation_extra_fields
+            else tuple(freeze_mapping({}) for _ in range(num_sims)),
+        )
+        object.__setattr__(
+            self,
+            "_simulation_extra_lazy_fields",
+            tuple(freeze_mapping(dict(row)) for row in self._simulation_extra_lazy_fields)
+            if self._simulation_extra_lazy_fields
+            else tuple(freeze_mapping({}) for _ in range(num_sims)),
+        )
 
     def __len__(self) -> int:
         return len(self.options_rows)
+
+    def _has_extra_field(self, name: str) -> bool:
+        """Return whether a dataset-level eager or lazy extra field is available."""
+        return name in self._dataset_extra_fields or name in self._dataset_extra_lazy_fields
+
+    def _require_extra_field(self, name: str) -> Any:
+        """Return one dataset-level extra field, loading lazily when needed."""
+        if name in self._dataset_extra_fields:
+            return self._dataset_extra_fields[name]
+        if name in self._dataset_extra_field_cache:
+            return self._dataset_extra_field_cache[name]
+        if name not in self._dataset_extra_lazy_fields:
+            raise ValueError(f"Extra field '{name}' is not available in this analysis dataset.")
+        value = _freeze_loaded_value(self._dataset_extra_lazy_fields[name]())
+        self._dataset_extra_field_cache[name] = value
+        return value
 
     def sim(self, sim_idx: int) -> AnalysisSimulation:
         """Return one zero-based immutable simulation view."""
@@ -196,6 +344,63 @@ class AnalysisDataset:
                 ),
                 meta=self.meta_rows[idx],
                 stats=self.stats_rows[idx],
-                context=self._simulation_contexts[idx],
+                extra_fields=self._simulation_extra_fields[idx],
+                extra_lazy_fields=self._simulation_extra_lazy_fields[idx],
             )
         )
+
+
+# Helper primitives
+
+def _freeze_loaded_value(value: Any) -> Any:
+    """Freeze one eager/lazy loaded value for read-only public exposure."""
+    if isinstance(value, np.ndarray):
+        return freeze_array(value)
+    if isinstance(value, Mapping):
+        return freeze_mapping(dict(value))
+    if isinstance(value, list):
+        return tuple(_freeze_loaded_value(item) for item in value)
+    if isinstance(value, tuple):
+        return tuple(_freeze_loaded_value(item) for item in value)
+    return value
+
+
+def _read_node(node: h5py.Group | h5py.Dataset) -> Any:
+    """Read an HDF5 node recursively into plain Python objects."""
+    if isinstance(node, h5py.Group):
+        return {key: _read_node(node[key]) for key in node.keys()}
+
+    data = node[()]
+    if isinstance(data, bytes):
+        return data.decode("utf-8")
+    if isinstance(data, np.ndarray) and data.dtype.kind in {"S", "O"}:
+        return data.astype(str)
+    return data
+
+
+def _require_dataset(f: h5py.File | h5py.Group, path: str) -> h5py.Dataset:
+    """Return a dataset by path or raise a clear contract error."""
+    if path not in f:
+        raise ValueError(f"Missing required dataset '{path}'.")
+    ds = f[path]
+    if not isinstance(ds, h5py.Dataset):
+        raise ValueError(f"{path} must be a dataset.")
+    return ds
+
+
+def _read_simulation_dataset_row(ds: h5py.Dataset, sim_idx: int, *, path: str) -> Any:
+    """Read one per-simulation dataset row with shared index and shape checks."""
+    idx = int(sim_idx)
+    if idx < 0:
+        raise IndexError(f"simulation index must be >= 0, got {idx}.")
+    if ds.ndim == 0:
+        raise ValueError(f"{path} must be per-simulation with first dim N.")
+    if idx >= ds.shape[0]:
+        raise IndexError(f"sim_idx {idx} out of range for {path} shape {ds.shape}")
+    value = ds[idx]
+    if isinstance(value, bytes):
+        return value.decode("utf-8")
+    if isinstance(value, np.ndarray) and value.dtype.kind in {"S", "O"}:
+        return value.astype(str)
+    return value
+

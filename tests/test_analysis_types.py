@@ -11,8 +11,9 @@ import ao_predict.simulation.api as sim_api
 from ao_predict.analysis import (
     AnalysisDataset,
     AnalysisDatasetLoadPayload,
+    AnalysisLoadContext,
+    AnalysisLoadContribution,
     AnalysisSimulation,
-    AnalysisSimulationLoadContext,
     AnalysisSimulationLoadPayload,
     load_analysis_dataset,
 )
@@ -68,7 +69,7 @@ def test_analysis_simulation_psfs_lazy_loads_once() -> None:
         _config=freeze_mapping({"setup": {}, "options": {}}),
         _meta=freeze_mapping({"pixel_scale_mas": 4.0}),
         _stats=freeze_mapping({"sr": np.array([0.1], dtype=np.float32)}),
-        _psf_loader=_load_psfs,
+        _extra_lazy_fields={"psfs": _load_psfs},
     )
 
     first = simulation.psfs
@@ -101,7 +102,6 @@ def test_analysis_dataset_sim_reuses_frozen_payloads() -> None:
         meta_rows=meta,
         stats_rows=stats,
         extra_stat_names=(),
-        _simulation_contexts=(AnalysisSimulationLoadContext(),),
     )
 
     sim = dataset.sim(0)
@@ -122,7 +122,6 @@ def test_analysis_dataset_rejects_out_of_range_indexes() -> None:
         meta_rows=(freeze_mapping({}),),
         stats_rows=(freeze_mapping({}),),
         extra_stat_names=(),
-        _simulation_contexts=(AnalysisSimulationLoadContext(),),
     )
 
     with pytest.raises(IndexError, match=">= 0"):
@@ -362,12 +361,7 @@ def test_load_analysis_dataset_supports_custom_simulation_cls(tmp_path: Path) ->
             cls,
             payload: AnalysisSimulationLoadPayload,
         ) -> "CustomAnalysisSimulation":
-            return cls(
-                _config=payload.config,
-                _meta=payload.meta,
-                _stats=payload.stats,
-                _psf_loader=payload.context.psf_loader,
-            )
+            return super().from_load_payload(payload)
 
         @property
         def pixel_scale(self) -> np.float32:
@@ -448,7 +442,6 @@ def test_load_analysis_dataset_subclasses_can_use_load_payload_without_restating
 
 def test_load_analysis_dataset_custom_simulation_cls_receives_generic_lazy_extra_loader(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     data_path = tmp_path / "analysis_dataset_extra_loader.h5"
     store = SimulationStore(data_path)
@@ -457,37 +450,98 @@ def test_load_analysis_dataset_custom_simulation_cls_receives_generic_lazy_extra
     extra_calls: list[int] = []
 
     class CustomAnalysisSimulation(AnalysisSimulation):
-        _extra_loader: Any = None
-        _extra_loaders: Any = None
+        @property
+        def extra_cube(self) -> np.ndarray:
+            return self._require_extra_field("extra_cube")
 
         @classmethod
         def from_load_payload(
             cls,
             payload: AnalysisSimulationLoadPayload,
         ) -> "CustomAnalysisSimulation":
-            simulation = super().from_load_payload(payload)
-            object.__setattr__(simulation, "_extra_loader", payload.context.extra_loaders["extra_cube"])
-            object.__setattr__(simulation, "_extra_loaders", payload.context.extra_loaders)
-            return simulation
+            return super().from_load_payload(payload)
 
-    def _build_context(store: SimulationStore, sim_idx: int) -> AnalysisSimulationLoadContext:
-        return AnalysisSimulationLoadContext(
-            psf_loader=None,
-            extra_loaders={
-                "extra_cube": lambda: _record_extra_loader(extra_calls, sim_idx),
-            },
+    def _extra_cube_extractor(ctx: AnalysisLoadContext) -> AnalysisLoadContribution:
+        return AnalysisLoadContribution(
+            simulation_lazy_fields=tuple(
+                {"extra_cube": lambda sim_index=sim_idx: _record_extra_loader(extra_calls, sim_index)}
+                for sim_idx in range(ctx.num_sims)
+            )
         )
 
-    monkeypatch.setattr("ao_predict.analysis._compose._build_simulation_load_context", _build_context)
-
-    dataset = load_analysis_dataset(data_path, simulation_cls=CustomAnalysisSimulation)
+    dataset = load_analysis_dataset(
+        data_path,
+        simulation_cls=CustomAnalysisSimulation,
+        extra_field_extractors=[_extra_cube_extractor],
+    )
     sim = dataset.sim(0)
 
     assert extra_calls == []
     assert isinstance(sim, CustomAnalysisSimulation)
-    assert sim._extra_loaders["extra_cube"] is sim._extra_loader
-    np.testing.assert_allclose(sim._extra_loader(), np.array([0.0], dtype=np.float32))
+    np.testing.assert_allclose(sim.extra_cube, np.array([0.0], dtype=np.float32))
     assert extra_calls == [0]
+
+
+def test_load_analysis_dataset_extra_field_extractors_support_eager_per_sim_fields(tmp_path: Path) -> None:
+    data_path = tmp_path / "analysis_dataset_eager_extra.h5"
+    store = SimulationStore(data_path)
+    _write_single_analysis_result(store, save_psfs=False)
+
+    class CustomAnalysisSimulation(AnalysisSimulation):
+        @property
+        def mode(self) -> str:
+            return self._require_extra_field("mode")
+
+    def _mode_extractor(ctx: AnalysisLoadContext) -> AnalysisLoadContribution:
+        return AnalysisLoadContribution(
+            simulation_fields=tuple({"mode": f"mode-{sim_idx}"} for sim_idx in range(ctx.num_sims))
+        )
+
+    dataset = load_analysis_dataset(
+        data_path,
+        simulation_cls=CustomAnalysisSimulation,
+        extra_field_extractors=[_mode_extractor],
+    )
+
+    assert dataset.sim(0).mode == "mode-0"
+
+
+def test_load_analysis_dataset_extra_field_extractors_support_dataset_level_fields(tmp_path: Path) -> None:
+    data_path = tmp_path / "analysis_dataset_dataset_extra.h5"
+    store = SimulationStore(data_path)
+    _write_single_analysis_result(store, save_psfs=False)
+
+    class CustomAnalysisDataset(AnalysisDataset):
+        @property
+        def mode_summary(self) -> str:
+            return self._require_extra_field("mode_summary")
+
+    def _dataset_extractor(ctx: AnalysisLoadContext) -> AnalysisLoadContribution:
+        return AnalysisLoadContribution(dataset_fields={"mode_summary": f"count={ctx.num_sims}"})
+
+    dataset = load_analysis_dataset(
+        data_path,
+        dataset_cls=CustomAnalysisDataset,
+        extra_field_extractors=[_dataset_extractor],
+    )
+
+    assert dataset.mode_summary == "count=1"
+
+
+def test_analysis_simulation_require_extra_field_raises_cleanly_when_missing() -> None:
+    class CustomAnalysisSimulation(AnalysisSimulation):
+        @property
+        def grouped_psfs(self) -> np.ndarray:
+            return self._require_extra_field("grouped_psfs")
+
+    simulation = CustomAnalysisSimulation(
+        _config=freeze_mapping({"setup": {}, "options": {}}),
+        _meta=freeze_mapping({"pixel_scale_mas": 4.0}),
+        _stats=freeze_mapping({"sr": np.array([0.1], dtype=np.float32)}),
+    )
+
+    with pytest.raises(ValueError, match="grouped_psfs"):
+        _ = simulation.grouped_psfs
 
 
 def test_load_analysis_dataset_fails_early_on_invalid_schema(tmp_path: Path) -> None:
@@ -696,13 +750,14 @@ def test_analysis_dataset_psfs_remain_lazy_until_simulation_access(tmp_path: Pat
     )
 
     calls: list[int] = []
-    original_reader = SimulationStore.read_simulation_psfs
+    original_reader = AnalysisLoadContext.read_sim_array
 
-    def _recording_reader(self: SimulationStore, sim_idx: int) -> np.ndarray:
-        calls.append(sim_idx)
-        return original_reader(self, sim_idx)
+    def _recording_reader(self: AnalysisLoadContext, path: str, sim_idx: int) -> np.ndarray:
+        if path == "/psfs/data":
+            calls.append(sim_idx)
+        return original_reader(self, path, sim_idx)
 
-    monkeypatch.setattr(SimulationStore, "read_simulation_psfs", _recording_reader)
+    monkeypatch.setattr(AnalysisLoadContext, "read_sim_array", _recording_reader)
 
     dataset = load_analysis_dataset(data_path)
     sim = dataset.sim(0)
