@@ -4,6 +4,7 @@
 - Maintain high code quality across simulation, persistence, data loading, training, and inference.
 - Prefer stable contracts and incremental refactors over broad rewrites.
 - Prefer removing stale abstractions over preserving weak indirection.
+- Use the local `./.conda` environment for Python commands, test runs, and related tooling unless a task explicitly requires something else.
 
 ## Architecture
 - Keep clear boundaries:
