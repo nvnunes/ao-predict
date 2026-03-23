@@ -174,16 +174,22 @@ def test_analysis_simulation_require_persisted_string_field_raises_on_empty_norm
 
 def test_analysis_dataset_sim_reuses_frozen_payloads() -> None:
     setup = freeze_mapping({"ee_apertures_mas": np.array([50.0], dtype=np.float32)})
-    options = (freeze_mapping({"wavelength_um": 1.65}),)
-    meta = (freeze_mapping({"pixel_scale_mas": 4.0}),)
-    stats = (freeze_mapping({"sr": np.array([0.1], dtype=np.float32)}),)
+    options = freeze_mapping({"wavelength_um": np.array([1.65], dtype=np.float64)})
+    meta = freeze_mapping(
+        {
+            "pixel_scale_mas": np.array([4.0], dtype=np.float32),
+            "tel_diameter_m": np.float32(8.0),
+            "tel_pupil": np.ones((2, 2), dtype=np.float32),
+        }
+    )
+    stats = freeze_mapping({"sr": np.array([[0.1]], dtype=np.float32)})
     dataset = AnalysisDataset(
         path=Path("/tmp/example.h5"),
         simulation_payload=freeze_mapping({"name": "demo"}),
         setup=setup,
-        options_rows=options,
-        meta_rows=meta,
-        stats_rows=stats,
+        options=options,
+        meta=meta,
+        stats=stats,
         extra_stat_names=(),
     )
 
@@ -191,9 +197,56 @@ def test_analysis_dataset_sim_reuses_frozen_payloads() -> None:
 
     assert len(dataset) == 1
     assert np.array_equal(sim.config["setup"]["ee_apertures_mas"], setup["ee_apertures_mas"])
-    assert sim.config["options"]["wavelength_um"] == options[0]["wavelength_um"]
-    assert sim.meta["pixel_scale_mas"] == meta[0]["pixel_scale_mas"]
-    assert np.array_equal(sim.stats["sr"], stats[0]["sr"])
+    assert dataset.options["wavelength_um"].flags.writeable is False
+    assert dataset.meta["tel_pupil"].flags.writeable is False
+    assert dataset.stats["sr"].flags.writeable is False
+    assert sim.config["options"]["wavelength_um"] == options["wavelength_um"][0]
+    assert sim.meta["pixel_scale_mas"] == meta["pixel_scale_mas"][0]
+    assert sim.meta["tel_diameter_m"] == meta["tel_diameter_m"]
+    assert np.array_equal(sim.stats["sr"], stats["sr"][0])
+
+
+def test_analysis_dataset_exposes_columnar_dataset_level_fields() -> None:
+    dataset = AnalysisDataset(
+        path=Path("/tmp/example.h5"),
+        simulation_payload=freeze_mapping({"name": "demo"}),
+        setup=freeze_mapping({"mode": "LTAO"}),
+        options=freeze_mapping({"wavelength_um": np.array([1.25, 1.65], dtype=np.float64)}),
+        meta=freeze_mapping(
+            {
+                "pixel_scale_mas": np.array([4.0, 5.0], dtype=np.float32),
+                "tel_diameter_m": np.float32(8.0),
+                "tel_pupil": np.ones((2, 2), dtype=np.float32),
+            }
+        ),
+        stats=freeze_mapping({"sr": np.array([[0.1], [0.2]], dtype=np.float32)}),
+        extra_stat_names=(),
+    )
+
+    assert dataset.setup["mode"] == "LTAO"
+    np.testing.assert_allclose(dataset.options["wavelength_um"], np.array([1.25, 1.65], dtype=np.float64))
+    np.testing.assert_allclose(dataset.meta["pixel_scale_mas"], np.array([4.0, 5.0], dtype=np.float32))
+    assert dataset.meta["tel_diameter_m"] == np.float32(8.0)
+    np.testing.assert_allclose(dataset.stats["sr"], np.array([[0.1], [0.2]], dtype=np.float32))
+
+
+def test_analysis_dataset_rejects_mismatched_column_lengths() -> None:
+    with pytest.raises(ValueError, match="share dataset size 2"):
+        AnalysisDataset(
+            path=Path("/tmp/example.h5"),
+            simulation_payload=freeze_mapping({"name": "demo"}),
+            setup=freeze_mapping({}),
+            options=freeze_mapping({"wavelength_um": np.array([1.25, 1.65], dtype=np.float64)}),
+            meta=freeze_mapping(
+                {
+                    "pixel_scale_mas": np.array([4.0], dtype=np.float32),
+                    "tel_diameter_m": np.float32(8.0),
+                    "tel_pupil": np.ones((2, 2), dtype=np.float32),
+                }
+            ),
+            stats=freeze_mapping({"sr": np.array([[0.1], [0.2]], dtype=np.float32)}),
+            extra_stat_names=(),
+        )
 
 
 def test_analysis_dataset_require_setup_field_reads_present_value() -> None:
@@ -201,9 +254,15 @@ def test_analysis_dataset_require_setup_field_reads_present_value() -> None:
         path=Path("/tmp/example.h5"),
         simulation_payload=freeze_mapping({"name": "demo"}),
         setup=freeze_mapping({"mode": "LTAO"}),
-        options_rows=(freeze_mapping({}),),
-        meta_rows=(freeze_mapping({}),),
-        stats_rows=(freeze_mapping({}),),
+        options=freeze_mapping({"wavelength_um": np.array([1.65], dtype=np.float64)}),
+        meta=freeze_mapping(
+            {
+                "pixel_scale_mas": np.array([4.0], dtype=np.float32),
+                "tel_diameter_m": np.float32(8.0),
+                "tel_pupil": np.ones((2, 2), dtype=np.float32),
+            }
+        ),
+        stats=freeze_mapping({"sr": np.array([[0.1]], dtype=np.float32)}),
         extra_stat_names=(),
     )
 
@@ -215,9 +274,15 @@ def test_analysis_dataset_require_setup_string_field_normalizes() -> None:
         path=Path("/tmp/example.h5"),
         simulation_payload=freeze_mapping({"name": "demo"}),
         setup=freeze_mapping({"mode": "  LTAO  "}),
-        options_rows=(freeze_mapping({}),),
-        meta_rows=(freeze_mapping({}),),
-        stats_rows=(freeze_mapping({}),),
+        options=freeze_mapping({"wavelength_um": np.array([1.65], dtype=np.float64)}),
+        meta=freeze_mapping(
+            {
+                "pixel_scale_mas": np.array([4.0], dtype=np.float32),
+                "tel_diameter_m": np.float32(8.0),
+                "tel_pupil": np.ones((2, 2), dtype=np.float32),
+            }
+        ),
+        stats=freeze_mapping({"sr": np.array([[0.1]], dtype=np.float32)}),
         extra_stat_names=(),
     )
 
@@ -229,9 +294,15 @@ def test_analysis_dataset_require_setup_field_raises_on_missing_field() -> None:
         path=Path("/tmp/example.h5"),
         simulation_payload=freeze_mapping({"name": "demo"}),
         setup=freeze_mapping({}),
-        options_rows=(freeze_mapping({}),),
-        meta_rows=(freeze_mapping({}),),
-        stats_rows=(freeze_mapping({}),),
+        options=freeze_mapping({"wavelength_um": np.array([1.65], dtype=np.float64)}),
+        meta=freeze_mapping(
+            {
+                "pixel_scale_mas": np.array([4.0], dtype=np.float32),
+                "tel_diameter_m": np.float32(8.0),
+                "tel_pupil": np.ones((2, 2), dtype=np.float32),
+            }
+        ),
+        stats=freeze_mapping({"sr": np.array([[0.1]], dtype=np.float32)}),
         extra_stat_names=(),
     )
 
@@ -244,9 +315,15 @@ def test_analysis_dataset_require_setup_string_field_raises_on_wrong_type() -> N
         path=Path("/tmp/example.h5"),
         simulation_payload=freeze_mapping({"name": "demo"}),
         setup=freeze_mapping({"mode": 3}),
-        options_rows=(freeze_mapping({}),),
-        meta_rows=(freeze_mapping({}),),
-        stats_rows=(freeze_mapping({}),),
+        options=freeze_mapping({"wavelength_um": np.array([1.65], dtype=np.float64)}),
+        meta=freeze_mapping(
+            {
+                "pixel_scale_mas": np.array([4.0], dtype=np.float32),
+                "tel_diameter_m": np.float32(8.0),
+                "tel_pupil": np.ones((2, 2), dtype=np.float32),
+            }
+        ),
+        stats=freeze_mapping({"sr": np.array([[0.1]], dtype=np.float32)}),
         extra_stat_names=(),
     )
 
@@ -259,9 +336,15 @@ def test_analysis_dataset_simulation_payload_helpers_read_present_value() -> Non
         path=Path("/tmp/example.h5"),
         simulation_payload=freeze_mapping({"mode": "LTAO", "name": "demo"}),
         setup=freeze_mapping({}),
-        options_rows=(freeze_mapping({}),),
-        meta_rows=(freeze_mapping({}),),
-        stats_rows=(freeze_mapping({}),),
+        options=freeze_mapping({"wavelength_um": np.array([1.65], dtype=np.float64)}),
+        meta=freeze_mapping(
+            {
+                "pixel_scale_mas": np.array([4.0], dtype=np.float32),
+                "tel_diameter_m": np.float32(8.0),
+                "tel_pupil": np.ones((2, 2), dtype=np.float32),
+            }
+        ),
+        stats=freeze_mapping({"sr": np.array([[0.1]], dtype=np.float32)}),
         extra_stat_names=(),
     )
 
@@ -273,9 +356,15 @@ def test_analysis_dataset_rejects_out_of_range_indexes() -> None:
         path=Path("/tmp/example.h5"),
         simulation_payload=freeze_mapping({"name": "demo"}),
         setup=freeze_mapping({}),
-        options_rows=(freeze_mapping({}),),
-        meta_rows=(freeze_mapping({}),),
-        stats_rows=(freeze_mapping({}),),
+        options=freeze_mapping({"wavelength_um": np.array([1.65], dtype=np.float64)}),
+        meta=freeze_mapping(
+            {
+                "pixel_scale_mas": np.array([4.0], dtype=np.float32),
+                "tel_diameter_m": np.float32(8.0),
+                "tel_pupil": np.ones((2, 2), dtype=np.float32),
+            }
+        ),
+        stats=freeze_mapping({"sr": np.array([[0.1]], dtype=np.float32)}),
         extra_stat_names=(),
     )
 
@@ -364,6 +453,14 @@ def test_load_analysis_dataset_loads_eager_non_psf_payloads(tmp_path: Path) -> N
     assert dataset.path == data_path
     assert dataset.extra_stat_names == ("halo_mas",)
     assert dataset.simulation_payload["name"] == "ao_predict.simulation.tiptop:TiptopSimulation"
+    np.testing.assert_allclose(dataset.options["wavelength_um"], np.full((2,), 1.65, dtype=float))
+    np.testing.assert_allclose(
+        dataset.meta[schema.KEY_META_PIXEL_SCALE_MAS],
+        np.full((2,), 4.0, dtype=np.float32),
+    )
+    assert dataset.meta[schema.KEY_META_TEL_DIAMETER_M] == np.float32(8.0)
+    np.testing.assert_allclose(dataset.stats[schema.KEY_STATS_SR][0], result0_stats[schema.KEY_STATS_SR])
+    np.testing.assert_allclose(dataset.stats["halo_mas"][1], result1_stats["halo_mas"])
     assert tuple(sim0.config.keys()) == ("setup", "options")
     assert sim0.config["options"]["wavelength_um"] == np.float64(1.65)
     np.testing.assert_allclose(sim0.config["setup"]["ee_apertures_mas"], np.array([50.0, 100.0]))
@@ -373,6 +470,9 @@ def test_load_analysis_dataset_loads_eager_non_psf_payloads(tmp_path: Path) -> N
     np.testing.assert_allclose(sim0.stats[schema.KEY_STATS_SR], result0_stats[schema.KEY_STATS_SR])
     np.testing.assert_allclose(sim1.stats["halo_mas"], result1_stats["halo_mas"])
     assert "simulation" not in sim0.config
+    assert dataset.options["wavelength_um"].flags.writeable is False
+    assert dataset.meta[schema.KEY_META_PIXEL_SCALE_MAS].flags.writeable is False
+    assert dataset.stats[schema.KEY_STATS_SR].flags.writeable is False
     assert sim0.config["setup"]["ee_apertures_mas"].flags.writeable is False
     assert sim0.meta[schema.KEY_META_TEL_PUPIL].flags.writeable is False
     assert sim0.stats[schema.KEY_STATS_SR].flags.writeable is False

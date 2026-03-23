@@ -10,6 +10,7 @@ from typing import Any, TypeVar
 import h5py
 import numpy as np
 
+from ..simulation import schema
 from ._immutability import freeze_array, freeze_mapping
 
 
@@ -17,6 +18,7 @@ from ._immutability import freeze_array, freeze_mapping
 
 _PSFS_FIELD = "psfs"
 _MISSING = object()
+_PER_SIM_META_FIELDS = (schema.KEY_META_PIXEL_SCALE_MAS,)
 AnalysisSimulationT = TypeVar("AnalysisSimulationT", bound="AnalysisSimulation")
 AnalysisDatasetT = TypeVar("AnalysisDatasetT", bound="AnalysisDataset")
 LazyFieldLoader = Callable[[], Any]
@@ -113,9 +115,9 @@ class AnalysisDatasetLoadPayload:
     path: Path
     simulation_payload: Mapping[str, Any]
     setup: Mapping[str, Any]
-    options_rows: tuple[Mapping[str, Any], ...]
-    meta_rows: tuple[Mapping[str, Any], ...]
-    stats_rows: tuple[Mapping[str, Any], ...]
+    options: Mapping[str, Any]
+    meta: Mapping[str, Any]
+    stats: Mapping[str, Any]
     extra_stat_names: tuple[str, ...]
     dataset_extra_fields: Mapping[str, Any] = field(default_factory=dict, repr=False, compare=False)
     dataset_extra_lazy_fields: Mapping[str, LazyFieldLoader] = field(default_factory=dict, repr=False, compare=False)
@@ -127,6 +129,11 @@ class AnalysisDatasetLoadPayload:
     )
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "simulation_payload", freeze_mapping(dict(self.simulation_payload)))
+        object.__setattr__(self, "setup", freeze_mapping(dict(self.setup)))
+        object.__setattr__(self, "options", freeze_mapping(dict(self.options)))
+        object.__setattr__(self, "meta", freeze_mapping(dict(self.meta)))
+        object.__setattr__(self, "stats", freeze_mapping(dict(self.stats)))
         object.__setattr__(self, "dataset_extra_fields", freeze_mapping(dict(self.dataset_extra_fields)))
         object.__setattr__(
             self,
@@ -305,20 +312,20 @@ class AnalysisSimulation:
 
 @dataclass(frozen=True)
 class AnalysisDataset:
-    """Immutable dataset-level owner of loaded analysis payloads.
+    """Immutable dataset-level owner of loaded analysis columns.
 
-    The default dataset returned by :func:`load_analysis_dataset` stores the
-    loaded generic analysis payload and per-simulation extra field definitions.
-    Downstream subclasses may override :meth:`from_load_payload` and expose
-    semantic properties backed by the generic dataset/simulation field storage.
+    The default dataset returned by :func:`load_analysis_dataset` stores eager
+    analysis state in dataset-owned columnar mappings. Per-simulation views are
+    derived on demand through :meth:`sim` rather than being pre-split into row
+    mappings during load.
     """
 
     path: Path
     simulation_payload: Mapping[str, Any]
     setup: Mapping[str, Any]
-    options_rows: tuple[Mapping[str, Any], ...]
-    meta_rows: tuple[Mapping[str, Any], ...]
-    stats_rows: tuple[Mapping[str, Any], ...]
+    options: Mapping[str, Any]
+    meta: Mapping[str, Any]
+    stats: Mapping[str, Any]
     extra_stat_names: tuple[str, ...]
     _dataset_extra_fields: Mapping[str, Any] = field(default_factory=dict, repr=False, compare=False)
     _dataset_extra_lazy_fields: Mapping[str, LazyFieldLoader] = field(
@@ -334,6 +341,7 @@ class AnalysisDataset:
     )
     _dataset_extra_field_cache: dict[str, Any] = field(default_factory=dict, init=False, repr=False, compare=False)
     _simulation_cls: type[AnalysisSimulation] = field(default=AnalysisSimulation, repr=False, compare=False)
+    _num_sims: int = field(default=0, init=False, repr=False, compare=False)
 
     @classmethod
     def from_load_payload(
@@ -346,9 +354,9 @@ class AnalysisDataset:
             path=payload.path,
             simulation_payload=payload.simulation_payload,
             setup=payload.setup,
-            options_rows=payload.options_rows,
-            meta_rows=payload.meta_rows,
-            stats_rows=payload.stats_rows,
+            options=payload.options,
+            meta=payload.meta,
+            stats=payload.stats,
             extra_stat_names=payload.extra_stat_names,
             _dataset_extra_fields=payload.dataset_extra_fields,
             _dataset_extra_lazy_fields=payload.dataset_extra_lazy_fields,
@@ -358,9 +366,13 @@ class AnalysisDataset:
         )
 
     def __post_init__(self) -> None:
-        num_sims = len(self.options_rows)
-        if len(self.meta_rows) != num_sims or len(self.stats_rows) != num_sims:
-            raise ValueError("AnalysisDataset rows must have matching per-simulation lengths.")
+        object.__setattr__(self, "simulation_payload", freeze_mapping(dict(self.simulation_payload)))
+        object.__setattr__(self, "setup", freeze_mapping(dict(self.setup)))
+        object.__setattr__(self, "options", freeze_mapping(dict(self.options)))
+        object.__setattr__(self, "meta", freeze_mapping(dict(self.meta)))
+        object.__setattr__(self, "stats", freeze_mapping(dict(self.stats)))
+        num_sims = _validate_dataset_size(self.options, self.meta, self.stats)
+        object.__setattr__(self, "_num_sims", num_sims)
         if self._simulation_extra_fields and len(self._simulation_extra_fields) != num_sims:
             raise ValueError("AnalysisDataset simulation extra fields must match dataset size.")
         if self._simulation_extra_lazy_fields and len(self._simulation_extra_lazy_fields) != num_sims:
@@ -382,12 +394,12 @@ class AnalysisDataset:
             self,
             "_simulation_extra_lazy_fields",
             tuple(freeze_mapping(dict(row)) for row in self._simulation_extra_lazy_fields)
-            if self._simulation_extra_lazy_fields
-            else tuple(freeze_mapping({}) for _ in range(num_sims)),
+                if self._simulation_extra_lazy_fields
+                else tuple(freeze_mapping({}) for _ in range(num_sims)),
         )
 
     def __len__(self) -> int:
-        return len(self.options_rows)
+        return self._num_sims
 
     def _has_setup_field(self, name: str) -> bool:
         """Return whether persisted setup contains ``name``."""
@@ -462,11 +474,11 @@ class AnalysisDataset:
                 config=freeze_mapping(
                     {
                         "setup": self.setup,
-                        "options": self.options_rows[idx],
+                        "options": _slice_dataset_row(self.options, idx),
                     }
                 ),
-                meta=self.meta_rows[idx],
-                stats=self.stats_rows[idx],
+                meta=_slice_dataset_meta(self.meta, idx),
+                stats=_slice_dataset_row(self.stats, idx),
                 extra_fields=self._simulation_extra_fields[idx],
                 extra_lazy_fields=self._simulation_extra_lazy_fields[idx],
             )
@@ -486,6 +498,89 @@ def _freeze_loaded_value(value: Any) -> Any:
     if isinstance(value, tuple):
         return tuple(_freeze_loaded_value(item) for item in value)
     return value
+
+
+def _validate_dataset_size(
+    options: Mapping[str, Any],
+    meta: Mapping[str, Any],
+    stats: Mapping[str, Any],
+) -> int:
+    """Validate shared simulation count across dataset-owned column mappings."""
+    expected = _column_family_size(options, "options")
+    for field_name in _PER_SIM_META_FIELDS:
+        if field_name not in meta:
+            raise ValueError(f"AnalysisDataset.meta is missing required field '{field_name}'.")
+    _require_matching_size(_column_family_size(stats, "stats"), expected, "stats")
+    _require_matching_size(_meta_family_size(meta), expected, "meta")
+    return expected
+
+
+def _column_family_size(columns: Mapping[str, Any], family: str) -> int:
+    """Return the shared simulation-axis length for one column family."""
+    size: int | None = None
+    for key, value in columns.items():
+        if not isinstance(value, np.ndarray):
+            raise TypeError(f"AnalysisDataset.{family}['{key}'] must be a numpy array.")
+        if value.ndim == 0:
+            raise ValueError(f"AnalysisDataset.{family}['{key}'] must be per-simulation with first dim N.")
+        current = int(value.shape[0])
+        if size is None:
+            size = current
+            continue
+        _require_matching_size(current, size, f"{family}['{key}']")
+    if size is None:
+        raise ValueError(f"AnalysisDataset.{family} must contain at least one column.")
+    return size
+
+
+def _meta_family_size(meta: Mapping[str, Any]) -> int:
+    """Return the shared simulation-axis length for per-simulation meta fields."""
+    size: int | None = None
+    for key in _PER_SIM_META_FIELDS:
+        value = meta[key]
+        if not isinstance(value, np.ndarray):
+            raise TypeError(f"AnalysisDataset.meta['{key}'] must be a numpy array.")
+        if value.ndim == 0:
+            raise ValueError(f"AnalysisDataset.meta['{key}'] must be per-simulation with first dim N.")
+        current = int(value.shape[0])
+        if size is None:
+            size = current
+            continue
+        _require_matching_size(current, size, f"meta['{key}']")
+    if size is None:
+        raise ValueError("AnalysisDataset.meta must contain at least one per-simulation field.")
+    return size
+
+
+def _require_matching_size(current: int, expected: int, label: str) -> None:
+    """Raise a clear error when one simulation-axis length differs."""
+    if current != expected:
+        raise ValueError(
+            f"AnalysisDataset columnar fields must share dataset size {expected}; "
+            f"{label} has size {current}."
+        )
+
+
+def _slice_dataset_row(columns: Mapping[str, Any], sim_idx: int) -> Mapping[str, Any]:
+    """Build one per-simulation mapping by slicing dataset-owned columns."""
+    return freeze_mapping({key: _slice_per_sim_value(value, sim_idx) for key, value in columns.items()})
+
+
+def _slice_dataset_meta(meta: Mapping[str, Any], sim_idx: int) -> Mapping[str, Any]:
+    """Build one per-simulation meta mapping from mixed dataset/per-sim fields."""
+    row: dict[str, Any] = {}
+    for key, value in meta.items():
+        row[key] = _slice_per_sim_value(value, sim_idx) if key in _PER_SIM_META_FIELDS else value
+    return freeze_mapping(row)
+
+
+def _slice_per_sim_value(value: Any, sim_idx: int) -> Any:
+    """Slice one per-simulation value from a dataset-owned column."""
+    if not isinstance(value, np.ndarray):
+        raise TypeError("Per-simulation dataset columns must be numpy arrays.")
+    if value.ndim == 0:
+        raise ValueError("Per-simulation dataset columns must have first dim N.")
+    return value[sim_idx]
 
 
 def _read_node(node: h5py.Group | h5py.Dataset) -> Any:

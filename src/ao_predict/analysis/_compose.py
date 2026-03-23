@@ -9,7 +9,6 @@ from typing import Any
 import numpy as np
 
 from ..persistence import SimulationStore
-from ._immutability import freeze_mapping
 from .types import (
     AnalysisDataset,
     AnalysisDatasetLoadPayload,
@@ -103,11 +102,11 @@ def _load_analysis_dataset_from_store(
 
     payload = AnalysisDatasetLoadPayload(
         path=store.path,
-        simulation_payload=freeze_mapping(store.read_simulation()),
-        setup=freeze_mapping(store.read_setup()),
-        options_rows=tuple(freeze_mapping(store.read_sim_options(sim_idx)) for sim_idx in range(num_sims)),
-        meta_rows=tuple(freeze_mapping(store.read_simulation_meta(sim_idx)) for sim_idx in range(num_sims)),
-        stats_rows=tuple(freeze_mapping(store.read_simulation_stats(sim_idx)) for sim_idx in range(num_sims)),
+        simulation_payload=store.read_simulation(),
+        setup=store.read_setup(),
+        options=store.read_options(),
+        meta=store.read_analysis_meta(),
+        stats=store.read_analysis_stats(),
         extra_stat_names=store.read_extra_stat_names(),
         dataset_extra_fields=merged.dataset_fields,
         dataset_extra_lazy_fields=merged.dataset_lazy_fields,

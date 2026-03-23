@@ -175,6 +175,16 @@ def _read_simulation_dataset_row(ds: h5py.Dataset, sim_idx: int, *, path: str) -
     return ds[sim_idx]
 
 
+def _read_dataset_value(ds: h5py.Dataset) -> Any:
+    """Read one dataset into plain Python/NumPy values preserving array shape."""
+    data = ds[()]
+    if isinstance(data, bytes):
+        return data.decode("utf-8")
+    if isinstance(data, np.ndarray) and data.dtype.kind in {"S", "O"}:
+        return data.astype(str)
+    return data
+
+
 def _clear_simulation_outputs(f: h5py.File, sim_idx: int) -> None:
     """Reset one simulation's persisted outputs to ``NaN`` values."""
     stats = f[schema.KEY_STATS_SECTION]
@@ -337,6 +347,51 @@ class SimulationStore:
 
         with h5py.File(self.path, "r") as f:
             return _read_declared_extra_stat_names(f)
+
+    def read_options(self) -> dict[str, Any]:
+        """Read the persisted ``/options`` group as dataset-level columns."""
+
+        columns: dict[str, Any] = {}
+        with h5py.File(self.path, "r") as f:
+            g = f[schema.KEY_OPTION_SECTION]
+            for key in g.keys():
+                path = f"/{schema.KEY_OPTION_SECTION}/{key}"
+                ds = _require_dataset(f, path)
+                if ds.ndim == 0:
+                    raise ValueError(f"{path} must be per-simulation with first dim N.")
+                columns[key] = _read_dataset_value(ds)
+        return columns
+
+    def read_analysis_meta(self) -> dict[str, Any]:
+        """Read the persisted loaded-analysis ``/meta`` view."""
+
+        with h5py.File(self.path, "r") as f:
+            pixel_scale_path = f"/{schema.KEY_META_SECTION}/{schema.KEY_META_PIXEL_SCALE_MAS}"
+            tel_diameter_path = f"/{schema.KEY_META_SECTION}/{schema.KEY_META_TEL_DIAMETER_M}"
+            tel_pupil_path = f"/{schema.KEY_META_SECTION}/{schema.KEY_META_TEL_PUPIL}"
+            return {
+                schema.KEY_META_PIXEL_SCALE_MAS: _read_dataset_value(
+                    _require_dataset_ndim(_require_dataset(f, pixel_scale_path), path=pixel_scale_path, ndim=1)
+                ),
+                schema.KEY_META_TEL_DIAMETER_M: _read_dataset_value(
+                    _require_dataset_ndim(_require_dataset(f, tel_diameter_path), path=tel_diameter_path, ndim=0)
+                ),
+                schema.KEY_META_TEL_PUPIL: _read_dataset_value(
+                    _require_dataset_ndim(_require_dataset(f, tel_pupil_path), path=tel_pupil_path, ndim=2)
+                ),
+            }
+
+    def read_analysis_stats(self) -> dict[str, Any]:
+        """Read the persisted loaded-analysis ``/stats`` group as dataset-level columns."""
+
+        columns: dict[str, Any] = {}
+        with h5py.File(self.path, "r") as f:
+            for key in _read_declared_stat_names(f):
+                path = f"/{schema.KEY_STATS_SECTION}/{key}"
+                expected_ndim = 3 if key == schema.KEY_STATS_EE else 2
+                ds = _require_dataset_ndim(_require_dataset(f, path), path=path, ndim=expected_ndim)
+                columns[key] = _read_dataset_value(ds)
+        return columns
 
     def read_sim_options(self, sim_idx: int) -> dict[str, Any]:
         """Read one simulation's options from ``/options``.

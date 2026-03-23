@@ -13,6 +13,10 @@ sim = dataset.sim(0)
 Public analysis behavior:
 - `load_analysis_dataset(path, *, dataset_cls=AnalysisDataset, simulation_cls=AnalysisSimulation, extra_field_extractors=None) -> AnalysisDataset`
 - `len(dataset)`
+- `dataset.setup` for dataset-level setup values
+- `dataset.options` for eager per-simulation option columns
+- `dataset.meta` for eager loaded-analysis metadata columns and scalars
+- `dataset.stats` for eager per-simulation stats columns
 - `dataset.sim(i) -> AnalysisSimulation`
 - `sim.config` with exactly `setup` and `options`
 - `sim.meta` with per-simulation scientific metadata plus dataset-level

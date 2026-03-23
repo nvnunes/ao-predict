@@ -228,6 +228,10 @@ schema validation succeeds.
 
 Use:
 - `len(dataset)` for the dataset size
+- `dataset.setup` for dataset-level setup values
+- `dataset.options` for eager per-simulation option columns
+- `dataset.meta` for eager loaded-analysis metadata values
+- `dataset.stats` for eager per-simulation stats columns
 - `dataset.sim(i)` to get one `AnalysisSimulation`
 - `sim.config` for the persisted simulation view with exactly `setup` and `options`
 - `sim.meta` for persisted scientific metadata, including per-simulation
