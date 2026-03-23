@@ -37,6 +37,25 @@ fields without duplicating upstream object construction or exposing raw HDF5
 objects on the public analysis surface. Downstream simulation subclasses can
 then expose semantic properties backed by `_require_extra_field(...)`.
 
+`AnalysisDataset` is generic over the simulation view type. Downstream
+packages that define a custom simulation subclass can declare that
+relationship directly:
+
+```python
+from ao_predict.analysis import AnalysisDataset, AnalysisSimulation
+
+
+class CustomAnalysisSimulation(AnalysisSimulation):
+    ...
+
+
+class CustomAnalysisDataset(AnalysisDataset[CustomAnalysisSimulation]):
+    pass
+```
+
+That lets `dataset.sim(i)` carry the custom simulation type without needing a
+typed wrapper override in the dataset subclass.
+
 Compatibility wrappers, legacy shaping, plotting, and downstream-specific
 helpers remain outside `ao_predict` and should stay downstream in
 `girmos-aosims`.

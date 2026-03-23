@@ -252,6 +252,22 @@ contributions can add eager or lazy dataset/simulation fields without
 re-loading the dataset or exposing raw HDF5 handles, and downstream simulation
 properties can access them through `_require_extra_field(...)`.
 
+`AnalysisDataset` is generic over the simulation view type, so downstream
+dataset subclasses can declare their simulation subtype directly and usually
+inherit `sim()` unchanged:
+
+```python
+from ao_predict.analysis import AnalysisDataset, AnalysisSimulation
+
+
+class CustomAnalysisSimulation(AnalysisSimulation):
+    ...
+
+
+class CustomAnalysisDataset(AnalysisDataset[CustomAnalysisSimulation]):
+    pass
+```
+
 Compatibility adapters, legacy shaping, and downstream-specific analysis helpers
 remain downstream in `girmos-aosims`.
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Any, Generic, TypeVar, cast
 
 import h5py
 import numpy as np
@@ -20,7 +20,7 @@ _PSFS_FIELD = "psfs"
 _MISSING = object()
 _PER_SIM_META_FIELDS = (schema.KEY_META_PIXEL_SCALE_MAS,)
 AnalysisSimulationT = TypeVar("AnalysisSimulationT", bound="AnalysisSimulation")
-AnalysisDatasetT = TypeVar("AnalysisDatasetT", bound="AnalysisDataset")
+AnalysisDatasetT = TypeVar("AnalysisDatasetT", bound="AnalysisDataset[Any]")
 LazyFieldLoader = Callable[[], Any]
 
 
@@ -311,7 +311,7 @@ class AnalysisSimulation:
 
 
 @dataclass(frozen=True)
-class AnalysisDataset:
+class AnalysisDataset(Generic[AnalysisSimulationT]):
     """Immutable dataset-level owner of loaded analysis columns.
 
     The default dataset returned by :func:`load_analysis_dataset` stores eager
@@ -340,14 +340,18 @@ class AnalysisDataset:
         compare=False,
     )
     _dataset_extra_field_cache: dict[str, Any] = field(default_factory=dict, init=False, repr=False, compare=False)
-    _simulation_cls: type[AnalysisSimulation] = field(default=AnalysisSimulation, repr=False, compare=False)
+    _simulation_cls: type[AnalysisSimulationT] = field(
+        default=cast(type[AnalysisSimulationT], AnalysisSimulation),
+        repr=False,
+        compare=False,
+    )
     _num_sims: int = field(default=0, init=False, repr=False, compare=False)
 
     @classmethod
     def from_load_payload(
         cls: type[AnalysisDatasetT],
         payload: AnalysisDatasetLoadPayload,
-        simulation_cls: type[AnalysisSimulation] = AnalysisSimulation,
+        simulation_cls: type[AnalysisSimulationT] = cast(type[AnalysisSimulationT], AnalysisSimulation),
     ) -> AnalysisDatasetT:
         """Build one immutable loaded dataset from a generic dataset payload."""
         return cls(
@@ -486,7 +490,7 @@ class AnalysisDataset:
             extra_lazy_fields=self._simulation_extra_lazy_fields[idx],
         )
 
-    def sim(self, sim_idx: int) -> AnalysisSimulation:
+    def sim(self, sim_idx: int) -> AnalysisSimulationT:
         """Return one zero-based immutable simulation view."""
         return self._simulation_cls.from_load_payload(
             self._build_simulation_load_payload(sim_idx)
