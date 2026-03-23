@@ -461,27 +461,35 @@ class AnalysisDataset:
         self._dataset_extra_field_cache[name] = value
         return value
 
-    def sim(self, sim_idx: int) -> AnalysisSimulation:
-        """Return one zero-based immutable simulation view."""
+    def _validate_sim_index(self, sim_idx: int) -> int:
+        """Validate and normalize one zero-based simulation index."""
         idx = int(sim_idx)
         if idx < 0:
             raise IndexError(f"simulation index must be >= 0, got {idx}.")
         if idx >= len(self):
             raise IndexError(f"simulation index {idx} out of range for dataset of size {len(self)}.")
+        return idx
 
+    def _build_simulation_load_payload(self, sim_idx: int) -> AnalysisSimulationLoadPayload:
+        """Build one per-simulation payload from dataset-owned columnar state."""
+        idx = self._validate_sim_index(sim_idx)
+        return AnalysisSimulationLoadPayload(
+            config=freeze_mapping(
+                {
+                    "setup": self.setup,
+                    "options": _slice_dataset_row(self.options, idx),
+                }
+            ),
+            meta=_slice_dataset_meta(self.meta, idx),
+            stats=_slice_dataset_row(self.stats, idx),
+            extra_fields=self._simulation_extra_fields[idx],
+            extra_lazy_fields=self._simulation_extra_lazy_fields[idx],
+        )
+
+    def sim(self, sim_idx: int) -> AnalysisSimulation:
+        """Return one zero-based immutable simulation view."""
         return self._simulation_cls.from_load_payload(
-            AnalysisSimulationLoadPayload(
-                config=freeze_mapping(
-                    {
-                        "setup": self.setup,
-                        "options": _slice_dataset_row(self.options, idx),
-                    }
-                ),
-                meta=_slice_dataset_meta(self.meta, idx),
-                stats=_slice_dataset_row(self.stats, idx),
-                extra_fields=self._simulation_extra_fields[idx],
-                extra_lazy_fields=self._simulation_extra_lazy_fields[idx],
-            )
+            self._build_simulation_load_payload(sim_idx)
         )
 
 

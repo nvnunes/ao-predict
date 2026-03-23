@@ -375,6 +375,46 @@ def test_analysis_dataset_rejects_out_of_range_indexes() -> None:
         dataset.sim(1)
 
 
+def test_analysis_dataset_subclasses_can_customize_sim_payload_without_reimplementing_sim() -> None:
+    class CustomAnalysisSimulation(AnalysisSimulation):
+        @property
+        def mode(self) -> str:
+            return self._require_extra_field("mode")
+
+    class CustomAnalysisDataset(AnalysisDataset):
+        def _build_simulation_load_payload(self, sim_idx: int) -> AnalysisSimulationLoadPayload:
+            payload = super()._build_simulation_load_payload(sim_idx)
+            return AnalysisSimulationLoadPayload(
+                config=payload.config,
+                meta=payload.meta,
+                stats=payload.stats,
+                extra_fields=freeze_mapping({"mode": f"mode-{sim_idx}", **dict(payload.extra_fields)}),
+                extra_lazy_fields=payload.extra_lazy_fields,
+            )
+
+    dataset = CustomAnalysisDataset(
+        path=Path("/tmp/example.h5"),
+        simulation_payload=freeze_mapping({"name": "demo"}),
+        setup=freeze_mapping({}),
+        options=freeze_mapping({"wavelength_um": np.array([1.65], dtype=np.float64)}),
+        meta=freeze_mapping(
+            {
+                "pixel_scale_mas": np.array([4.0], dtype=np.float32),
+                "tel_diameter_m": np.float32(8.0),
+                "tel_pupil": np.ones((2, 2), dtype=np.float32),
+            }
+        ),
+        stats=freeze_mapping({"sr": np.array([[0.1]], dtype=np.float32)}),
+        extra_stat_names=(),
+        _simulation_cls=CustomAnalysisSimulation,
+    )
+
+    sim = dataset.sim(0)
+
+    assert isinstance(sim, CustomAnalysisSimulation)
+    assert sim.mode == "mode-0"
+
+
 def test_load_analysis_dataset_loads_eager_non_psf_payloads(tmp_path: Path) -> None:
     data_path = tmp_path / "analysis_dataset.h5"
     store = SimulationStore(data_path)
