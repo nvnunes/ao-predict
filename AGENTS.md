@@ -1,4 +1,8 @@
-# AO-Predict Agent Brief
+# AGENTS.md
+
+## Prompt Routing
+- Follow any higher-level workspace prompt-routing instructions when present.
+- Repo-specific instructions in this file take precedence within this repository.
 
 ## Scope
 - Maintain high code quality across simulation, persistence, data loading, training, and inference.
@@ -31,57 +35,31 @@
 
 ## Simulation Lifecycle
 - Keep preparation, validation, and binding clearly separated:
-  - `prepare_*`: build/complete persisted payloads
-  - core validation modules: enforce persisted schema/contract
+  - `prepare_*`: build or complete persisted payloads
+  - core validation modules: enforce persisted schema and contract
   - `load_*`: deserialize and bind typed state
 - Avoid validating by temporarily mutating bound instance state and then restoring it.
 - Builders may normalize inputs and apply defaults, but final persisted-contract enforcement belongs in core validation modules.
 - Subclass hooks should prepare simulation-specific inputs and runtime state, not redefine core persisted contracts.
+- If a module has a strong lifecycle or execution flow, prefer method order that follows that lifecycle.
 
-## CLI/API Principles
+## CLI And Public API
 - CLI is a thin wrapper over API.
 - API should be clean, typed where useful, and minimally surprising.
 - Public docs and examples should reflect the supported import path and public API surface, not internal module structure.
 
-## Data & Model Discipline
+## Data And Model Discipline
 - Use deterministic behavior for data splits, preprocessing, and training when requested.
 - Keep feature/target schemas explicit and version-aware.
 - Keep model bundle metadata tightly coupled to data/schema compatibility.
 
-## Code Style
-- Optimize for readability, homogeneity, and symmetry in naming/order.
-- Keep module order consistent with this codebase style:
-  - constants first
-  - data structures next (dataclasses/types/enums)
-  - properties near the top (after constants and class definitions)
-  - helper primitives next
-  - composed helpers next
-  - public entrypoints last
-- If a module has a strong lifecycle or execution flow, prefer method order that follows that lifecycle, even if it overrides the default ordering rule.
-- When lifecycle order is the primary organizing principle, group helpers with the lifecycle stage they support instead of collecting all helpers in one block.
-- separate blocks with clear section comments
+## Repo-Specific Python Guidance
 - Core-owned fields and behaviors should be validated and computed in core modules. Subclass hooks should handle only simulation-specific behavior.
-- Prefer explicit names that match actual behavior. Do not use “normalize” or similar language when a helper only validates or coerces.
-- Prefer inlining helpers that do too little to justify abstraction. Small wrappers should survive only when they clarify ownership, lifecycle stage, or contract meaning.
-- If two helpers/validators enforce the same invariant in the same flows, collapse them into one shared helper instead of layering wrappers.
-- Prefer positional parameters for private methods unless keyword-only arguments provide clear safety or readability benefits. Required named parameters are acceptable for public APIs, but should be used sparingly in internal helpers.
-- When normalizing values inside private methods, prefer rebinding the original variable name instead of introducing `_arr`-style aliases unless both forms need to coexist.
-- Keep comments concise and technical; avoid historical/conversational comments.
-- Move helpers out of large classes when they are no longer lifecycle-specific. Place them in the narrowest shared module that matches their domain instead of a generic dumping ground.
+- When lifecycle order is the primary organizing principle, it may override more generic module-order defaults.
 - Underscore-prefixed methods that serve as subclass hooks or lifecycle extension points are part of the class contract. Document them with full docstrings covering purpose, inputs, return value, mutation expectations, and error behavior, even if they are not public APIs.
-- Push back before implementing changes that reduce clarity or consistency.
-
-## Docstrings
-- Keep docstrings aligned with the current code. If behavior or ownership moves, update the docstrings in the same change.
-- Public functions and core validators should document the contract they enforce, not implementation history.
 
 ## Quality Bar
-- Add/adjust tests with every behavior change.
-- Keep docs and examples synchronized with code.
-- Run full test suite before concluding substantial refactors.
-- When a review uncovers a stale comment/docstring or duplicated contract check in touched code, clean it up in the same change rather than leaving follow-up debt.
+- Run the full test suite before concluding substantial refactors.
 
 ## Review Lens
-- Prefer concrete findings over speculative redesigns.
-- Favor symmetry, contract ownership, lifecycle clarity, and removal of stale abstractions.
-- If a hook or abstraction is no longer carrying its weight, prefer removing it to keeping a misleading no-op layer.
+- Favor contract ownership and lifecycle clarity in review.
