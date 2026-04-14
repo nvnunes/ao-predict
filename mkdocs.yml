@@ -25,6 +25,8 @@ nav:
   - Guides:
       - CLI: cli.md
       - API: api.md
+      - Architecture: architecture.md
+      - Testing: testing.md
       - Development Setup: development.md
   - Reference:
       - Analysis API: reference/analysis/api.md

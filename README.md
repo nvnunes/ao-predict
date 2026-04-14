@@ -4,38 +4,33 @@ AO Predict: a framework for fast AO performance prediction
 Current simulation support focuses on batched TIPTOP-style runs with resumable HDF5 persistence.
 
 ## Installation
+
+To install the package from a local checkout:
+
 ```bash
-pip install -e .
+python -m pip install .
 ```
 
-For development dependencies:
-```bash
-pip install -e ".[dev]"
-```
-
-For full local development setup (env, hooks, tests, docs):
-```bash
-./scripts/bootstrap.sh
-```
+That path is intended for package use. For local development in this repo, use
+the canonical workflow in `Local Development Setup` below.
 
 ## Quickstart: CLI
-1. Initialize a dataset from the example YAML:
+These examples assume `ao-predict` is available on your `PATH`.
+
 ```bash
 ao-predict simulate init examples/simulate_tiptop_cli_example1.yaml
-```
-2. Run pending simulations:
-```bash
 ao-predict simulate run examples/sims/simulate_tiptop_cli_example1.h5
-```
-3. Validate dataset completeness and schema:
-```bash
 ao-predict simulate check examples/sims/simulate_tiptop_cli_example1.h5
 ```
+
 To retry failed simulations:
+
 ```bash
 ao-predict simulate retry examples/sims/simulate_tiptop_cli_example1.h5
 ```
+
 To reset all simulations, or selected simulation numbers, back to pending:
+
 ```bash
 ao-predict simulate reset examples/sims/simulate_tiptop_cli_example1.h5 --sims 2,5
 ```
@@ -46,6 +41,7 @@ CLI key casing:
 Full CLI documentation: [`docs/cli.md`](docs/cli.md)
 
 ## Quickstart: Python API
+
 ```python
 from pathlib import Path
 
@@ -97,20 +93,45 @@ Full API documentation: [`docs/api.md`](docs/api.md)
 API key casing:
 - Mapping keys are case-sensitive and must be lowercase.
 
-## Documentation Site (MkDocs)
-Install docs dependencies:
+## Documentation
+
+- CLI reference: [`docs/cli.md`](docs/cli.md)
+- API reference: [`docs/api.md`](docs/api.md)
+- Architecture: [`docs/architecture.md`](docs/architecture.md)
+- Testing: [`docs/testing.md`](docs/testing.md)
+- Development setup: [`docs/development.md`](docs/development.md)
+
+## Local Development Setup
+
+The canonical local development workflow uses the repo-managed `./.conda`
+environment.
+
+Bootstrap a fresh clone with:
+
 ```bash
-pip install -e ".[docs]"
+./scripts/bootstrap.sh
 ```
 
-Run local docs server:
+That script creates `./.conda`, installs the package with `dev` and `docs`
+extras, configures the git hooks path, runs the test suite, and builds the
+docs.
+
+After bootstrap, use commands from the local environment:
+
 ```bash
-mkdocs serve
+./.conda/bin/python -m pytest -q
+./.conda/bin/mkdocs build --strict
 ```
 
-Build docs in strict mode:
+To reinstall the package and extras into the local environment:
+
 ```bash
-mkdocs build --strict
+./.conda/bin/python -m pip install -e ".[dev,docs]"
+```
+
+To run the local docs server:
+```bash
+./.conda/bin/mkdocs serve
 ```
 
 Pre-commit checks are versioned in `.githooks/pre-commit`.
@@ -126,12 +147,3 @@ git config core.hooksPath .githooks
 - CLI CSV options table: `examples/simulate_tiptop_cli_example2.csv`
 - CLI shell script: `examples/simulate_tiptop_cli.sh` (`1` by default, pass `2` for the CSV-table example)
 - Sample TIPTOP INI: `examples/sample_tiptop.ini`
-
-## Dataset State Semantics
-- `0`: pending
-- `1`: completed successfully
-- `2`: failed
-
-## Documentation Index
-- CLI reference: [`docs/cli.md`](docs/cli.md)
-- API reference: [`docs/api.md`](docs/api.md)

@@ -9,6 +9,8 @@ ao-predict provides:
 
 - CLI guide: [CLI](cli.md)
 - Python API guide: [API](api.md)
+- Architecture: [Architecture](architecture.md)
+- Testing and verification: [Testing](testing.md)
 - Development setup: [Development Setup](development.md)
 - Reference pages:
   - [Simulation Interfaces](reference/simulation/interfaces.md)
