@@ -4,11 +4,10 @@ This document covers local setup and bootstrap. For repo structure and
 ownership rules, use `docs/architecture.md`. For canonical verification
 commands and completion expectations, use `docs/testing.md`.
 
-## Shared Guidance
+## Shared Skills
 
-This repo adopts the shared guidance in
-`astro-agents/guidance/public-python-projects.md` and
-`astro-agents/guidance/python-development.md`.
+For Python code changes, use `$python-code-writing` alongside this project's
+local environment and workflow rules.
 
 Repo-local bootstrap commands, environment setup, toolchain choices, and hook
 behavior in this document remain the source of truth for this repo.

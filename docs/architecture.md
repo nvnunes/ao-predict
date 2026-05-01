@@ -3,12 +3,14 @@
 This document is the source of truth for `ao-predict` package structure, public API
 boundaries, persisted-contract ownership, and simulation lifecycle.
 
-## Shared Guidance
+## Shared Validation And Skills
 
-This repo adopts the shared guidance in:
-- `astro-agents/guidance/agent-surface.md`
-- `astro-agents/guidance/public-python-projects.md`
-- `astro-agents/guidance/python-development.md`
+This project uses runtime-discovered `astro-agents` skills for shared review and authoring support:
+
+- `$agent-surface-review`
+- `$documentation-surface-review` with the `public-python` profile
+- `$code-quality-review`
+- `$python-code-writing`
 
 Repo-local package boundaries, persisted contracts, lifecycle rules, code
 organization priorities, and exceptions in this document remain the source of

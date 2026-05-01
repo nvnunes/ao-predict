@@ -5,12 +5,14 @@ completion expectations in `ao-predict`.
 
 ## Shared Validation
 
-Use the shared base testing guidance in
-`astro-agents/validation/base-testing.md`.
+Use this document as the source of truth for local verification commands and
+completion expectations.
 
-## Repo-Local Verification
+For shared review, use:
 
-Use the repo-local verification commands and completion expectations below.
+- `$agent-surface-review` when agent-facing instructions, docs, or skill-selection context changes.
+- `$documentation-surface-review` when documentation surface behavior changes.
+- `$code-quality-review` for source-code quality review when requested or when the change needs review beyond tests.
 
 ## Environment
 
