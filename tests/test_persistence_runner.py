@@ -560,6 +560,7 @@ def test_compute_psf_stats_dispatches_selected_strehl_method(monkeypatch):
 
 def test_compute_psf_stats_reuses_fit_peak_locations_for_ee(monkeypatch):
     ee_peak_locations: list[np.ndarray | None] = []
+    ee_geometries: list[str] = []
 
     def _pixel_fit(psfs, pixel_scale_mas, wavelength_um, tel_diameter_m, tel_pupil):
         del pixel_scale_mas, wavelength_um, tel_diameter_m, tel_pupil
@@ -575,14 +576,22 @@ def test_compute_psf_stats_reuses_fit_peak_locations_for_ee(monkeypatch):
             np.full((psfs.shape[0], 2), 2.5, dtype=np.float32),
         )
 
-    def _ee(psfs, ee_apertures_mas, pixel_scale_mas, peak_locations_xy=None):
+    def _ee(
+        psfs,
+        ee_apertures_mas,
+        pixel_scale_mas,
+        peak_locations_xy=None,
+        *,
+        ee_geometry="ensquared",
+    ):
         del pixel_scale_mas
         ee_peak_locations.append(None if peak_locations_xy is None else np.asarray(peak_locations_xy, dtype=np.float32))
+        ee_geometries.append(ee_geometry)
         return np.zeros((psfs.shape[0], ee_apertures_mas.shape[0]), dtype=np.float32)
 
     monkeypatch.setattr(stats_module, "_compute_strehl_pixel_fit", _pixel_fit)
     monkeypatch.setattr(stats_module, "_compute_strehl_pixel_max", _pixel_max)
-    monkeypatch.setattr(stats_module, "_compute_ensquared_energy", _ee)
+    monkeypatch.setattr(stats_module, "_compute_enclosed_energy", _ee)
 
     compute_psf_stats(
         np.zeros((2, 4, 4), dtype=np.float32),
@@ -597,7 +606,9 @@ def test_compute_psf_stats_reuses_fit_peak_locations_for_ee(monkeypatch):
 
     assert len(ee_peak_locations) == 1
     np.testing.assert_allclose(ee_peak_locations[0], np.full((2, 2), 1.5, dtype=np.float32))
+    assert ee_geometries == ["ensquared"]
     ee_peak_locations.clear()
+    ee_geometries.clear()
 
     compute_psf_stats(
         np.zeros((2, 4, 4), dtype=np.float32),
@@ -612,6 +623,77 @@ def test_compute_psf_stats_reuses_fit_peak_locations_for_ee(monkeypatch):
 
     assert len(ee_peak_locations) == 1
     np.testing.assert_allclose(ee_peak_locations[0], np.full((2, 2), 2.5, dtype=np.float32))
+    assert ee_geometries == ["ensquared"]
+
+
+def test_compute_psf_stats_passes_requested_ee_geometry(monkeypatch):
+    requested: list[str] = []
+
+    def _ee(
+        psfs,
+        ee_apertures_mas,
+        pixel_scale_mas,
+        peak_locations_yx=None,
+        *,
+        ee_geometry="ensquared",
+    ):
+        del pixel_scale_mas, peak_locations_yx
+        requested.append(ee_geometry)
+        return np.zeros((psfs.shape[0], ee_apertures_mas.shape[0]), dtype=np.float32)
+
+    monkeypatch.setattr(stats_module, "_compute_enclosed_energy", _ee)
+
+    compute_psf_stats(
+        np.zeros((2, 4, 4), dtype=np.float32),
+        _ExtraStatsSimulation({}),
+        _setup(),
+        _options_row(),
+        _stats_meta(),
+        ee_geometry="encircled",
+    )
+
+    assert requested == ["encircled"]
+
+
+def test_compute_psf_stats_rejects_invalid_ee_geometry(monkeypatch):
+    def _compute_strehl(psfs, sr_method, pixel_scale_mas, wavelength_um, tel_diameter_m, tel_pupil):
+        del sr_method, pixel_scale_mas, wavelength_um, tel_diameter_m, tel_pupil
+        return np.zeros((psfs.shape[0],), dtype=np.float32), np.full((psfs.shape[0], 2), 2, dtype=np.float32)
+
+    monkeypatch.setattr(stats_module, "_compute_strehl", _compute_strehl)
+
+    with pytest.raises(ValueError, match="ee_geometry must be one of"):
+        compute_psf_stats(
+            np.zeros((2, 4, 4), dtype=np.float32),
+            _ExtraStatsSimulation({}),
+            _setup(),
+            _options_row(),
+            _stats_meta(),
+            ee_geometry="triangle",
+        )
+
+
+def test_compute_psf_stats_computes_encircled_energy(monkeypatch):
+    def _compute_strehl(psfs, sr_method, pixel_scale_mas, wavelength_um, tel_diameter_m, tel_pupil):
+        del sr_method, pixel_scale_mas, wavelength_um, tel_diameter_m, tel_pupil
+        return np.zeros((psfs.shape[0],), dtype=np.float32), np.full((psfs.shape[0], 2), 2, dtype=np.float32)
+
+    monkeypatch.setattr(stats_module, "_compute_strehl", _compute_strehl)
+
+    psfs = np.zeros((2, 5, 5), dtype=np.float32)
+    psfs[:, 2, 2] = 1.0
+
+    _sr, ee, _fwhm = compute_psf_stats(
+        psfs,
+        _ExtraStatsSimulation({}),
+        _setup(),
+        _options_row(),
+        _stats_meta(),
+        ee_geometry="encircled",
+    )
+
+    assert ee.shape == (2, 2)
+    np.testing.assert_allclose(ee, np.ones((2, 2), dtype=np.float32), atol=1e-6)
 
 
 def test_compute_psf_stats_selects_requested_fwhm_summary(monkeypatch):
@@ -719,18 +801,19 @@ def test_compute_strehl_pixel_fit_matches_diffraction_limited_peak():
     np.testing.assert_allclose(peak_locations_yx, np.array([[psf_dl.shape[0] / 2.0 - 0.5, psf_dl.shape[1] / 2.0 - 0.5]], dtype=np.float32), atol=0.1)
 
 
-def test_compute_ensquared_energy_uses_integer_peak_locations():
+def test_compute_encircled_energy_uses_exact_aperture_weights():
     psf = np.zeros((1, 5, 5), dtype=np.float32)
     psf[0, 2, 2] = 1.0
 
-    ee = stats_module._compute_ensquared_energy(
+    ee = stats_module._compute_enclosed_energy(
         psf,
         np.array([2.0, 6.0], dtype=float),
         2.0,
         np.array([[2, 2]], dtype=np.int64),
+        ee_geometry="encircled",
     )
 
-    np.testing.assert_allclose(ee, np.array([[1.0, 1.0]], dtype=np.float32), atol=1e-6)
+    np.testing.assert_allclose(ee, np.array([[np.pi / 4.0, 1.0]], dtype=np.float32), atol=1e-6)
 
 
 def test_compute_ensquared_energy_shifts_subpixel_peak_locations():
@@ -740,13 +823,13 @@ def test_compute_ensquared_energy_shifts_subpixel_peak_locations():
     psf[0, 3, 2] = 0.25
     psf[0, 3, 3] = 0.25
 
-    ee_subpixel = stats_module._compute_ensquared_energy(
+    ee_subpixel = stats_module._compute_enclosed_energy(
         psf,
         np.array([2.0], dtype=float),
         2.0,
         np.array([[2.5, 2.5]], dtype=np.float32),
     )
-    ee_argmax = stats_module._compute_ensquared_energy(
+    ee_argmax = stats_module._compute_enclosed_energy(
         psf,
         np.array([2.0], dtype=float),
         2.0,
@@ -762,7 +845,7 @@ def test_compute_ensquared_energy_single_aperture_returns_matrix():
     psf = np.zeros((2, 5, 5), dtype=np.float32)
     psf[:, 2, 2] = 1.0
 
-    ee = stats_module._compute_ensquared_energy(
+    ee = stats_module._compute_enclosed_energy(
         psf,
         np.array([2.0], dtype=float),
         2.0,
@@ -773,20 +856,68 @@ def test_compute_ensquared_energy_single_aperture_returns_matrix():
     np.testing.assert_allclose(ee, np.array([[1.0], [1.0]], dtype=np.float32), atol=1e-6)
 
 
-def test_measure_peak_centered_ee_curves_limits_radius_to_requested_aperture():
+def test_compute_ensquared_energy_uses_integer_peak_locations():
+    psf = np.zeros((1, 5, 5), dtype=np.float32)
+    psf[0, 2, 2] = 1.0
+
+    ee = stats_module._compute_enclosed_energy(
+        psf,
+        np.array([2.0, 6.0], dtype=float),
+        2.0,
+        np.array([[2, 2]], dtype=np.int64),
+    )
+
+    np.testing.assert_allclose(ee, np.array([[1.0, 1.0]], dtype=np.float32), atol=1e-6)
+
+
+def test_compute_encircled_energy_is_stable_for_extra_apertures():
+    psf = _gaussian_psf(9, 9, 4.0, 4.0, 1.5, 1.5)[None, :, :]
+    psf /= psf.sum()
+
+    ee_single = stats_module._compute_enclosed_energy(
+        psf,
+        np.array([4.0], dtype=float),
+        1.0,
+        np.array([[4, 4]], dtype=np.int64),
+        ee_geometry="encircled",
+    )
+    ee_multi = stats_module._compute_enclosed_energy(
+        psf,
+        np.array([4.0, 8.0], dtype=float),
+        1.0,
+        np.array([[4, 4]], dtype=np.int64),
+        ee_geometry="encircled",
+    )
+
+    np.testing.assert_allclose(ee_single[:, 0], ee_multi[:, 0], atol=1e-7)
+
+
+def test_compute_encircled_energy_is_no_larger_than_ensquared_energy():
+    psf = _gaussian_psf(9, 9, 4.0, 4.0, 1.5, 1.5)[None, :, :]
+    psf /= psf.sum()
+    apertures = np.array([4.0, 6.0], dtype=float)
+    peak_locations = np.array([[4, 4]], dtype=np.int64)
+
+    encircled = stats_module._compute_enclosed_energy(psf, apertures, 1.0, peak_locations, ee_geometry="encircled")
+    ensquared = stats_module._compute_enclosed_energy(psf, apertures, 1.0, peak_locations)
+
+    assert np.all(encircled <= ensquared + 1e-6)
+
+
+def test_measure_peak_centered_ensquared_energy_curves_applies_radius_factor():
     psf = np.zeros((1, 21, 21), dtype=np.float32)
     psf[0, 10, 10] = 1.0
 
-    curves = stats_module._measure_peak_centered_ee_curves(
+    curves, curve_radii_mas = stats_module._measure_peak_centered_ensquared_energy_curves(
         psf,
         np.array([10], dtype=np.int64),
         np.array([10], dtype=np.int64),
-        max_ee_radius_mas=3.0,
+        max_radius=4,
         pixel_scale_mas=1.0,
-        extra_box_radii=2,
     )
 
-    assert curves.shape == (1, 4)
+    assert curves.shape == (1, 5)
+    np.testing.assert_allclose(curve_radii_mas, np.array([0.5, 1.5, 2.5, 3.5, 4.5]))
 
 
 def test_measure_contour_fwhms_returns_expected_widths_for_square_ring():

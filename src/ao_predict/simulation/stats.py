@@ -8,6 +8,7 @@ import warnings
 
 import contourpy
 import numpy as np
+from photutils.profiles import CurveOfGrowth
 from scipy.interpolate import interp1d
 from scipy.ndimage import shift
 from scipy.optimize import curve_fit
@@ -20,6 +21,10 @@ from .interfaces import Simulation
 
 
 StatValue: TypeAlias = np.ndarray | float
+
+_EE_GEOMETRY_ENSQUARED = "ensquared"
+_EE_GEOMETRY_ENCIRCLED = "encircled"
+_EE_GEOMETRIES = (_EE_GEOMETRY_ENSQUARED, _EE_GEOMETRY_ENCIRCLED)
 
 
 # Input validation and shaping
@@ -319,7 +324,7 @@ def _compute_strehl(
     raise ValueError(f"Unsupported Strehl method: {sr_method}")
 
 
-# Ensquared Energy helpers
+# Enclosed Energy helpers
 
 def _anchor_psfs_for_ee(
     psfs: np.ndarray,
@@ -360,17 +365,20 @@ def _anchor_psfs_for_ee(
     return psfs, peak_y, peak_x
 
 
-def _measure_peak_centered_ee_curves(
+def _measure_peak_centered_ensquared_energy_curves(
     psfs: np.ndarray,
     peak_y: np.ndarray,
     peak_x: np.ndarray,
-    max_ee_radius_mas: float,
+    max_radius: int,
     pixel_scale_mas: float,
-    *,
-    extra_box_radii: int = 3,
-) -> np.ndarray:
+) -> tuple[np.ndarray, np.ndarray]:
     """Measure cumulative odd-sized square-box EE curves about integer anchors."""
-    num_sci, ny, nx = psfs.shape
+    num_sci = psfs.shape[0]
+    radii = np.arange(max_radius + 1, dtype=np.int64)
+    ee_curves = np.zeros((num_sci, radii.size), dtype=psfs.dtype)
+    idx = np.arange(num_sci, dtype=np.int64)
+    unique_radii = np.arange(1, ee_curves.shape[1] * 2, 2, dtype=float) * pixel_scale_mas * 0.5
+
     integral = np.pad(
         psfs.cumsum(axis=1).cumsum(axis=2),
         ((0, 0), (1, 0), (1, 0)),
@@ -385,59 +393,116 @@ def _measure_peak_centered_ee_curves(
             + integral[idx, y0, x0]
         )
 
-    edge_limited_radius = int(np.min(np.stack([peak_y, ny - 1 - peak_y, peak_x, nx - 1 - peak_x])))
-    required_radius = int(np.ceil((max_ee_radius_mas / pixel_scale_mas - 1.0) * 0.5))
-    max_radius = min(edge_limited_radius, max(0, required_radius) + int(extra_box_radii))
-    radii = np.arange(max_radius + 1, dtype=np.int64)
-    ee_curves = np.zeros((num_sci, radii.size), dtype=psfs.dtype)
-    idx = np.arange(num_sci, dtype=np.int64)
-
     for j, radius in enumerate(radii):
         y0 = peak_y - radius
         y1 = peak_y + radius + 1
         x0 = peak_x - radius
         x1 = peak_x + radius + 1
         ee_curves[:, j] = _rect_sum(idx, y0, y1, x0, x1)
-    return ee_curves
+
+    return ee_curves, unique_radii
+
+
+def _measure_peak_centered_encircled_energy_cog(
+    psfs: np.ndarray,
+    peak_y: np.ndarray,
+    peak_x: np.ndarray,
+    ee_radii: np.ndarray,
+    pixel_scale_mas: float,
+) -> np.ndarray:
+    """Measure circular-aperture EE using Photutils curve-of-growth apertures."""
+    radii_pix = np.asarray(ee_radii, dtype=float) / float(pixel_scale_mas)
+    if np.any(radii_pix <= 0.0):
+        raise ValueError("Encircled EE apertures must have positive radii.")
+    cog_radii_pix = radii_pix
+    if radii_pix.size == 1:
+        cog_radii_pix = np.array([radii_pix[0], radii_pix[0] + 1.0], dtype=float)
+    ee = np.empty((psfs.shape[0], radii_pix.size), dtype=np.float32)
+    for i, psf in enumerate(psfs):
+        curve = CurveOfGrowth(psf, (float(peak_x[i]), float(peak_y[i])), cog_radii_pix, method="exact")
+        ee[i, :] = np.asarray(curve.profile[: radii_pix.size], dtype=np.float32)
+    return ee
 
 
 def _interpolate_ee_at_radii(
     ee_curves: np.ndarray,
-    pixel_scale_mas: float,
+    curve_radii_mas: np.ndarray,
     ee_radii: np.ndarray,
 ) -> np.ndarray:
-    """Interpolate cumulative EE curves onto requested physical half-widths."""
-    rr = np.arange(1, ee_curves.shape[1] * 2, 2, dtype=float) * pixel_scale_mas * 0.5
+    """Interpolate cumulative EE curves onto requested physical radii."""
+    curve_radii_mas = np.asarray(curve_radii_mas, dtype=float)
     ee_at_radius = np.empty((ee_curves.shape[0], ee_radii.size), dtype=float)
     for i, values in enumerate(ee_curves):
-        if rr.size == 1:
+        if curve_radii_mas.size == 1:
             interpolated = np.full(ee_radii.shape, float(values[0]), dtype=float)
         else:
-            interp_kind = "cubic" if rr.size >= 4 else "linear"
-            interpolated = interp1d(rr, values, kind=interp_kind, bounds_error=False, fill_value="extrapolate")(ee_radii)
+            interp_kind = "cubic" if curve_radii_mas.size >= 4 else "linear"
+            interpolated = interp1d(
+                curve_radii_mas,
+                values,
+                kind=interp_kind,
+                bounds_error=False,
+                fill_value="extrapolate",
+            )(ee_radii)
         ee_at_radius[i, :] = np.clip(interpolated, 0.0, 1.0)
     return ee_at_radius
 
 
-def _compute_ensquared_energy(
+def _normalize_ee_geometry(ee_geometry: str) -> str:
+    """Validate and return the requested EE aperture geometry."""
+    value = str(ee_geometry).strip()
+    if value not in _EE_GEOMETRIES:
+        raise ValueError(f"ee_geometry must be one of: {', '.join(_EE_GEOMETRIES)}.")
+    return value
+
+
+def _compute_enclosed_energy(
     psfs: np.ndarray,
     ee_apertures_mas: np.ndarray,
     pixel_scale_mas: float,
-    peak_locations_yx: np.ndarray | None
+    peak_locations_yx: np.ndarray | None,
+    *,
+    ee_geometry: str = _EE_GEOMETRY_ENSQUARED,
 ) -> np.ndarray:
-    """Compute AO Predict EE using peak-centered odd-sized square apertures."""
+    """Compute EE for the requested aperture geometry."""
+    ee_geometry = _normalize_ee_geometry(ee_geometry)
     ee_apertures_mas = np.asarray(ee_apertures_mas, dtype=float)
     ee_radii = ee_apertures_mas / 2.0
 
     psfs, peak_y, peak_x = _anchor_psfs_for_ee(psfs, peak_locations_yx)
-    ee_curves = _measure_peak_centered_ee_curves(
-        psfs,
-        peak_y,
-        peak_x,
-        ee_radii.max(),
-        pixel_scale_mas,
-    )
-    ee_at_radius = _interpolate_ee_at_radii(ee_curves, pixel_scale_mas, ee_radii)
+
+    if ee_geometry == _EE_GEOMETRY_ENSQUARED:
+        _, ny, nx = psfs.shape
+
+        # Use only aperture radii that fit around every peak anchor in the cube.
+        # This keeps all PSFs on the same valid peak-centered grid.
+        edge_limited_radius = int(np.min(np.stack([peak_y, ny - 1 - peak_y, peak_x, nx - 1 - peak_x])))
+
+        # Square aperture index r has physical half-width (r + 0.5) pixels.
+        # So, r=0 corresponds to the peak pixel alone, r=1 includes the 8 surrounding pixels, etc.
+        required_radius = int(np.ceil(ee_radii.max() / pixel_scale_mas - 0.5))
+
+        # Compute beyond the requested radius so interpolation is not pinned to
+        # the final sampled point of the cumulative EE curve.
+        max_radius_factor = 2.0
+        max_radius = min(edge_limited_radius, int(np.ceil(max(0, required_radius) * max_radius_factor)))
+        ee_curves, curve_radii_mas = _measure_peak_centered_ensquared_energy_curves(
+            psfs,
+            peak_y,
+            peak_x,
+            max_radius,
+            pixel_scale_mas,
+        )
+        ee_at_radius = _interpolate_ee_at_radii(ee_curves, curve_radii_mas, ee_radii)
+    else:
+        ee_at_radius = _measure_peak_centered_encircled_energy_cog(
+            psfs,
+            peak_y,
+            peak_x,
+            ee_radii,
+            pixel_scale_mas,
+        )
+
     return np.asarray(ee_at_radius, dtype=np.float32)
 
 
@@ -543,6 +608,8 @@ def compute_psf_stats(
     setup: Mapping[str, Any] | SimulationSetup,
     options: Mapping[str, Any],
     meta: Mapping[str, Any],
+    *,
+    ee_geometry: str = _EE_GEOMETRY_ENSQUARED,
 ) -> tuple[StatValue, StatValue, StatValue]:
     """Compute the core AO Predict PSF statistics for one PSF image or cube.
 
@@ -554,12 +621,16 @@ def compute_psf_stats(
         options: Per-simulation options mapping. ``wavelength_um`` is required
             for the diffraction-limited Strehl reference PSF.
         meta: Persisted PSF metadata mapping.
+        ee_geometry: EE aperture geometry. Defaults to ``"ensquared"`` to
+            preserve the existing square-aperture statistic.
 
     Returns:
         Tuple ``(sr, ee, fwhm_mas)`` matching the shared core stats contract.
         The implemented metric family is:
         - Strehl: image-domain `pixel_fit` or `pixel_max`
-        - EE: fixed peak-centered image-domain square-box accumulation
+        - EE: fixed peak-centered image-domain square-box accumulation by
+          default, or circular aperture accumulation when ``ee_geometry`` is
+          ``"encircled"``.
         - FWHM: fixed native contour measurement summarized by
           ``setup['fwhm_summary']``
 
@@ -582,7 +653,13 @@ def compute_psf_stats(
         tel_diameter_m,
         tel_pupil,
     )
-    ee = _compute_ensquared_energy(psf_cube, ee_apertures_mas, pixel_scale_mas, peak_locations_yx)
+    ee = _compute_enclosed_energy(
+        psf_cube,
+        ee_apertures_mas,
+        pixel_scale_mas,
+        peak_locations_yx,
+        ee_geometry=ee_geometry,
+    )
     fwhm_min, fwhm_max = _measure_contour_fwhms(psf_cube, pixel_scale_mas)
     fwhm_mas = _compute_fwhm_summary(fwhm_summary, fwhm_min, fwhm_max)
 
