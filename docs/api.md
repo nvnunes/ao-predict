@@ -163,6 +163,14 @@ Atmospheric input note:
 - In `setup.atm_profiles`, `seeing_arcsec` is accepted per profile and normalized to `r0_m` before persistence.
 - Bound `SimulationSetup` instances contain normalized concrete arrays for `lgs_*` and `sci_*` fields; absent LGS inputs are represented as empty arrays, not `None`.
 
+Generated table helper:
+- Use `ao_predict.simulation.options.options_from_rows(...)` when code
+  generates one mapping per simulation and needs a stable
+  `TableOptionsConfig`.
+- The helper returns `GeneratedOptions`, which preserves table `columns`,
+  `rows`, and `broadcast` defaults and exposes
+  `to_table_options_config()` for `InitDatasetRequest.options`.
+
 ## Working Example
 
 ```python
