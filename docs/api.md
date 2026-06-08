@@ -49,12 +49,19 @@ Stats note:
 - ao-predict computes the core stats from PSFs and assembles the final `result.stats`.
 - Simulations contribute only declared extra stats through the `Simulation.build_extra_stats(...)` hook.
 
-### `run_simulations_by_state(dataset_path: str | Path, *, state: SimulationState | int = SimulationState.PENDING, verbose: bool = False, indexes: list[int] | None = None) -> RunSummary`
+### `run_simulations_by_state(dataset_path: str | Path, *, state: SimulationState | int = SimulationState.PENDING, verbose: bool = False, indexes: list[int] | None = None, num_workers: int = 1, chunk_multiple: int = 10) -> RunSummary`
 Run simulations for a selected source state.
 
 Supported `state` values:
 - `SimulationState.PENDING`: run pending simulations
 - `SimulationState.FAILED`: retry failed simulations
+
+Execution controls:
+- `num_workers=1` runs serially and preserves the original execution behavior.
+- `num_workers > 1` uses joblib/loky worker processes.
+- `chunk_multiple` controls how many simulations are assigned to each worker chunk.
+- Worker processes return completed in-memory results; HDF5 writes remain owned by the parent process.
+- Simulation implementations may override `Simulation.warmup_worker()` to prepare process-local worker state before a chunk runs.
 
 ### `reset_simulations(dataset_path: str | Path, indexes: list[int] | None = None) -> int`
 Reset all simulations to pending state (`SimulationState.PENDING`).

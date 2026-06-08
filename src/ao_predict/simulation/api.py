@@ -324,6 +324,8 @@ def run_simulations_by_state(
     state: SimulationState | int = SimulationState.PENDING,
     indexes: list[int] | None = None,
     verbose: bool = False,
+    num_workers: int = 1,
+    chunk_multiple: int = 10,
 ) -> RunSummary:
     """Run simulations for a selected source state.
 
@@ -334,6 +336,10 @@ def run_simulations_by_state(
             - ``SimulationState.FAILED``: retry failed simulations
         indexes: Optional subset of 0-based indexes to consider.
         verbose: Print per-simulation failure details.
+        num_workers: Number of worker processes. ``1`` preserves serial
+            execution.
+        chunk_multiple: Number of simulations assigned to each worker chunk
+            when ``num_workers > 1``.
 
     Returns:
         Runner execution summary.
@@ -348,6 +354,8 @@ def run_simulations_by_state(
         state=state,
         indexes=indexes,
         verbose=verbose,
+        num_workers=num_workers,
+        chunk_multiple=chunk_multiple,
     )
 
 

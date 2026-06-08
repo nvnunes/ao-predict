@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Mapping
 
 import numpy as np
@@ -191,3 +192,61 @@ class MockSimulation(BaseSimulation):
             tel_diameter_m=8.0,
             tel_pupil=np.ones((4, 4), dtype=np.float32),
         )
+
+
+class WarmupMockSimulation(MockSimulation):
+    """Mock backend that requires worker warmup before execution."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._worker_warmed = False
+
+    def warmup_worker(self) -> None:
+        """Mark this worker-local simulation instance as warmed."""
+        self._worker_warmed = True
+
+    def run(self, context: SimulationContext) -> None:
+        """Require warmup before normal mock execution."""
+        if not self._worker_warmed:
+            raise RuntimeError("worker was not warmed")
+        super().run(context)
+
+
+class FailingWarmupMockSimulation(MockSimulation):
+    """Mock backend whose worker warmup always fails."""
+
+    def warmup_worker(self) -> None:
+        """Raise a deterministic worker-warmup failure."""
+        raise RuntimeError("warmup failed")
+
+
+class ExtraStatsMockSimulation(MockSimulation):
+    """Mock backend that emits one declared extra stat."""
+
+    @property
+    def extra_stat_names(self) -> tuple[str, ...]:
+        """Return the declared mock extra stat registry."""
+        return ("halo_mas",)
+
+    def build_extra_stats(self, context: SimulationContext) -> Mapping[str, Any]:
+        """Build deterministic per-science extra stats for one simulation."""
+        num_sci = int(np.asarray(context.setup.sci_r_arcsec, dtype=float).reshape(-1).shape[0])
+        return {"halo_mas": np.full((num_sci,), float(context.index + 10), dtype=np.float32)}
+
+
+class FailOnceMockSimulation(MockSimulation):
+    """Mock backend that fails one selected index once using a marker file."""
+
+    def load_simulation_payload(self, simulation_payload: Mapping[str, Any]) -> None:
+        """Load the marker path used to coordinate retry behavior."""
+        marker_path = simulation_payload.get("marker_path")
+        if not isinstance(marker_path, str) or not marker_path:
+            raise ValueError("FailOnceMockSimulation requires a non-empty marker_path.")
+        self._marker_path = Path(marker_path)
+
+    def run(self, context: SimulationContext) -> None:
+        """Fail index one until the marker file has been created."""
+        if int(context.index) == 1 and not self._marker_path.exists():
+            self._marker_path.write_text("failed\n", encoding="utf-8")
+            raise RuntimeError("intentional one-time failure")
+        super().run(context)

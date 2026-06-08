@@ -7,6 +7,7 @@ from dataclasses import dataclass
 import importlib
 from typing import Any, Type
 
+from joblib import Parallel, delayed
 import numpy as np
 
 from ..persistence import SimulationStore
@@ -17,7 +18,7 @@ from .validation import (
     validate_simulation_payload_core,
     validate_setup_payload_core,
 )
-from .interfaces import Simulation, SimulationState
+from .interfaces import Simulation, SimulationResult, SimulationState
 from .stats import compute_psf_stats
 from ..utils import as_float_vector
 
@@ -37,6 +38,15 @@ class RunSummary:
     attempted: int
     succeeded: int
     failed: int
+
+
+@dataclass
+class _RunOutcome:
+    """Completed single-simulation outcome returned by serial or worker code."""
+
+    index: int
+    result: SimulationResult | None = None
+    failure_message: str | None = None
 
 
 # Simulation payload preparation
@@ -260,6 +270,17 @@ def _prepare_runtime_options(store: SimulationStore, index: int) -> dict[str, An
 # Execution internals
 
 
+def _validate_parallel_options(num_workers: int, chunk_multiple: int) -> tuple[int, int]:
+    """Validate and normalize runner parallelism controls."""
+    num_workers = int(num_workers)
+    chunk_multiple = int(chunk_multiple)
+    if num_workers < 1:
+        raise ValueError("num_workers must be >= 1.")
+    if chunk_multiple < 1:
+        raise ValueError("chunk_multiple must be >= 1.")
+    return num_workers, chunk_multiple
+
+
 def _filter_execution_indices(
     store: SimulationStore,
     available_indices: np.ndarray,
@@ -369,7 +390,72 @@ def _populate_result_stats(simulation: Simulation, context: Any) -> None:
     }
 
 
-def _run_simulations_for_indices(
+def _execute_simulation_index(
+    simulation: Simulation,
+    index: int,
+    options: Mapping[str, Any],
+    *,
+    verbose: bool,
+) -> _RunOutcome:
+    """Run one simulation index and return its in-memory outcome.
+
+    Args:
+        simulation: Bound simulation implementation.
+        index: Zero-based simulation index.
+        options: Runtime options for this simulation.
+        verbose: Whether failure messages should be included in the outcome.
+
+    Returns:
+        Completed run outcome. Successful outcomes contain a populated
+        ``SimulationResult``. Failed outcomes contain a failure message when
+        ``verbose`` is true.
+    """
+    try:
+        context = simulation.create(int(index), options)
+        context.runtime["extra_stat_names"] = simulation.extra_stat_names
+        simulation.run(context)
+        simulation.finalize(context)
+
+        if context.result is None:
+            raise ValueError("Simulation did not set context.result.")
+
+        if int(context.result.state) == int(SimulationState.SUCCEEDED):
+            _populate_result_stats(simulation, context)
+            return _RunOutcome(index=int(index), result=context.result)
+
+        failure_message = None
+        if verbose:
+            if context.result.errors:
+                failure_message = "; ".join(str(e) for e in context.result.errors)
+            else:
+                failure_message = f"non-success state={int(context.result.state)}"
+        return _RunOutcome(index=int(index), result=context.result, failure_message=failure_message)
+    except Exception as exc:
+        failure_message = f"{type(exc).__name__}: {exc}" if verbose else None
+        return _RunOutcome(index=int(index), failure_message=failure_message)
+
+
+def _persist_run_outcome(
+    store: SimulationStore,
+    outcome: _RunOutcome,
+    *,
+    allow_from_failed: bool,
+    verbose: bool,
+) -> tuple[int, int]:
+    """Persist one completed outcome and return ``(succeeded, failed)``."""
+    idx = int(outcome.index)
+    result = outcome.result
+    if result is not None and int(result.state) == int(SimulationState.SUCCEEDED):
+        store.write_simulation_success(idx, result, allow_from_failed=allow_from_failed)
+        return 1, 0
+
+    if verbose and outcome.failure_message:
+        print(f"Simulation {idx} failed: {outcome.failure_message}")
+    store.write_simulation_failure(idx, allow_from_failed=allow_from_failed)
+    return 0, 1
+
+
+def _run_simulations_serial(
     store: SimulationStore,
     simulation: Simulation,
     indices: np.ndarray,
@@ -377,18 +463,7 @@ def _run_simulations_for_indices(
     allow_from_failed: bool,
     verbose: bool,
 ) -> RunSummary:
-    """Execute simulations for a fixed index set and persist outcomes.
-
-    Args:
-        store: Dataset store.
-        simulation: Bound simulation implementation.
-        indices: Simulation indexes to run.
-        allow_from_failed: Whether store writes may transition from ``FAILED``.
-        verbose: If ``True``, print failure details.
-
-    Returns:
-        Summary counters for attempted/succeeded/failed simulations.
-    """
+    """Execute simulations serially and persist each outcome immediately."""
     attempted = 0
     succeeded = 0
     failed = 0
@@ -396,36 +471,171 @@ def _run_simulations_for_indices(
     for index in indices:
         attempted += 1
         idx = int(index)
-        try:
-            options = _prepare_runtime_options(store, idx)
-            context = simulation.create(idx, options)
-            context.runtime["extra_stat_names"] = simulation.extra_stat_names
-            simulation.run(context)
-            simulation.finalize(context)
-
-            if context.result is None:
-                raise ValueError("Simulation did not set context.result.")
-
-            if int(context.result.state) == int(SimulationState.SUCCEEDED):
-                _populate_result_stats(simulation, context)
-                store.write_simulation_success(idx, context.result, allow_from_failed=allow_from_failed)
-                succeeded += 1
-            else:
-                if verbose:
-                    if context.result.errors:
-                        msg = "; ".join(str(e) for e in context.result.errors)
-                    else:
-                        msg = f"non-success state={int(context.result.state)}"
-                    print(f"Simulation {idx} failed: {msg}")
-                store.write_simulation_failure(idx, allow_from_failed=allow_from_failed)
-                failed += 1
-        except Exception as exc:
-            if verbose:
-                print(f"Simulation {idx} failed: {type(exc).__name__}: {exc}")
-            store.write_simulation_failure(idx, allow_from_failed=allow_from_failed)
-            failed += 1
+        options = _prepare_runtime_options(store, idx)
+        outcome = _execute_simulation_index(simulation, idx, options, verbose=verbose)
+        dsucceeded, dfailed = _persist_run_outcome(
+            store,
+            outcome,
+            allow_from_failed=allow_from_failed,
+            verbose=verbose,
+        )
+        succeeded += dsucceeded
+        failed += dfailed
 
     return RunSummary(attempted=attempted, succeeded=succeeded, failed=failed)
+
+
+def _run_worker_chunk(
+    simulation_payload: Mapping[str, Any],
+    setup_payload: Mapping[str, Any],
+    work_items: tuple[tuple[int, dict[str, Any]], ...],
+    *,
+    verbose: bool,
+) -> list[_RunOutcome]:
+    """Run one worker chunk and return ordered in-memory outcomes.
+
+    Args:
+        simulation_payload: Persisted ``/simulation`` mapping.
+        setup_payload: Persisted ``/setup`` mapping.
+        work_items: Ordered ``(index, options)`` pairs assigned to this worker.
+        verbose: Whether failure messages should be included in outcomes.
+
+    Returns:
+        Ordered list of per-index run outcomes.
+    """
+    try:
+        simulation = create_simulation_from_payload(simulation_payload)
+        simulation.load_setup_payload(setup_payload)
+        simulation.warmup_worker()
+    except Exception as exc:
+        failure_message = f"{type(exc).__name__}: {exc}" if verbose else None
+        return [
+            _RunOutcome(index=int(index), failure_message=failure_message)
+            for index, _options in work_items
+        ]
+
+    return [
+        _execute_simulation_index(simulation, index, options, verbose=verbose)
+        for index, options in work_items
+    ]
+
+
+def _chunk_work_items(
+    work_items: list[tuple[int, dict[str, Any]]],
+    *,
+    chunk_multiple: int,
+) -> list[tuple[tuple[int, dict[str, Any]], ...]]:
+    """Split ordered work items into worker-sized chunks."""
+    return [
+        tuple(work_items[start : start + chunk_multiple])
+        for start in range(0, len(work_items), chunk_multiple)
+    ]
+
+
+def _run_simulations_parallel(
+    store: SimulationStore,
+    indices: np.ndarray,
+    *,
+    allow_from_failed: bool,
+    verbose: bool,
+    num_workers: int,
+    chunk_multiple: int,
+) -> RunSummary:
+    """Execute simulations in joblib workers and persist outcomes in parent."""
+    attempted = 0
+    succeeded = 0
+    failed = 0
+
+    simulation_payload = store.read_simulation()
+    setup_payload = store.read_setup()
+    parallel_pool = Parallel(
+        n_jobs=num_workers,
+        backend="loky",
+        idle_worker_timeout=None,
+    )
+
+    num_indices = int(indices.shape[0])
+    outer_chunk_size = min(num_indices, num_workers * chunk_multiple)
+    for start in range(0, num_indices, outer_chunk_size):
+        outer_indices = indices[start : start + outer_chunk_size]
+        work_items = [
+            (int(index), _prepare_runtime_options(store, int(index)))
+            for index in outer_indices
+        ]
+        worker_chunks = _chunk_work_items(work_items, chunk_multiple=chunk_multiple)
+        chunk_results = parallel_pool(
+            delayed(_run_worker_chunk)(
+                simulation_payload,
+                setup_payload,
+                chunk,
+                verbose=verbose,
+            )
+            for chunk in worker_chunks
+        )
+
+        for outcomes in chunk_results:
+            for outcome in outcomes:
+                attempted += 1
+                dsucceeded, dfailed = _persist_run_outcome(
+                    store,
+                    outcome,
+                    allow_from_failed=allow_from_failed,
+                    verbose=verbose,
+                )
+                succeeded += dsucceeded
+                failed += dfailed
+
+    return RunSummary(attempted=attempted, succeeded=succeeded, failed=failed)
+
+
+def _run_simulations_for_indices(
+    store: SimulationStore,
+    simulation: Simulation,
+    indices: np.ndarray,
+    *,
+    allow_from_failed: bool,
+    verbose: bool,
+    num_workers: int,
+    chunk_multiple: int,
+) -> RunSummary:
+    """Execute simulations for a fixed index set and persist outcomes.
+
+    Args:
+        store: Dataset store.
+        simulation: Bound simulation implementation.
+            Used directly when ``num_workers == 1``. When ``num_workers > 1``,
+            worker processes reconstruct simulation instances from the
+            persisted ``/simulation`` and ``/setup`` payloads instead of using
+            parent-process runtime state.
+        indices: Simulation indexes to run.
+        allow_from_failed: Whether store writes may transition from ``FAILED``.
+        verbose: If ``True``, print failure details.
+        num_workers: Number of worker processes. ``1`` executes serially.
+        chunk_multiple: Number of simulations assigned to each worker chunk.
+
+    Returns:
+        Summary counters for attempted/succeeded/failed simulations.
+    """
+    num_workers, chunk_multiple = _validate_parallel_options(num_workers, chunk_multiple)
+    if indices.shape[0] == 0:
+        return RunSummary(attempted=0, succeeded=0, failed=0)
+    if num_workers == 1:
+        return _run_simulations_serial(
+            store,
+            simulation,
+            indices,
+            allow_from_failed=allow_from_failed,
+            verbose=verbose,
+        )
+
+    return _run_simulations_parallel(
+        store,
+        indices,
+        allow_from_failed=allow_from_failed,
+        verbose=verbose,
+        num_workers=num_workers,
+        chunk_multiple=chunk_multiple,
+    )
 
 
 # Execution entry points
@@ -437,17 +647,27 @@ def run_simulations_by_state(
     *,
     indexes: list[int] | None = None,
     verbose: bool = False,
+    num_workers: int = 1,
+    chunk_multiple: int = 10,
 ) -> RunSummary:
     """Run simulations from a selected source state.
 
     Args:
         store: Dataset store.
         simulation: Bound simulation implementation.
+            Used directly when ``num_workers == 1``. When ``num_workers > 1``,
+            worker processes reconstruct simulation instances from the
+            persisted ``/simulation`` and ``/setup`` payloads instead of using
+            parent-process runtime state.
         state: Source state to run from.
             Supported values are ``SimulationState.PENDING`` and
             ``SimulationState.FAILED``.
         indexes: Optional subset of simulation indexes to run.
         verbose: If ``True``, print failure messages.
+        num_workers: Number of worker processes. ``1`` preserves serial
+            execution.
+        chunk_multiple: Number of simulations assigned to each worker chunk
+            when ``num_workers > 1``.
 
     Returns:
         Execution counters for attempted/succeeded/failed simulations.
@@ -466,6 +686,7 @@ def run_simulations_by_state(
             "run_simulations_by_state(..., state, ...) supports only "
             "SimulationState.PENDING or SimulationState.FAILED."
         )
+    num_workers, chunk_multiple = _validate_parallel_options(num_workers, chunk_multiple)
 
     candidate_indices = _filter_execution_indices(store, store.indices_with_state(state_value), indexes)
     allow_from_failed = state_value == SimulationState.FAILED
@@ -475,6 +696,8 @@ def run_simulations_by_state(
         candidate_indices,
         allow_from_failed=allow_from_failed,
         verbose=verbose,
+        num_workers=num_workers,
+        chunk_multiple=chunk_multiple,
     )
 
 
@@ -484,6 +707,8 @@ def run_pending_simulations(
     *,
     indexes: list[int] | None = None,
     verbose: bool = False,
+    num_workers: int = 1,
+    chunk_multiple: int = 10,
 ) -> RunSummary:
     """Run simulations currently in ``PENDING`` state.
 
@@ -492,6 +717,10 @@ def run_pending_simulations(
         simulation: Bound simulation implementation.
         indexes: Optional subset of simulation indexes to run.
         verbose: If ``True``, print failure messages.
+        num_workers: Number of worker processes. ``1`` preserves serial
+            execution.
+        chunk_multiple: Number of simulations assigned to each worker chunk
+            when ``num_workers > 1``.
 
     Returns:
         Execution counters for attempted/succeeded/failed simulations.
@@ -502,6 +731,8 @@ def run_pending_simulations(
         SimulationState.PENDING,
         verbose=verbose,
         indexes=indexes,
+        num_workers=num_workers,
+        chunk_multiple=chunk_multiple,
     )
 
 
@@ -511,6 +742,8 @@ def run_failed_simulations(
     *,
     indexes: list[int] | None = None,
     verbose: bool = False,
+    num_workers: int = 1,
+    chunk_multiple: int = 10,
 ) -> RunSummary:
     """Run simulations currently in ``FAILED`` state.
 
@@ -519,6 +752,10 @@ def run_failed_simulations(
         simulation: Bound simulation implementation.
         indexes: Optional subset of simulation indexes to run.
         verbose: If ``True``, print failure messages.
+        num_workers: Number of worker processes. ``1`` preserves serial
+            execution.
+        chunk_multiple: Number of simulations assigned to each worker chunk
+            when ``num_workers > 1``.
 
     Returns:
         Execution counters for attempted/succeeded/failed simulations.
@@ -529,4 +766,6 @@ def run_failed_simulations(
         SimulationState.FAILED,
         verbose=verbose,
         indexes=indexes,
+        num_workers=num_workers,
+        chunk_multiple=chunk_multiple,
     )

@@ -345,3 +345,14 @@ class Simulation(ABC):
         """
         del context
         return {}
+
+    def warmup_worker(self) -> None:
+        """Prepare one worker process before executing a chunk of simulations.
+
+        This optional hook is called after persisted simulation and setup
+        payloads have been loaded in a worker process and before that worker
+        executes its assigned simulation indexes. Implementations may use it to
+        initialize process-local simulator state. The default implementation is
+        a no-op.
+        """
+        return None

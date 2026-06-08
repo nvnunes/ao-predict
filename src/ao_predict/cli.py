@@ -219,6 +219,8 @@ def _handle_simulate_run(args: argparse.Namespace) -> int:
         state=SimulationState.PENDING,
         verbose=bool(args.verbose),
         indexes=indexes,
+        num_workers=int(args.threads),
+        chunk_multiple=int(args.chunks),
     )
 
     print(
@@ -236,6 +238,8 @@ def _handle_simulate_retry(args: argparse.Namespace) -> int:
         state=SimulationState.FAILED,
         verbose=bool(args.verbose),
         indexes=indexes,
+        num_workers=int(args.threads),
+        chunk_multiple=int(args.chunks),
     )
 
     print(
@@ -295,12 +299,16 @@ def _build_parser() -> argparse.ArgumentParser:
     simulate_run_parser = simulate_subparsers.add_parser("run", help=simulate_command_help["run"])
     simulate_run_parser.add_argument("dataset", help="dataset HDF5 path")
     simulate_run_parser.add_argument("--sims", help="optional comma-separated simulation numbers to run (1-based)")
+    simulate_run_parser.add_argument("--threads", type=int, default=1, help="number of parallel joblib workers")
+    simulate_run_parser.add_argument("--chunks", type=int, default=10, help="simulations assigned to each worker chunk")
     simulate_run_parser.add_argument("--verbose", action="store_true", help="print failure messages for failed simulations")
 
     simulate_command_help["retry"] = "retry all failed simulations"
     simulate_retry_parser = simulate_subparsers.add_parser("retry", help=simulate_command_help["retry"])
     simulate_retry_parser.add_argument("dataset", help="dataset HDF5 path")
     simulate_retry_parser.add_argument("--sims", help="optional comma-separated simulation numbers to retry (1-based)")
+    simulate_retry_parser.add_argument("--threads", type=int, default=1, help="number of parallel joblib workers")
+    simulate_retry_parser.add_argument("--chunks", type=int, default=10, help="simulations assigned to each worker chunk")
     simulate_retry_parser.add_argument("--verbose", action="store_true", help="print failure messages for failed simulations")
 
     simulate_command_help["reset"] = "reset all simulations to pending state"

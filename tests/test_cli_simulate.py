@@ -308,6 +308,38 @@ def test_cli_simulate_run_with_sims(tmp_path: Path, monkeypatch):
         np.testing.assert_array_equal(f["status/state"][:], np.array([0, 1, 0], dtype=np.uint8))
 
 
+def test_cli_simulate_run_passes_parallel_controls(monkeypatch, tmp_path: Path):
+    observed: dict[str, object] = {}
+    dataset_path = tmp_path / "sim_data.h5"
+
+    def _run(dataset, **kwargs):
+        observed["dataset"] = dataset
+        observed.update(kwargs)
+        return sim_api.RunSummary(attempted=0, succeeded=0, failed=0)
+
+    monkeypatch.setattr(cli, "run_simulations_by_state", _run)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "ao-predict",
+            "simulate",
+            "run",
+            str(dataset_path),
+            "--threads",
+            "3",
+            "--chunks",
+            "2",
+        ],
+    )
+
+    assert cli.main() == 0
+    assert observed["dataset"] == str(dataset_path)
+    assert observed["state"] == SimulationState.PENDING
+    assert observed["num_workers"] == 3
+    assert observed["chunk_multiple"] == 2
+
+
 def test_cli_simulate_retry_with_sims(tmp_path: Path, monkeypatch):
     dataset_path, config_yaml = _prepare_cli_paths(tmp_path)
     _cli_init_dataset(monkeypatch, config_yaml, dataset_path)
@@ -323,6 +355,38 @@ def test_cli_simulate_retry_with_sims(tmp_path: Path, monkeypatch):
 
     with h5py.File(dataset_path, "r") as f:
         np.testing.assert_array_equal(f["status/state"][:], np.array([2, 1, 2], dtype=np.uint8))
+
+
+def test_cli_simulate_retry_passes_parallel_controls(monkeypatch, tmp_path: Path):
+    observed: dict[str, object] = {}
+    dataset_path = tmp_path / "sim_data.h5"
+
+    def _run(dataset, **kwargs):
+        observed["dataset"] = dataset
+        observed.update(kwargs)
+        return sim_api.RunSummary(attempted=0, succeeded=0, failed=0)
+
+    monkeypatch.setattr(cli, "run_simulations_by_state", _run)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "ao-predict",
+            "simulate",
+            "retry",
+            str(dataset_path),
+            "--threads",
+            "4",
+            "--chunks",
+            "3",
+        ],
+    )
+
+    assert cli.main() == 0
+    assert observed["dataset"] == str(dataset_path)
+    assert observed["state"] == SimulationState.FAILED
+    assert observed["num_workers"] == 4
+    assert observed["chunk_multiple"] == 3
 
 
 def test_cli_simulate_reset(tmp_path: Path, monkeypatch):

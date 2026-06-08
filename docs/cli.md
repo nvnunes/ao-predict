@@ -42,7 +42,7 @@ Behavior:
 Run all pending simulations.
 
 ```bash
-ao-predict simulate run <dataset> [--verbose] [--sims 2,5,8]
+ao-predict simulate run <dataset> [--verbose] [--sims 2,5,8] [--threads 4] [--chunks 10]
 ```
 
 Behavior:
@@ -50,7 +50,10 @@ Behavior:
 - Loads simulation and setup from dataset.
 - Runs only simulations where `/status/state == SimulationState.PENDING` (`0`).
 - With `--sims`, runs only the selected simulation numbers (1-based) that are pending.
+- With `--threads`, uses joblib/loky worker processes. The default is serial execution.
+- With `--chunks`, sets the number of simulations assigned to each worker chunk.
 - With `--verbose`, prints failure messages for failed simulations.
+- Worker processes return completed results; dataset writes remain in the parent process.
 
 Output:
 - `Run summary: attempted=<N> succeeded=<S> failed=<F>`
@@ -59,7 +62,7 @@ Output:
 Retry failed simulations only.
 
 ```bash
-ao-predict simulate retry <dataset> [--verbose] [--sims 2,5,8]
+ao-predict simulate retry <dataset> [--verbose] [--sims 2,5,8] [--threads 4] [--chunks 10]
 ```
 
 Behavior:
@@ -67,8 +70,11 @@ Behavior:
 - Loads simulation and setup from dataset.
 - Runs only simulations where `/status/state == SimulationState.FAILED` (`2`).
 - With `--sims`, retries only the selected simulation numbers (1-based) that are failed.
+- With `--threads`, uses joblib/loky worker processes. The default is serial execution.
+- With `--chunks`, sets the number of simulations assigned to each worker chunk.
 - Keeps successful simulations unchanged.
 - With `--verbose`, prints failure messages for failed simulations.
+- Worker processes return completed results; dataset writes remain in the parent process.
 
 Output:
 - `Retry summary: attempted=<N> succeeded=<S> failed=<F>`

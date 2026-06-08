@@ -22,12 +22,23 @@ from ao_predict.simulation import (
     schema,
 )
 from ao_predict.simulation.runner import _populate_result_stats
-from ao_predict.simulation.runner import create_simulation_from_config, run_pending_simulations
+from ao_predict.simulation.runner import (
+    RunSummary,
+    create_simulation_from_config,
+    run_pending_simulations,
+    run_simulations_by_state,
+)
 import ao_predict.simulation.stats as stats_module
 from ao_predict.simulation.stats import compute_psf_stats
 from ao_predict.simulation.validation import validate_successful_result
 from helpers import run_pending_with_callback
-from mock_simulation import MockSimulation
+from mock_simulation import (
+    ExtraStatsMockSimulation,
+    FailingWarmupMockSimulation,
+    FailOnceMockSimulation,
+    MockSimulation,
+    WarmupMockSimulation,
+)
 
 _GIRMOS_AOSTATS = None
 
@@ -39,6 +50,21 @@ def _simulation(*, extra_stat_names: tuple[str, ...] = ()) -> dict:
         "extra_stat_names": np.asarray(extra_stat_names, dtype=str),
         "base_config": "[section]\nvalue=1\n",
     }
+
+
+def _mock_simulation(
+    simulation_cls: type[MockSimulation] = MockSimulation,
+    *,
+    extra_stat_names: tuple[str, ...] = (),
+    specific_fields: Mapping[str, object] | None = None,
+) -> dict:
+    payload = {
+        "name": f"{simulation_cls.__module__}:{simulation_cls.__name__}",
+        "version": simulation_cls._VERSION,
+        "extra_stat_names": np.asarray(extra_stat_names, dtype=str),
+    }
+    payload.update(dict(specific_fields or {}))
+    return payload
 
 
 def _setup() -> dict:
@@ -1314,6 +1340,227 @@ def test_runner_with_simulation_interface(tmp_path):
                 dtype=np.uint8,
             ),
         )
+
+
+def _load_bound_mock_simulation(store: SimulationStore, simulation_cls: type[MockSimulation] = MockSimulation) -> MockSimulation:
+    simulation = simulation_cls()
+    simulation.load_simulation_payload(store.read_simulation())
+    simulation.load_setup_payload(store.read_setup())
+    return simulation
+
+
+def test_runner_parallel_matches_serial_outputs(tmp_path):
+    serial_path = tmp_path / "serial_data.h5"
+    parallel_path = tmp_path / "parallel_data.h5"
+
+    serial_store = SimulationStore(serial_path)
+    serial_store.create(_mock_simulation(), _setup(), _options(num_sims=4), save_psfs=True)
+    serial_summary = run_pending_simulations(
+        serial_store,
+        _load_bound_mock_simulation(serial_store),
+        num_workers=1,
+        chunk_multiple=1,
+    )
+
+    parallel_store = SimulationStore(parallel_path)
+    parallel_store.create(_mock_simulation(), _setup(), _options(num_sims=4), save_psfs=True)
+    parallel_summary = run_pending_simulations(
+        parallel_store,
+        _load_bound_mock_simulation(parallel_store),
+        num_workers=2,
+        chunk_multiple=1,
+    )
+
+    assert parallel_summary == serial_summary == RunSummary(attempted=4, succeeded=4, failed=0)
+    with h5py.File(serial_path, "r") as serial, h5py.File(parallel_path, "r") as parallel:
+        for path in (
+            f"{schema.KEY_STATUS_SECTION}/{schema.KEY_STATUS_STATE}",
+            f"{schema.KEY_STATS_SECTION}/{schema.KEY_STATS_SR}",
+            f"{schema.KEY_STATS_SECTION}/{schema.KEY_STATS_EE}",
+            f"{schema.KEY_STATS_SECTION}/{schema.KEY_STATS_FWHM_MAS}",
+            f"{schema.KEY_META_SECTION}/{schema.KEY_META_PIXEL_SCALE_MAS}",
+            f"{schema.KEY_PSFS_SECTION}/{schema.KEY_PSFS_DATA}",
+        ):
+            np.testing.assert_allclose(parallel[path][...], serial[path][...], equal_nan=True)
+
+
+def test_runner_parallel_reconstructs_simulation_from_persisted_payload(tmp_path):
+    data_path = tmp_path / "parallel_reconstructs.h5"
+    store = SimulationStore(data_path)
+    store.create(_mock_simulation(), _setup(), _options(), save_psfs=False)
+
+    summary = run_pending_simulations(
+        store,
+        MockSimulation(),
+        num_workers=2,
+        chunk_multiple=1,
+    )
+
+    assert summary == RunSummary(attempted=3, succeeded=3, failed=0)
+
+
+def test_runner_parallel_calls_worker_warmup(tmp_path):
+    data_path = tmp_path / "parallel_warmup.h5"
+    store = SimulationStore(data_path)
+    store.create(_mock_simulation(WarmupMockSimulation), _setup(), _options(), save_psfs=False)
+
+    summary = run_pending_simulations(
+        store,
+        MockSimulation(),
+        num_workers=2,
+        chunk_multiple=1,
+    )
+
+    assert summary == RunSummary(attempted=3, succeeded=3, failed=0)
+
+
+def test_runner_parallel_marks_chunk_failed_when_worker_warmup_fails(tmp_path):
+    data_path = tmp_path / "parallel_warmup_failure.h5"
+    store = SimulationStore(data_path)
+    store.create(_mock_simulation(FailingWarmupMockSimulation), _setup(), _options(), save_psfs=False)
+
+    summary = run_pending_simulations(
+        store,
+        MockSimulation(),
+        verbose=True,
+        num_workers=2,
+        chunk_multiple=2,
+    )
+
+    assert summary == RunSummary(attempted=3, succeeded=0, failed=3)
+    with h5py.File(data_path, "r") as f:
+        np.testing.assert_array_equal(
+            f[f"{schema.KEY_STATUS_SECTION}/{schema.KEY_STATUS_STATE}"][:],
+            np.array([2, 2, 2], dtype=np.uint8),
+        )
+
+
+def test_runner_parallel_persists_declared_extra_stats(tmp_path):
+    data_path = tmp_path / "parallel_extra_stats.h5"
+    store = SimulationStore(data_path)
+    store.create(
+        _mock_simulation(ExtraStatsMockSimulation, extra_stat_names=("halo_mas",)),
+        _setup(),
+        _options(),
+        save_psfs=False,
+    )
+
+    summary = run_pending_simulations(
+        store,
+        MockSimulation(),
+        num_workers=2,
+        chunk_multiple=1,
+    )
+
+    assert summary == RunSummary(attempted=3, succeeded=3, failed=0)
+    with h5py.File(data_path, "r") as f:
+        np.testing.assert_allclose(
+            f[f"{schema.KEY_STATS_SECTION}/halo_mas"][:],
+            np.array(
+                [
+                    [10.0, 10.0, 10.0],
+                    [11.0, 11.0, 11.0],
+                    [12.0, 12.0, 12.0],
+                ],
+                dtype=np.float32,
+            ),
+        )
+
+
+def test_runner_parallel_failure_isolation_and_retry(tmp_path):
+    data_path = tmp_path / "parallel_retry.h5"
+    marker_path = tmp_path / "failed_once.marker"
+    store = SimulationStore(data_path)
+    store.create(
+        _mock_simulation(
+            FailOnceMockSimulation,
+            specific_fields={"marker_path": str(marker_path)},
+        ),
+        _setup(),
+        _options(),
+        save_psfs=False,
+    )
+
+    first = run_pending_simulations(
+        store,
+        MockSimulation(),
+        verbose=True,
+        num_workers=2,
+        chunk_multiple=1,
+    )
+    assert first == RunSummary(attempted=3, succeeded=2, failed=1)
+    with h5py.File(data_path, "r") as f:
+        np.testing.assert_array_equal(
+            f[f"{schema.KEY_STATUS_SECTION}/{schema.KEY_STATUS_STATE}"][:],
+            np.array([1, 2, 1], dtype=np.uint8),
+        )
+
+    second = run_simulations_by_state(
+        store,
+        MockSimulation(),
+        SimulationState.FAILED,
+        num_workers=2,
+        chunk_multiple=1,
+    )
+    assert second == RunSummary(attempted=1, succeeded=1, failed=0)
+    with h5py.File(data_path, "r") as f:
+        np.testing.assert_array_equal(
+            f[f"{schema.KEY_STATUS_SECTION}/{schema.KEY_STATUS_STATE}"][:],
+            np.array([1, 1, 1], dtype=np.uint8),
+        )
+
+
+def test_runner_parallel_filters_pending_and_failed_indexes(tmp_path):
+    pending_path = tmp_path / "parallel_pending_subset.h5"
+    pending_store = SimulationStore(pending_path)
+    pending_store.create(_mock_simulation(), _setup(), _options(), save_psfs=False)
+
+    pending_summary = run_pending_simulations(
+        pending_store,
+        MockSimulation(),
+        indexes=[1],
+        num_workers=2,
+        chunk_multiple=1,
+    )
+    assert pending_summary == RunSummary(attempted=1, succeeded=1, failed=0)
+    with h5py.File(pending_path, "r") as f:
+        np.testing.assert_array_equal(
+            f[f"{schema.KEY_STATUS_SECTION}/{schema.KEY_STATUS_STATE}"][:],
+            np.array([0, 1, 0], dtype=np.uint8),
+        )
+
+    failed_path = tmp_path / "parallel_failed_subset.h5"
+    failed_store = SimulationStore(failed_path)
+    failed_store.create(_mock_simulation(), _setup(), _options(), save_psfs=False)
+    failed_store.write_simulation_failure(0)
+    failed_store.write_simulation_failure(1)
+    failed_store.write_simulation_failure(2)
+
+    failed_summary = run_simulations_by_state(
+        failed_store,
+        MockSimulation(),
+        SimulationState.FAILED,
+        indexes=[2],
+        num_workers=2,
+        chunk_multiple=1,
+    )
+    assert failed_summary == RunSummary(attempted=1, succeeded=1, failed=0)
+    with h5py.File(failed_path, "r") as f:
+        np.testing.assert_array_equal(
+            f[f"{schema.KEY_STATUS_SECTION}/{schema.KEY_STATUS_STATE}"][:],
+            np.array([2, 2, 1], dtype=np.uint8),
+        )
+
+
+def test_runner_rejects_invalid_parallel_controls(tmp_path):
+    data_path = tmp_path / "parallel_invalid_controls.h5"
+    store = SimulationStore(data_path)
+    store.create(_mock_simulation(), _setup(), _options(), save_psfs=False)
+
+    with pytest.raises(ValueError, match="num_workers must be >= 1"):
+        run_pending_simulations(store, MockSimulation(), num_workers=0)
+    with pytest.raises(ValueError, match="chunk_multiple must be >= 1"):
+        run_pending_simulations(store, MockSimulation(), chunk_multiple=0)
 
 
 def test_runner_with_simulation_interface_filtered_indexes(tmp_path):
