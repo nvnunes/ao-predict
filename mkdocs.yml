@@ -30,6 +30,7 @@ nav:
       - Development Setup: development.md
   - Reference:
       - Analysis API: reference/analysis/api.md
+      - Plotting API: reference/plotting.md
       - Simulation Interfaces: reference/simulation/interfaces.md
       - Simulation API: reference/simulation/api.md
       - Simulation Runner: reference/simulation/runner.md

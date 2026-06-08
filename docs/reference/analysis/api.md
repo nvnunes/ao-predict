@@ -56,8 +56,8 @@ class CustomAnalysisDataset(AnalysisDataset[CustomAnalysisSimulation]):
 That lets `dataset.sim(i)` carry the custom simulation type without needing a
 typed wrapper override in the dataset subclass.
 
-Compatibility wrappers, legacy shaping, plotting, and downstream-specific
-helpers remain outside `ao_predict` and should stay downstream in
-`girmos-aosims`.
+Compatibility wrappers and legacy shaping are handled by `girmos-aosims`.
+Generic PSF, PSF-core, and metric-field plotting lives in
+`ao_predict.plotting`.
 
 ::: ao_predict.analysis

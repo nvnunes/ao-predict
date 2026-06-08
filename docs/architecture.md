@@ -33,6 +33,9 @@ Keep one obvious owner for each major concern:
 - Simulation execution belongs under `simulation/*`.
 - Persistence and storage concerns belong under `persistence/*`.
 - Analysis read models and load composition belong under `analysis/*`.
+- Generic analysis plotting belongs in `plotting`, including PSF views,
+  centered PSF-core views, and interpolated metric-field views over persisted
+  science coordinates.
 - Future data-preparation or model-training modules should keep their own
   dedicated boundaries instead of growing out of simulation or persistence
   modules.

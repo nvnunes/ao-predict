@@ -9,6 +9,10 @@ For analysis reads from an existing dataset, use
 upstream analysis read path; callers should not need to construct
 `SimulationStore` directly just to load analysis views.
 
+For Matplotlib PSF, PSF-core, and metric-field plots from loaded analysis
+simulations, use `ao_predict.plotting`. Plotting helpers live in that submodule
+rather than the package root.
+
 ## Lifecycle Functions
 
 ### `init_dataset(request: InitDatasetRequest) -> int`
@@ -218,6 +222,19 @@ See also:
 ## Error Behavior
 - Invalid payload structure and schema mismatches raise `ValueError`/`TypeError`.
 - Existing dataset without `overwrite=True` raises `FileExistsError`.
+
+## Plotting Helpers
+
+`ao_predict.plotting` provides Matplotlib helpers for loaded analysis
+simulations:
+
+- `plot_psf(sim, psf_index=0)`
+- `plot_psf_core(sim, psf_index=0)`
+- `plot_metric_field(sim, metric_name="sr")`
+
+They return unshown Matplotlib figures. PSF helpers use the persisted pixel
+scale for milliarcsecond axes. Metric-field plots use persisted science
+coordinates and generic SciPy interpolation to render a regular field image.
 - `check_dataset` returns issues in `DatasetStatus` for schema/state problems instead of raising, unless the file cannot be opened/read at all.
 
 ## Analysis Read Path
@@ -268,8 +285,7 @@ class CustomAnalysisDataset(AnalysisDataset[CustomAnalysisSimulation]):
     pass
 ```
 
-Compatibility adapters, legacy shaping, and downstream-specific analysis helpers
-remain downstream in `girmos-aosims`.
+Compatibility adapters and legacy shaping are handled by `girmos-aosims`.
 
 ## Current Limits
 - Execution mode is serial.
