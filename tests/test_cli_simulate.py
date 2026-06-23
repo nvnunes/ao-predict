@@ -389,6 +389,63 @@ def test_cli_simulate_retry_passes_parallel_controls(monkeypatch, tmp_path: Path
     assert observed["chunk_multiple"] == 3
 
 
+def test_cli_simulate_resume_retries_only_preexisting_failures(tmp_path: Path, monkeypatch):
+    dataset_path, config_yaml = _prepare_cli_paths(tmp_path)
+    _cli_init_dataset(monkeypatch, config_yaml, dataset_path)
+    store = sim_api.SimulationStore(dataset_path)
+    store.write_simulation_failure(2)
+
+    sim = TiptopSimulation(fail_idx=1)
+    monkeypatch.setattr(sim_api, "create_simulation_from_payload", lambda _payload: sim)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "ao-predict",
+            "simulate",
+            "resume",
+            str(dataset_path),
+            "--config",
+            str(config_yaml),
+        ],
+    )
+
+    assert cli.main() == 0
+    with h5py.File(dataset_path, "r") as f:
+        np.testing.assert_array_equal(f["status/state"][:], np.array([1, 2, 1], dtype=np.uint8))
+
+
+def test_cli_simulate_resume_passes_parallel_controls(monkeypatch, tmp_path: Path):
+    observed: dict[str, object] = {}
+    dataset_path = tmp_path / "sim_data.h5"
+
+    def _resume(dataset, **kwargs):
+        observed["dataset"] = dataset
+        observed.update(kwargs)
+        return sim_api.RunSummary(attempted=0, succeeded=0, failed=0)
+
+    monkeypatch.setattr(cli, "resume_simulations", _resume)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "ao-predict",
+            "simulate",
+            "resume",
+            str(dataset_path),
+            "--threads",
+            "5",
+            "--chunks",
+            "2",
+        ],
+    )
+
+    assert cli.main() == 0
+    assert observed["dataset"] == str(dataset_path)
+    assert observed["num_workers"] == 5
+    assert observed["chunk_multiple"] == 2
+
+
 def test_cli_simulate_reset(tmp_path: Path, monkeypatch):
     dataset_path, config_yaml = _prepare_cli_paths(tmp_path)
     _cli_init_dataset(monkeypatch, config_yaml, dataset_path)
@@ -441,6 +498,40 @@ def test_cli_check_passes_when_complete(tmp_path: Path, monkeypatch):
 
     monkeypatch.setattr(sys, "argv", ["ao-predict", "simulate", "check", str(dataset_path)])
     assert cli.main() == 0
+
+
+def test_cli_check_with_config_passes_when_complete_and_matching(tmp_path: Path, monkeypatch):
+    dataset_path, config_yaml = _prepare_cli_paths(tmp_path)
+    _cli_init_dataset(monkeypatch, config_yaml, dataset_path)
+
+    sim = TiptopSimulation()
+    monkeypatch.setattr(sim_api, "create_simulation_from_payload", lambda _payload: sim)
+    monkeypatch.setattr(sys, "argv", ["ao-predict", "simulate", "run", str(dataset_path)])
+    assert cli.main() == 0
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["ao-predict", "simulate", "check", str(dataset_path), "--config", str(config_yaml)],
+    )
+    assert cli.main() == 0
+
+
+def test_cli_check_with_config_reports_mismatch(tmp_path: Path, monkeypatch, capsys):
+    dataset_path, config_yaml = _prepare_cli_paths(tmp_path)
+    _cli_init_dataset(monkeypatch, config_yaml, dataset_path)
+
+    with h5py.File(dataset_path, "r+") as f:
+        f["setup/ee_apertures_mas"][0] = 75.0
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["ao-predict", "simulate", "check", str(dataset_path), "--config", str(config_yaml)],
+    )
+    assert cli.main() == 1
+    captured = capsys.readouterr()
+    assert "Config mismatch: /setup/ee_apertures_mas" in captured.out
 
 
 def test_cli_simulate_requires_subcommand(monkeypatch):

@@ -21,6 +21,7 @@ from .simulation import (
     TiptopSimulation,
 )
 from .simulation.api import (
+    DatasetConfigMismatchError,
     DatasetValidationError,
     DatasetStatus,
     InitDatasetRequest,
@@ -31,8 +32,10 @@ from .simulation.api import (
     check_dataset,
     init_dataset,
     reset_simulations,
+    resume_simulations,
     run_simulations_by_state,
     validate_dataset,
+    validate_dataset_matches_request,
 )
 from .simulation.runner import RunSummary
 
@@ -42,15 +45,18 @@ __all__ = [
     "__version__",
     "check_dataset",
     "DatasetStatus",
+    "DatasetConfigMismatchError",
     "DatasetValidationError",
     "InitDatasetRequest",
     "init_dataset",
     "OptionsConfig",
     "TableOptionsConfig",
     "reset_simulations",
+    "resume_simulations",
     "RunSummary",
     "run_simulations_by_state",
     "validate_dataset",
+    "validate_dataset_matches_request",
     "SetupConfig",
     "BaseSimulation",
     "Simulation",

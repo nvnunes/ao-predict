@@ -149,6 +149,24 @@ class DatasetValidationError(ValueError):
         super().__init__(message)
 
 
+class DatasetConfigMismatchError(ValueError):
+    """Raised when an existing dataset does not match an init request."""
+
+    def __init__(self, mismatches: list[str]):
+        self.mismatches = list(mismatches)
+        message = "Dataset does not match expected initialization config:\n- " + "\n- ".join(self.mismatches)
+        super().__init__(message)
+
+
+@dataclass(frozen=True)
+class _PreparedDatasetPayloads:
+    """Prepared payloads produced by the initialization lifecycle."""
+
+    simulation: dict[str, object]
+    setup: dict[str, object]
+    options: dict[str, np.ndarray]
+
+
 # Payload helpers
 
 def _prepare_simulation_payload(simulation_cfg: ConfigMapping) -> tuple[Simulation, dict[str, object]]:
@@ -210,6 +228,79 @@ def _prepare_options_payload(
 
     raw = {str(k): v for k, v in dict(options).items()}
     return prepare_options_payload_from_arrays(simulation, setup_payload, raw)
+
+
+def _prepare_dataset_payloads(request: InitDatasetRequest) -> _PreparedDatasetPayloads:
+    """Prepare persisted payloads from an initialization request.
+
+    Args:
+        request: Initialization request payload.
+
+    Returns:
+        Prepared ``/simulation``, ``/setup``, and ``/options`` payloads using
+        the same lifecycle as dataset initialization.
+    """
+    simulation_cfg = normalize_simulation_config(request.simulation)
+    setup_cfg = normalize_setup_config(request.setup)
+
+    simulation, simulation_payload = _prepare_simulation_payload(simulation_cfg)
+    setup_payload = _prepare_setup_payload(simulation, setup_cfg)
+    options_payload = _prepare_options_payload(simulation, setup_payload, request.options)
+    return _PreparedDatasetPayloads(
+        simulation=simulation_payload,
+        setup=setup_payload,
+        options=options_payload,
+    )
+
+
+def _values_match(left: object, right: object) -> bool:
+    """Return whether two prepared/persisted values match."""
+    if isinstance(left, Mapping) or isinstance(right, Mapping):
+        if not isinstance(left, Mapping) or not isinstance(right, Mapping):
+            return False
+        return _payload_mismatches(left, right, prefix="") == []
+
+    if isinstance(left, str) or isinstance(right, str):
+        return str(left) == str(right)
+
+    left_arr = np.asarray(left)
+    right_arr = np.asarray(right)
+    if left_arr.shape != right_arr.shape:
+        return False
+    if left_arr.dtype.kind in {"U", "S", "O"} or right_arr.dtype.kind in {"U", "S", "O"}:
+        return bool(np.array_equal(left_arr.astype(str), right_arr.astype(str)))
+    if left_arr.dtype.kind == "b" or right_arr.dtype.kind == "b":
+        return bool(np.array_equal(left_arr.astype(bool), right_arr.astype(bool)))
+    return bool(np.allclose(left_arr.astype(float), right_arr.astype(float), rtol=0.0, atol=0.0, equal_nan=True))
+
+
+def _payload_mismatches(expected: Mapping[str, object], actual: Mapping[str, object], *, prefix: str) -> list[str]:
+    """Return path labels whose prepared/persisted payload values differ."""
+    mismatches: list[str] = []
+    expected_by_key = {str(key): value for key, value in expected.items()}
+    actual_by_key = {str(key): value for key, value in actual.items()}
+    expected_keys = set(expected_by_key)
+    actual_keys = set(actual_by_key)
+
+    for key in sorted(expected_keys - actual_keys):
+        mismatches.append(f"{prefix}/{key}: missing")
+    for key in sorted(actual_keys - expected_keys):
+        mismatches.append(f"{prefix}/{key}: unexpected")
+
+    for key in sorted(expected_keys & actual_keys):
+        expected_value = expected_by_key[key]
+        actual_value = actual_by_key[key]
+        path = f"{prefix}/{key}"
+        if isinstance(expected_value, Mapping) or isinstance(actual_value, Mapping):
+            if not isinstance(expected_value, Mapping) or not isinstance(actual_value, Mapping):
+                mismatches.append(path)
+                continue
+            mismatches.extend(_payload_mismatches(expected_value, actual_value, prefix=path))
+            continue
+        if not _values_match(expected_value, actual_value):
+            mismatches.append(path)
+
+    return mismatches
 
 
 # Dataset helpers
@@ -300,22 +391,44 @@ def init_dataset(request: InitDatasetRequest) -> int:
     dataset_path = Path(request.dataset_path)
     dataset_path.parent.mkdir(parents=True, exist_ok=True)
 
-    simulation_cfg = normalize_simulation_config(request.simulation)
-    setup_cfg = normalize_setup_config(request.setup)
-
-    simulation, simulation_payload = _prepare_simulation_payload(simulation_cfg)
-    setup_payload = _prepare_setup_payload(simulation, setup_cfg)
-    options_payload = _prepare_options_payload(simulation, setup_payload, request.options)
+    payloads = _prepare_dataset_payloads(request)
 
     store = SimulationStore(dataset_path)
     store.create(
-        simulation_payload,
-        setup_payload,
-        options_payload,
+        payloads.simulation,
+        payloads.setup,
+        payloads.options,
         overwrite=bool(request.overwrite),
         save_psfs=bool(request.save_psfs),
     )
     return int(store.num_sims())
+
+
+def validate_dataset_matches_request(dataset_path: str | Path, request: InitDatasetRequest) -> None:
+    """Validate that an existing dataset matches an initialization request.
+
+    Args:
+        dataset_path: Dataset path to validate.
+        request: Initialization request defining the expected dataset
+            ``/simulation``, ``/setup``, and ``/options`` payloads. The
+            request's own ``dataset_path``, ``overwrite``, and ``save_psfs``
+            fields do not participate in matching.
+
+    Raises:
+        ValueError: If the dataset schema is invalid.
+        DatasetConfigMismatchError: If prepared request payloads differ from
+            persisted dataset payloads.
+    """
+    store = SimulationStore(dataset_path)
+    store.validate_schema()
+    expected = _prepare_dataset_payloads(request)
+    mismatches = (
+        _payload_mismatches(expected.simulation, store.read_simulation(), prefix="/simulation")
+        + _payload_mismatches(expected.setup, store.read_setup(), prefix="/setup")
+        + _payload_mismatches(expected.options, store.read_options(), prefix="/options")
+    )
+    if mismatches:
+        raise DatasetConfigMismatchError(mismatches)
 
 
 def run_simulations_by_state(
@@ -356,6 +469,60 @@ def run_simulations_by_state(
         verbose=verbose,
         num_workers=num_workers,
         chunk_multiple=chunk_multiple,
+    )
+
+
+def resume_simulations(
+    dataset_path: str | Path,
+    *,
+    expected_request: InitDatasetRequest | None = None,
+    verbose: bool = False,
+    num_workers: int = 1,
+    chunk_multiple: int = 10,
+) -> RunSummary:
+    """Resume a dataset by running pending rows and preexisting failures.
+
+    Args:
+        dataset_path: Dataset path.
+        expected_request: Optional initialization request used to verify that
+            the existing dataset matches the intended ``/simulation``,
+            ``/setup``, and ``/options`` payloads before any rows are run.
+        verbose: Print per-simulation failure details.
+        num_workers: Number of worker processes. ``1`` preserves serial
+            execution.
+        chunk_multiple: Number of simulations assigned to each worker chunk
+            when ``num_workers > 1``.
+
+    Returns:
+        Combined execution summary for pending rows and rows that were already
+        failed before this call began.
+    """
+    if expected_request is not None:
+        validate_dataset_matches_request(dataset_path, expected_request)
+
+    store, simulation = _load_dataset(dataset_path)
+    preexisting_failed = store.failed_indices().astype(int).tolist()
+    pending_summary = runner.run_simulations_by_state(
+        store,
+        simulation,
+        state=SimulationState.PENDING,
+        verbose=verbose,
+        num_workers=num_workers,
+        chunk_multiple=chunk_multiple,
+    )
+    failed_summary = runner.run_simulations_by_state(
+        store,
+        simulation,
+        state=SimulationState.FAILED,
+        indexes=preexisting_failed,
+        verbose=verbose,
+        num_workers=num_workers,
+        chunk_multiple=chunk_multiple,
+    )
+    return RunSummary(
+        attempted=pending_summary.attempted + failed_summary.attempted,
+        succeeded=pending_summary.succeeded + failed_summary.succeeded,
+        failed=pending_summary.failed + failed_summary.failed,
     )
 
 

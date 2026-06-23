@@ -63,6 +63,19 @@ Execution controls:
 - Worker processes return completed in-memory results; HDF5 writes remain owned by the parent process.
 - Simulation implementations may override `Simulation.warmup_worker()` to prepare process-local worker state before a chunk runs.
 
+### `resume_simulations(dataset_path: str | Path, *, expected_request: InitDatasetRequest | None = None, verbose: bool = False, num_workers: int = 1, chunk_multiple: int = 10) -> RunSummary`
+Resume a dataset by running pending rows and retrying only preexisting failures.
+
+Behavior:
+- validates schema
+- validates the dataset against `expected_request` when supplied
+- records rows that are failed before the call begins
+- runs pending rows
+- retries only rows that were already failed before the call began
+- does not retry newly failed rows in the same invocation
+
+`save_psfs` is not a resume option. Resumed rows use the storage layout chosen when the dataset was initialized.
+
 ### `reset_simulations(dataset_path: str | Path, indexes: list[int] | None = None) -> int`
 Reset all simulations to pending state (`SimulationState.PENDING`).
 
@@ -86,6 +99,17 @@ Strict dataset validation that raises when issues are present.
 
 Raises:
 - `DatasetValidationError` when schema/state checks fail.
+
+### `validate_dataset_matches_request(dataset_path: str | Path, request: InitDatasetRequest) -> None`
+Validate that an existing dataset matches an initialization request.
+
+The request is prepared through the same lifecycle as `init_dataset(...)`.
+The prepared `/simulation`, `/setup`, and `/options` payloads are compared to
+the persisted dataset payloads. The request's `dataset_path`, `overwrite`, and
+`save_psfs` fields do not participate in matching.
+
+Raises:
+- `DatasetConfigMismatchError` when prepared payload values differ from the existing dataset.
 
 ## Dataclasses
 
@@ -191,7 +215,9 @@ from ao_predict import (
     TableOptionsConfig,
     check_dataset,
     init_dataset,
+    resume_simulations,
     run_simulations_by_state,
+    validate_dataset_matches_request,
 )
 
 request = InitDatasetRequest(
@@ -219,9 +245,12 @@ request = InitDatasetRequest(
 num_sims = init_dataset(request)
 dataset_path = Path(request.dataset_path)
 summary = run_simulations_by_state(dataset_path, state=SimulationState.PENDING)
+resume_summary = resume_simulations(dataset_path, expected_request=request)
+validate_dataset_matches_request(dataset_path, request)
 status = check_dataset(dataset_path)
 
 print(summary)
+print(resume_summary)
 print(num_sims)
 print(status.ok, status.issues)
 ```
@@ -237,6 +266,7 @@ See also:
 ## Error Behavior
 - Invalid payload structure and schema mismatches raise `ValueError`/`TypeError`.
 - Existing dataset without `overwrite=True` raises `FileExistsError`.
+- Dataset/config mismatches raise `DatasetConfigMismatchError`.
 
 ## Plotting Helpers
 

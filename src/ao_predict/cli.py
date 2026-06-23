@@ -16,12 +16,15 @@ from .simulation import schema
 from .simulation.config import normalize_table_options_config
 from .simulation import SimulationState
 from .simulation.api import (
+    DatasetConfigMismatchError,
     InitDatasetRequest,
     TableOptionsConfig,
     check_dataset,
     init_dataset,
     reset_simulations,
+    resume_simulations,
     run_simulations_by_state,
+    validate_dataset_matches_request,
 )
 
 
@@ -143,6 +146,29 @@ def _load_config(config_yaml: str) -> tuple[dict[str, Any], dict[str, Any], dict
     return simulation_cfg, setup_cfg, options_cfg
 
 
+def _load_init_request(
+    config_yaml: str,
+    dataset_path: str,
+    *,
+    overwrite: bool = False,
+    save_psfs: bool = False,
+) -> InitDatasetRequest:
+    """Load a CLI config into an initialization request."""
+    simulation_cfg, setup_cfg, options_cfg = _load_config(config_yaml)
+    return InitDatasetRequest(
+        dataset_path=dataset_path,
+        simulation=simulation_cfg,
+        setup=setup_cfg,
+        options=TableOptionsConfig(
+            broadcast=dict(options_cfg.get(schema.KEY_CFG_OPTION_BROADCAST, {})),
+            columns=options_cfg.get(schema.KEY_CFG_OPTION_COLUMNS),
+            rows=options_cfg.get(schema.KEY_CFG_OPTION_ROWS),
+        ),
+        overwrite=overwrite,
+        save_psfs=save_psfs,
+    )
+
+
 def _parse_index_list(raw_values: str) -> list[int]:
     """Parse comma-separated 1-based simulation numbers into 0-based indexes.
 
@@ -185,22 +211,15 @@ def _resolve_selected_indexes(args: argparse.Namespace) -> list[int] | None:
 
 def _handle_simulate_init(args: argparse.Namespace) -> int:
     """Handle ``ao-predict simulate init`` command."""
-    simulation_cfg, setup_cfg, options_cfg = _load_config(args.config_yaml)
     if args.dataset is not None:
         dataset_path = str(args.dataset)
     else:
         cfg_path = Path(args.config_yaml)
         dataset_path = str(cfg_path.parent / "sims" / f"{cfg_path.stem}.h5")
     num_sims = init_dataset(
-        InitDatasetRequest(
-            dataset_path=dataset_path,
-            simulation=simulation_cfg,
-            setup=setup_cfg,
-            options=TableOptionsConfig(
-                broadcast=dict(options_cfg.get(schema.KEY_CFG_OPTION_BROADCAST, {})),
-                columns=options_cfg.get(schema.KEY_CFG_OPTION_COLUMNS),
-                rows=options_cfg.get(schema.KEY_CFG_OPTION_ROWS),
-            ),
+        _load_init_request(
+            args.config_yaml,
+            dataset_path,
             overwrite=bool(args.overwrite),
             save_psfs=bool(args.save_psfs),
         )
@@ -249,14 +268,52 @@ def _handle_simulate_retry(args: argparse.Namespace) -> int:
     return 0
 
 
+def _handle_simulate_resume(args: argparse.Namespace) -> int:
+    """Handle ``ao-predict simulate resume`` command."""
+    expected_request = None
+    if args.config is not None:
+        expected_request = _load_init_request(args.config, args.dataset)
+
+    summary = resume_simulations(
+        args.dataset,
+        expected_request=expected_request,
+        verbose=bool(args.verbose),
+        num_workers=int(args.threads),
+        chunk_multiple=int(args.chunks),
+    )
+
+    print(
+        f"Resume summary: attempted={summary.attempted} "
+        f"succeeded={summary.succeeded} failed={summary.failed}"
+    )
+    return 0
+
+
 def _handle_simulate_check(args: argparse.Namespace) -> int:
     """Handle ``ao-predict simulate check`` command."""
     status = check_dataset(args.dataset)
+    config_mismatch: DatasetConfigMismatchError | None = None
+    config_error: ValueError | None = None
+    if args.config is not None:
+        try:
+            validate_dataset_matches_request(
+                args.dataset,
+                _load_init_request(args.config, args.dataset),
+            )
+        except DatasetConfigMismatchError as exc:
+            config_mismatch = exc
+        except ValueError as exc:
+            config_error = exc
 
-    if not status.ok:
+    if not status.ok or config_mismatch is not None or config_error is not None:
         print(f"Dataset check FAILED: {args.dataset}")
         for issue in status.issues:
             print(f"- {issue}")
+        if config_mismatch is not None:
+            for mismatch in config_mismatch.mismatches:
+                print(f"- Config mismatch: {mismatch}")
+        if config_error is not None:
+            print(f"- Config validation failed: {config_error}")
         return 1
 
     print(f"Dataset check PASSED: {args.dataset}")
@@ -311,6 +368,14 @@ def _build_parser() -> argparse.ArgumentParser:
     simulate_retry_parser.add_argument("--chunks", type=int, default=10, help="simulations assigned to each worker chunk")
     simulate_retry_parser.add_argument("--verbose", action="store_true", help="print failure messages for failed simulations")
 
+    simulate_command_help["resume"] = "run pending simulations and preexisting failures"
+    simulate_resume_parser = simulate_subparsers.add_parser("resume", help=simulate_command_help["resume"])
+    simulate_resume_parser.add_argument("dataset", help="dataset HDF5 path")
+    simulate_resume_parser.add_argument("--config", help="optional initialization config YAML expected to match the dataset")
+    simulate_resume_parser.add_argument("--threads", type=int, default=1, help="number of parallel joblib workers")
+    simulate_resume_parser.add_argument("--chunks", type=int, default=10, help="simulations assigned to each worker chunk")
+    simulate_resume_parser.add_argument("--verbose", action="store_true", help="print failure messages for failed simulations")
+
     simulate_command_help["reset"] = "reset all simulations to pending state"
     simulate_reset_parser = simulate_subparsers.add_parser("reset", help=simulate_command_help["reset"])
     simulate_reset_parser.add_argument("dataset", help="dataset HDF5 path")
@@ -319,6 +384,7 @@ def _build_parser() -> argparse.ArgumentParser:
     simulate_command_help["check"] = "validate dataset schema and completion status"
     simulate_check_parser = simulate_subparsers.add_parser("check", help=simulate_command_help["check"])
     simulate_check_parser.add_argument("dataset", help="dataset HDF5 path")
+    simulate_check_parser.add_argument("--config", help="optional initialization config YAML expected to match the dataset")
 
     parser.epilog = "simulate commands:\n" + "\n".join(
         f"  {name:<6} {help_text}" for name, help_text in simulate_command_help.items()
@@ -346,6 +412,8 @@ def main() -> int:
             return _handle_simulate_run(args)
         if args.mode_command == "retry":
             return _handle_simulate_retry(args)
+        if args.mode_command == "resume":
+            return _handle_simulate_resume(args)
         if args.mode_command == "reset":
             return _handle_simulate_reset(args)
         if args.mode_command == "check":

@@ -13,6 +13,7 @@ Subcommands:
 - `init`
 - `run`
 - `retry`
+- `resume`
 - `reset`
 - `check`
 
@@ -79,20 +80,45 @@ Behavior:
 Output:
 - `Retry summary: attempted=<N> succeeded=<S> failed=<F>`
 
+## `simulate resume`
+Resume an existing dataset.
+
+```bash
+ao-predict simulate resume <dataset> [--config <config_yaml>] [--verbose] [--threads 4] [--chunks 10]
+```
+
+Behavior:
+- Validates schema.
+- With `--config`, prepares `/simulation`, `/setup`, and `/options` from the YAML config exactly as `simulate init` would and compares those prepared payloads to the existing dataset.
+- Fails before running if the dataset does not match the supplied config.
+- Records rows that are failed before the command begins.
+- Runs pending simulations.
+- Retries only the rows that were already failed before the command began.
+- Does not retry rows that fail during the pending pass in the same invocation.
+- Uses the dataset's existing storage layout. PSF storage is controlled only by `simulate init --save-psfs`.
+- With `--threads`, uses joblib/loky worker processes. The default is serial execution.
+- With `--chunks`, sets the number of simulations assigned to each worker chunk.
+- With `--verbose`, prints failure messages for failed simulations.
+
+Output:
+- `Resume summary: attempted=<N> succeeded=<S> failed=<F>`
+
 ## `simulate check`
 Validate schema and completion status.
 
 ```bash
-ao-predict simulate check <dataset>
+ao-predict simulate check <dataset> [--config <config_yaml>]
 ```
 
 Behavior:
 - Runs dataset schema validation.
 - Reports pending and failed counts.
+- With `--config`, prepares `/simulation`, `/setup`, and `/options` from the YAML config exactly as `simulate init` would and compares those prepared payloads to the existing dataset.
+- Raw YAML or CSV formatting does not participate in matching; the prepared payload values are compared.
 
 Exit code:
 - `0` when dataset is valid and all simulations are successful.
-- `1` when schema errors or unfinished/failed simulations exist.
+- `1` when schema errors, unfinished/failed simulations, or config mismatches exist.
 
 Output examples:
 - Pass:

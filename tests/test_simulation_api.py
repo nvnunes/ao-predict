@@ -173,6 +173,38 @@ def test_api_init_and_check(tmp_path: Path):
         sim_api.validate_dataset(dataset_path)
 
 
+def test_api_validate_dataset_matches_request_accepts_matching_payloads(tmp_path: Path):
+    request = _base_request(tmp_path)
+    sim_api.init_dataset(request)
+
+    sim_api.validate_dataset_matches_request(request.dataset_path, request)
+
+
+@pytest.mark.parametrize(
+    ("path", "value", "expected"),
+    [
+        ("simulation/name", "different:Simulation", "/simulation/name"),
+        ("setup/ee_apertures_mas", np.array([75.0, 100.0]), "/setup/ee_apertures_mas"),
+        ("options/zenith_angle_deg", np.array([21.0, 25.0, 30.0]), "/options/zenith_angle_deg"),
+    ],
+)
+def test_api_validate_dataset_matches_request_rejects_mismatches(
+    tmp_path: Path,
+    path: str,
+    value,
+    expected: str,
+):
+    request = _base_request(tmp_path)
+    sim_api.init_dataset(request)
+
+    with h5py.File(request.dataset_path, "r+") as f:
+        del f[path]
+        f.create_dataset(path, data=value)
+
+    with pytest.raises(sim_api.DatasetConfigMismatchError, match=expected):
+        sim_api.validate_dataset_matches_request(request.dataset_path, request)
+
+
 def test_api_full_pipeline_with_test_simulation(tmp_path: Path):
     dataset_path = tmp_path / "test_simulation.h5"
     request = InitDatasetRequest(
@@ -281,6 +313,25 @@ def test_api_run_and_retry(tmp_path: Path, monkeypatch):
     assert status2.num_failed == 0
     assert status2.ok is True
     sim_api.validate_dataset(dataset_path)
+
+
+def test_api_resume_retries_only_preexisting_failures(tmp_path: Path, monkeypatch):
+    request = _base_request(tmp_path)
+    sim_api.init_dataset(request)
+    dataset_path = Path(request.dataset_path)
+    store = sim_api.SimulationStore(dataset_path)
+    store.write_simulation_failure(2)
+
+    sim = FakeSimulation(fail_idx=1)
+    monkeypatch.setattr(sim_api, "create_simulation_from_payload", lambda _payload: sim)
+
+    summary = sim_api.resume_simulations(dataset_path, expected_request=request)
+
+    assert summary.attempted == 3
+    assert summary.succeeded == 2
+    assert summary.failed == 1
+    with h5py.File(dataset_path, "r") as f:
+        np.testing.assert_array_equal(f["status/state"][:], np.array([1, 2, 1], dtype=np.uint8))
 
 
 def test_api_run_and_retry_with_indexes(tmp_path: Path, monkeypatch):
