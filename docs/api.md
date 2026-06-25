@@ -362,10 +362,23 @@ simulations:
 - `plot_psf(sim, psf_index=0)`
 - `plot_psf_core(sim, psf_index=0)`
 - `plot_metric_field(sim, metric_name="sr")`
+- `plot_metric_field_panel([sim1, sim2, ...], metric_name="sr")`
+- `plot_metric_field_comparison(left, right, metric_name="sr")`
+- `prepare_metric_field_grid(...)`
+- `prepare_metric_field_comparison_grid(...)`
 
 They return unshown Matplotlib figures. PSF helpers use the persisted pixel
 scale for milliarcsecond axes. Metric-field plots use persisted science
 coordinates and generic SciPy interpolation to render a regular field image.
+Metric-field plots can also draw generic NGS/LGS markers from persisted
+coordinates and optional contour overlays when requested.
+
+Metric-field panel and comparison helpers own generic subplot layout, shared
+colorbar placement, metric-name placement, relative-percent comparison fields,
+and prepared grid rows for dense caller-composed figures. They accept
+`field_plotter` and `field_plotter_kwargs` so downstream packages can reuse AO
+Predict composition while routing each field through a domain-specific
+single-field wrapper.
 - `check_dataset` returns issues in `DatasetStatus` for schema/state problems instead of raising, unless the file cannot be opened/read at all.
 
 ## Analysis Read Path
