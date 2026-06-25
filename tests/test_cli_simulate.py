@@ -176,6 +176,7 @@ class TiptopSimulation(Simulation):
             ee_apertures_mas=np.asarray(setup_payload["ee_apertures_mas"], dtype=float).reshape(-1),
             sr_method=str(setup_payload["sr_method"]),
             fwhm_summary=str(setup_payload["fwhm_summary"]),
+            ee_geometry=str(setup_payload["ee_geometry"]),
             atm_wavelength_um=float(setup_payload["atm_wavelength_um"]),
             atm_profiles=dict(setup_payload["atm_profiles"]),
             lgs_r_arcsec=np.asarray(setup_payload["lgs_r_arcsec"], dtype=float).reshape(-1),
@@ -189,6 +190,7 @@ class TiptopSimulation(Simulation):
             ee_apertures_mas=np.asarray(setup_payload["ee_apertures_mas"], dtype=float).reshape(-1),
             sr_method=str(setup_payload["sr_method"]),
             fwhm_summary=str(setup_payload["fwhm_summary"]),
+            ee_geometry=str(setup_payload["ee_geometry"]),
             atm_wavelength_um=float(setup_payload["atm_wavelength_um"]),
             atm_profiles=dict(setup_payload["atm_profiles"]),
             lgs_r_arcsec=np.asarray(setup_payload["lgs_r_arcsec"], dtype=float).reshape(-1),
@@ -227,6 +229,7 @@ def test_cli_simulate_init_and_run(tmp_path: Path, monkeypatch):
         assert float(f["setup/ngs_mag_zeropoint"][()]) > 0.0
         assert f["setup/sr_method"][()].decode("utf-8") == schema.DEFAULT_SETUP_SR_METHOD
         assert f["setup/fwhm_summary"][()].decode("utf-8") == schema.DEFAULT_SETUP_FWHM_SUMMARY
+        assert f["setup/ee_geometry"][()].decode("utf-8") == schema.DEFAULT_SETUP_EE_GEOMETRY
         np.testing.assert_array_equal(f["status/state"][:], np.array([1, 1, 1], dtype=np.uint8))
 
 

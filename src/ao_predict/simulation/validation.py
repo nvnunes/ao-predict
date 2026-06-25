@@ -134,6 +134,14 @@ def validate_setup_payload_core(setup: Mapping[str, Any]) -> None:
             + "."
         )
 
+    ee_geometry = str(setup[schema.KEY_SETUP_EE_GEOMETRY]).strip()
+    if ee_geometry not in schema.SETUP_STATS_EE_GEOMETRIES:
+        raise ValueError(
+            "setup['ee_geometry'] must be one of: "
+            + ", ".join(schema.SETUP_STATS_EE_GEOMETRIES)
+            + "."
+        )
+
     atm_wavelength_um = as_float_scalar(
         setup[schema.KEY_SETUP_ATM_WAVELENGTH_UM],
         label=f"setup['{schema.KEY_SETUP_ATM_WAVELENGTH_UM}']",

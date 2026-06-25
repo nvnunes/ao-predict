@@ -34,10 +34,10 @@ Stats note:
 - Core stats under `/stats` are `sr`, `ee`, and `fwhm_mas`.
 - Successful runs may persist `fwhm_mas = NaN` when contour-based FWHM cannot be
   recovered; `sr` and `ee` remain finite for successful results.
-- Dataset-level stats selectors live under `/setup` as `sr_method` and `fwhm_summary`.
+- Dataset-level stats selectors live under `/setup` as `sr_method`, `fwhm_summary`, and `ee_geometry`.
 - The implemented core stats family is:
   - Strehl: image-domain `pixel_fit` (default) or `pixel_max`
-  - EE: fixed peak-centered image-domain square-box accumulation
+  - EE: fixed peak-centered image-domain aperture accumulation selected by `/setup/ee_geometry`
   - FWHM: fixed native contour measurement summarized by `/setup/fwhm_summary`
 - Core metadata under `/meta` mixes one per-simulation field and invariant telescope fields:
   - `/meta/pixel_scale_mas` is `[N]`
@@ -126,12 +126,13 @@ For `TiptopSimulation`, provide `specific_fields["config_path"]` and optionally
 - `ee_apertures_mas: list[float]`
 - `sr_method: str | None = None`
 - `fwhm_summary: str | None = None`
+- `ee_geometry: str | None = None`
 - `specific_fields: dict[str, object] = {}`
 
-Core typed setup fields are `ee_apertures_mas`, `sr_method`, and `fwhm_summary`. All other setup fields can be passed in `specific_fields`.
+Core typed setup fields are `ee_apertures_mas`, `sr_method`, `fwhm_summary`, and `ee_geometry`. All other setup fields can be passed in `specific_fields`.
 For `TiptopSimulation`, include `specific_fields["ngs_mag_zeropoint"]`.
-These setup fields control how persisted `/stats/sr` and `/stats/fwhm_mas`
-are computed and interpreted across the whole dataset.
+These setup fields control how persisted `/stats/sr`, `/stats/ee`, and
+`/stats/fwhm_mas` are computed and interpreted across the whole dataset.
 
 ### `OptionsConfig`
 - `option_arrays: dict[str, np.ndarray | list[object] | tuple[object, ...]]`
@@ -185,7 +186,7 @@ Notes:
 - If NGS input is provided explicitly, provide the full triplet. Unused star slots may be represented with `NaN`, but each slot must be either all finite or all `NaN` across the triplet.
 - If explicit NGS input is omitted, the selected simulation must supply the persisted NGS triplet during options preparation.
 - During execution, ao-predict derives a runtime-only `ngs_used` boolean vector from the persisted NGS triplet. This field is not persisted in `/options`.
-- If omitted, setup defaults `sr_method` to `pixel_fit` and `fwhm_summary` to `geom`.
+- If omitted, setup defaults `sr_method` to `pixel_fit`, `fwhm_summary` to `geom`, and `ee_geometry` to `ensquared`.
 
 Atmospheric input note:
 - `r0_m` is the canonical persisted per-sim atmospheric option.
@@ -231,6 +232,7 @@ request = InitDatasetRequest(
         ee_apertures_mas=[50.0, 100.0],
         sr_method="pixel_fit",
         fwhm_summary="geom",
+        ee_geometry="ensquared",
         specific_fields={"ngs_mag_zeropoint": 3.0e10},
     ),
     options=TableOptionsConfig(

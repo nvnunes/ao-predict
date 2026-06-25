@@ -229,6 +229,7 @@ def _prepare_base_setup_payload(base_setup: dict[str, Any]) -> dict[str, Any]:
         setup["ee_apertures_mas"] = as_float_vector(setup["ee_apertures_mas"], label="setup.ee_apertures_mas")
     setup.setdefault(schema.KEY_SETUP_SR_METHOD, schema.DEFAULT_SETUP_SR_METHOD)
     setup.setdefault(schema.KEY_SETUP_FWHM_SUMMARY, schema.DEFAULT_SETUP_FWHM_SUMMARY)
+    setup.setdefault(schema.KEY_SETUP_EE_GEOMETRY, schema.DEFAULT_SETUP_EE_GEOMETRY)
     return setup
 
 
@@ -350,6 +351,7 @@ def _populate_result_stats(simulation: Simulation, context: Any) -> None:
         ee_apertures_mas=context.setup.ee_apertures_mas,
         sr_method=context.setup.sr_method,
         fwhm_summary=context.setup.fwhm_summary,
+        ee_geometry=context.setup.ee_geometry,
         preprocess=lambda psfs: simulation.prepare_psfs_for_stats(
             psfs,
             context.setup,

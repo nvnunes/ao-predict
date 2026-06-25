@@ -230,7 +230,7 @@ Top-level groups:
 
 Stats layout:
 - `/stats/sr`: core `[N, M]`
-- `/stats/ee`: core `[N, M, A]`
+- `/stats/ee`: core `[N, M, A]`, selected by `/setup/ee_geometry`
 - `/stats/fwhm_mas`: core `[N, M]`, selected by `/setup/fwhm_summary`
 - Successful runs may store `NaN` in `/stats/fwhm_mas` when contour-based FWHM
   measurement is unrecoverable.
@@ -238,12 +238,13 @@ Stats layout:
 
 Implemented core metric family:
 - Strehl: image-domain `pixel_fit` (default) or `pixel_max`, selected by `/setup/sr_method`
-- EE: fixed peak-centered image-domain square-box accumulation
+- EE: fixed peak-centered image-domain aperture accumulation selected by `/setup/ee_geometry`
 - FWHM: fixed native contour measurement summarized by `/setup/fwhm_summary`
 
 Setup-level stats selectors:
 - `/setup/sr_method`: dataset-level Strehl selector, `pixel_fit` or `pixel_max`
 - `/setup/fwhm_summary`: dataset-level contour-summary selector, `geom`, `mean`, `max`, or `min`
+- `/setup/ee_geometry`: dataset-level EE aperture selector, `ensquared` or `encircled`
 
 Stats input note:
 - Per-simulation `/options/wavelength_um` is required at execution time because

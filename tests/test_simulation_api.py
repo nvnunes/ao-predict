@@ -130,6 +130,7 @@ class FakeSimulation(Simulation):
             ee_apertures_mas=np.asarray(setup_payload["ee_apertures_mas"], dtype=float).reshape(-1),
             sr_method=str(setup_payload["sr_method"]),
             fwhm_summary=str(setup_payload["fwhm_summary"]),
+            ee_geometry=str(setup_payload["ee_geometry"]),
             atm_wavelength_um=float(setup_payload["atm_wavelength_um"]),
             atm_profiles=dict(setup_payload["atm_profiles"]),
             lgs_r_arcsec=np.asarray(setup_payload["lgs_r_arcsec"], dtype=float).reshape(-1),
@@ -185,6 +186,7 @@ def test_api_validate_dataset_matches_request_accepts_matching_payloads(tmp_path
     [
         ("simulation/name", "different:Simulation", "/simulation/name"),
         ("setup/ee_apertures_mas", np.array([75.0, 100.0]), "/setup/ee_apertures_mas"),
+        ("setup/ee_geometry", schema.STATS_EE_GEOMETRY_ENCIRCLED, "/setup/ee_geometry"),
         ("options/zenith_angle_deg", np.array([21.0, 25.0, 30.0]), "/options/zenith_angle_deg"),
     ],
 )
@@ -241,6 +243,10 @@ def test_api_full_pipeline_with_test_simulation(tmp_path: Path):
             f[f"{schema.KEY_SETUP_SECTION}/{schema.KEY_SETUP_FWHM_SUMMARY}"][()].decode("utf-8")
             == schema.DEFAULT_SETUP_FWHM_SUMMARY
         )
+        assert (
+            f[f"{schema.KEY_SETUP_SECTION}/{schema.KEY_SETUP_EE_GEOMETRY}"][()].decode("utf-8")
+            == schema.DEFAULT_SETUP_EE_GEOMETRY
+        )
 
 
 def test_api_init_persists_explicit_setup_stats_selectors(tmp_path: Path):
@@ -252,6 +258,7 @@ def test_api_init_persists_explicit_setup_stats_selectors(tmp_path: Path):
             ee_apertures_mas=[50.0, 100.0],
             sr_method=schema.STATS_SR_METHOD_PIXEL_MAX,
             fwhm_summary=schema.STATS_FWHM_SUMMARY_MAX,
+            ee_geometry=schema.STATS_EE_GEOMETRY_ENCIRCLED,
             specific_fields={"ngs_mag_zeropoint": 1.1e13 / 368.0},
         ),
         options=request.options,
@@ -264,6 +271,10 @@ def test_api_init_persists_explicit_setup_stats_selectors(tmp_path: Path):
         assert (
             f[f"{schema.KEY_SETUP_SECTION}/{schema.KEY_SETUP_FWHM_SUMMARY}"][()].decode("utf-8")
             == schema.STATS_FWHM_SUMMARY_MAX
+        )
+        assert (
+            f[f"{schema.KEY_SETUP_SECTION}/{schema.KEY_SETUP_EE_GEOMETRY}"][()].decode("utf-8")
+            == schema.STATS_EE_GEOMETRY_ENCIRCLED
         )
 
 

@@ -61,12 +61,15 @@ class SetupConfig:
             ``pixel_fit`` when omitted.
         fwhm_summary: Optional dataset-level FWHM contour summary selector.
             Defaults to ``geom`` when omitted.
+        ee_geometry: Optional dataset-level EE aperture geometry selector.
+            Defaults to ``ensquared`` when omitted.
         specific_fields: Additional simulation-specific passthrough fields.
     """
 
     ee_apertures_mas: list[float]
     sr_method: str | None = None
     fwhm_summary: str | None = None
+    ee_geometry: str | None = None
     specific_fields: dict[str, object] = field(default_factory=dict)
 
 

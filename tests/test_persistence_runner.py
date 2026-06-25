@@ -72,6 +72,7 @@ def _setup() -> dict:
         "ee_apertures_mas": np.array([50.0, 100.0], dtype=float),
         "sr_method": schema.DEFAULT_SETUP_SR_METHOD,
         "fwhm_summary": schema.DEFAULT_SETUP_FWHM_SUMMARY,
+        "ee_geometry": schema.DEFAULT_SETUP_EE_GEOMETRY,
         "atm_wavelength_um": 0.5,
         "ngs_mag_zeropoint": 3.0e10,
         "sci_r_arcsec": np.array([0.0, 10.0, 20.0], dtype=float),
@@ -189,6 +190,7 @@ def _setup_obj() -> SimulationSetup:
         ee_apertures_mas=np.asarray(setup["ee_apertures_mas"], dtype=float).reshape(-1),
         sr_method=str(setup["sr_method"]),
         fwhm_summary=str(setup["fwhm_summary"]),
+        ee_geometry=str(setup["ee_geometry"]),
         atm_wavelength_um=float(setup["atm_wavelength_um"]),
         atm_profiles=dict(setup["atm_profiles"]),
         lgs_r_arcsec=np.asarray(setup["lgs_r_arcsec"], dtype=float).reshape(-1),
@@ -458,9 +460,24 @@ def test_populate_result_stats_passes_runtime_options_to_stats(monkeypatch):
         },
     )
 
-    def _compute(psfs, metadata, *, ee_apertures_mas, sr_method, fwhm_summary, preprocess=None, **kwargs):
+    def _compute(
+        psfs,
+        metadata,
+        *,
+        ee_apertures_mas,
+        sr_method,
+        fwhm_summary,
+        ee_geometry,
+        preprocess=None,
+        **kwargs,
+    ):
         del psfs, ee_apertures_mas, sr_method, fwhm_summary, preprocess, kwargs
-        observed_options.append({schema.KEY_OPTION_WAVELENGTH_UM: metadata.wavelength_um})
+        observed_options.append(
+            {
+                schema.KEY_OPTION_WAVELENGTH_UM: metadata.wavelength_um,
+                schema.KEY_SETUP_EE_GEOMETRY: ee_geometry,
+            }
+        )
         return (
             np.zeros((3,), dtype=np.float32),
             np.zeros((3, 2), dtype=np.float32),
@@ -473,6 +490,7 @@ def test_populate_result_stats_passes_runtime_options_to_stats(monkeypatch):
 
     assert len(observed_options) == 1
     assert float(observed_options[0][schema.KEY_OPTION_WAVELENGTH_UM]) == pytest.approx(1.65)
+    assert observed_options[0][schema.KEY_SETUP_EE_GEOMETRY] == schema.DEFAULT_SETUP_EE_GEOMETRY
 
 
 def test_compute_psf_stats_rejects_missing_ee_apertures():
@@ -1470,6 +1488,7 @@ def test_runner_with_simulation_interface(tmp_path):
                 ee_apertures_mas=np.asarray(setup_payload["ee_apertures_mas"], dtype=float).reshape(-1),
                 sr_method=str(setup_payload["sr_method"]),
                 fwhm_summary=str(setup_payload["fwhm_summary"]),
+                ee_geometry=str(setup_payload["ee_geometry"]),
                 atm_wavelength_um=float(setup_payload["atm_wavelength_um"]),
                 atm_profiles=dict(setup_payload["atm_profiles"]),
                 lgs_r_arcsec=np.asarray(setup_payload["lgs_r_arcsec"], dtype=float).reshape(-1),
@@ -1483,6 +1502,7 @@ def test_runner_with_simulation_interface(tmp_path):
                 ee_apertures_mas=np.asarray(setup_payload["ee_apertures_mas"], dtype=float).reshape(-1),
                 sr_method=str(setup_payload["sr_method"]),
                 fwhm_summary=str(setup_payload["fwhm_summary"]),
+                ee_geometry=str(setup_payload["ee_geometry"]),
                 atm_wavelength_um=float(setup_payload["atm_wavelength_um"]),
                 atm_profiles=dict(setup_payload["atm_profiles"]),
                 lgs_r_arcsec=np.asarray(setup_payload["lgs_r_arcsec"], dtype=float).reshape(-1),
@@ -1790,6 +1810,7 @@ def test_runner_with_simulation_interface_filtered_indexes(tmp_path):
                 ee_apertures_mas=np.asarray(setup_payload["ee_apertures_mas"], dtype=float).reshape(-1),
                 sr_method=str(setup_payload["sr_method"]),
                 fwhm_summary=str(setup_payload["fwhm_summary"]),
+                ee_geometry=str(setup_payload["ee_geometry"]),
                 atm_wavelength_um=float(setup_payload["atm_wavelength_um"]),
                 atm_profiles=dict(setup_payload["atm_profiles"]),
                 lgs_r_arcsec=np.asarray(setup_payload["lgs_r_arcsec"], dtype=float).reshape(-1),
@@ -1877,6 +1898,7 @@ def test_runner_persists_declared_extra_stats(tmp_path):
                 ee_apertures_mas=np.asarray(setup_payload["ee_apertures_mas"], dtype=float).reshape(-1),
                 sr_method=str(setup_payload["sr_method"]),
                 fwhm_summary=str(setup_payload["fwhm_summary"]),
+                ee_geometry=str(setup_payload["ee_geometry"]),
                 atm_wavelength_um=float(setup_payload["atm_wavelength_um"]),
                 atm_profiles=dict(setup_payload["atm_profiles"]),
                 lgs_r_arcsec=np.asarray(setup_payload["lgs_r_arcsec"], dtype=float).reshape(-1),

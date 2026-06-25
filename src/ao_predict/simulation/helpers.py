@@ -84,6 +84,15 @@ def get_fwhm_summary(setup: Mapping[str, Any] | SimulationSetup) -> str:
     return value
 
 
+def get_ee_geometry(setup: Mapping[str, Any] | SimulationSetup) -> str:
+    """Return the dataset-level EE aperture geometry selector from setup."""
+    ee_geometry = setup[schema.KEY_SETUP_EE_GEOMETRY] if isinstance(setup, Mapping) else getattr(setup, schema.KEY_SETUP_EE_GEOMETRY)
+    value = str(ee_geometry).strip()
+    if not value:
+        raise ValueError(f"setup['{schema.KEY_SETUP_EE_GEOMETRY}'] must be a non-empty string.")
+    return value
+
+
 # Stats preprocessing helpers
 
 

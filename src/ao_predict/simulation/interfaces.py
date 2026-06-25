@@ -35,6 +35,7 @@ class SimulationSetup:
         ee_apertures_mas: EE aperture diameters (mas).
         sr_method: Dataset-level Strehl selector for PSF statistics.
         fwhm_summary: Dataset-level FWHM contour summary selector.
+        ee_geometry: Dataset-level EE aperture geometry selector.
         atm_wavelength_um: Atmospheric reference wavelength (um).
         atm_profiles: Atmospheric profile mapping keyed by profile id.
         lgs_r_arcsec: Invariant LGS radial coordinates (arcsec).
@@ -46,6 +47,7 @@ class SimulationSetup:
     ee_apertures_mas: np.ndarray
     sr_method: str
     fwhm_summary: str
+    ee_geometry: str
     atm_wavelength_um: float
     atm_profiles: dict[int, dict[str, Any]]
     lgs_r_arcsec: np.ndarray
