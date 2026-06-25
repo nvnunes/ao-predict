@@ -10,8 +10,9 @@ import numpy as np
 
 from . import schema
 from . import atm
-from .helpers import _MISSING, clip_psf_non_negative, get_num_sci, normalize_psf_pixel_sum, select_mapping_value
+from .helpers import _MISSING, get_num_sci, select_mapping_value
 from .interfaces import Simulation, SimulationContext, SimulationResult, SimulationSetup, SimulationState
+from .stats import clip_and_sum_normalize_psfs
 from ..utils import as_array_dict, as_float_vector
 
 
@@ -578,4 +579,4 @@ class BaseSimulation(Simulation, ABC):
             Preprocessed PSF cube ready for the core stats stages.
         """
         del setup, meta
-        return normalize_psf_pixel_sum(clip_psf_non_negative(psfs))
+        return clip_and_sum_normalize_psfs(psfs)

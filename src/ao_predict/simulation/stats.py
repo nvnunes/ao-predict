@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from typing import Any, TypeAlias
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass
+from typing import Any, Literal, TypeAlias
 import warnings
 
 import contourpy
@@ -14,29 +15,80 @@ from scipy.ndimage import shift
 from scipy.optimize import curve_fit
 from scipy.optimize import OptimizeWarning
 
-from . import schema
-from .helpers import get_ee_apertures, get_fwhm_summary, get_sr_method
-from .interfaces import SimulationSetup
-from .interfaces import Simulation
-
-
 StatValue: TypeAlias = np.ndarray | float
+PsfMetricName: TypeAlias = Literal["sr", "ee", "fwhm_mas"]
+PsfPreprocessor: TypeAlias = Callable[[np.ndarray], np.ndarray]
+PsfPreprocessOption: TypeAlias = PsfPreprocessor | Literal["default"] | None
 
-_EE_GEOMETRY_ENSQUARED = "ensquared"
-_EE_GEOMETRY_ENCIRCLED = "encircled"
-_EE_GEOMETRIES = (_EE_GEOMETRY_ENSQUARED, _EE_GEOMETRY_ENCIRCLED)
+STATS_SR_METHOD_PIXEL_FIT = "pixel_fit"
+STATS_SR_METHOD_PIXEL_MAX = "pixel_max"
+STATS_FWHM_SUMMARY_GEOM = "geom"
+STATS_FWHM_SUMMARY_MEAN = "mean"
+STATS_FWHM_SUMMARY_MAX = "max"
+STATS_FWHM_SUMMARY_MIN = "min"
+
+STATS_SR_METHODS = (
+    STATS_SR_METHOD_PIXEL_FIT,
+    STATS_SR_METHOD_PIXEL_MAX,
+)
+STATS_FWHM_SUMMARIES = (
+    STATS_FWHM_SUMMARY_GEOM,
+    STATS_FWHM_SUMMARY_MEAN,
+    STATS_FWHM_SUMMARY_MAX,
+    STATS_FWHM_SUMMARY_MIN,
+)
+DEFAULT_SR_METHOD = STATS_SR_METHOD_PIXEL_FIT
+DEFAULT_FWHM_SUMMARY = STATS_FWHM_SUMMARY_GEOM
+
+EE_GEOMETRY_ENSQUARED = "ensquared"
+EE_GEOMETRY_ENCIRCLED = "encircled"
+EE_GEOMETRIES = (EE_GEOMETRY_ENSQUARED, EE_GEOMETRY_ENCIRCLED)
+DEFAULT_EE_GEOMETRY = EE_GEOMETRY_ENSQUARED
+
+STATS_METRIC_SR = "sr"
+STATS_METRIC_EE = "ee"
+STATS_METRIC_FWHM_MAS = "fwhm_mas"
+STATS_METRICS = (STATS_METRIC_SR, STATS_METRIC_EE, STATS_METRIC_FWHM_MAS)
+
+
+# Data structures
+
+@dataclass(frozen=True)
+class PsfMetadata:
+    """Physical metadata needed to measure PSF-derived statistics.
+
+    ``wavelength_um`` and ``pixel_scale_mas`` may be scalar values shared by
+    every PSF in a cube, or one-dimensional arrays with length matching the PSF
+    cube length. ``tel_diameter_m`` is scalar-only, and ``tel_pupil`` is a
+    shared two-dimensional pupil image.
+
+    Attributes:
+        wavelength_um: PSF wavelength in microns, scalar or per-PSF vector.
+        pixel_scale_mas: PSF pixel scale in milliarcseconds, scalar or per-PSF
+            vector.
+        tel_diameter_m: Telescope diameter in meters, shared by all PSFs.
+        tel_pupil: Two-dimensional telescope pupil image shared by all PSFs.
+    """
+
+    wavelength_um: float | np.ndarray
+    pixel_scale_mas: float | np.ndarray
+    tel_diameter_m: float
+    tel_pupil: np.ndarray
 
 
 # Input validation and shaping
 
+@dataclass(frozen=True)
+class _PreparedPsfMetadata:
+    wavelength_um: float | np.ndarray
+    pixel_scale_mas: float | np.ndarray
+    tel_diameter_m: float
+    tel_pupil: np.ndarray
+    has_per_psf_values: bool
 
-def _prepare_stats_inputs(
-    psfs: np.ndarray,
-    setup: Mapping[str, Any] | SimulationSetup,
-    options: Mapping[str, Any],
-    meta: Mapping[str, Any],
-) -> tuple[np.ndarray, bool, float, float, float, np.ndarray, str, np.ndarray, str]:
-    """Validate inputs and return normalized stats-computation prerequisites."""
+
+def _prepare_psf_cube(psfs: np.ndarray) -> tuple[np.ndarray, bool]:
+    """Validate a PSF image or cube and return a 3D float32 cube."""
     psf_cube = np.asarray(psfs, dtype=np.float32)
     scalar_output = False
     if psf_cube.ndim == 2:
@@ -46,65 +98,113 @@ def _prepare_stats_inputs(
         raise ValueError(f"PSFs must be [Ny, Nx] or [M, Ny, Nx], got shape {psf_cube.shape}")
     if not np.all(np.isfinite(psf_cube)):
         raise ValueError("PSFs contain non-finite values.")
+    return psf_cube, scalar_output
 
-    wavelength_um = options.get(schema.KEY_OPTION_WAVELENGTH_UM)
-    if wavelength_um is None:
-        raise ValueError(f"options['{schema.KEY_OPTION_WAVELENGTH_UM}'] is required for PSF stats computation.")
-    wavelength_um = float(wavelength_um)
-    if not np.isfinite(wavelength_um) or wavelength_um <= 0.0:
-        raise ValueError(f"options['{schema.KEY_OPTION_WAVELENGTH_UM}'] must be finite and > 0.")
 
-    pixel_scale_mas = meta.get(schema.KEY_META_PIXEL_SCALE_MAS)
-    if pixel_scale_mas is None:
-        raise ValueError(f"meta['{schema.KEY_META_PIXEL_SCALE_MAS}'] is required for PSF stats computation.")
-    pixel_scale_mas = float(pixel_scale_mas)
-    if not np.isfinite(pixel_scale_mas) or pixel_scale_mas <= 0.0:
-        raise ValueError(f"meta['{schema.KEY_META_PIXEL_SCALE_MAS}'] must be finite and > 0.")
+def _prepare_shared_or_per_psf_positive_vector(value: Any, *, label: str, num_psfs: int) -> tuple[float | np.ndarray, bool]:
+    values = np.asarray(value, dtype=np.float32)
+    if values.ndim == 0:
+        scalar = float(values)
+        if not np.isfinite(scalar) or scalar <= 0.0:
+            raise ValueError(f"{label} must be finite and > 0.")
+        return scalar, False
+    if values.ndim != 1:
+        raise ValueError(f"{label} must be a scalar or 1D per-PSF vector.")
+    if values.shape[0] != num_psfs:
+        raise ValueError(f"{label} per-PSF vector length must match the PSF cube length {num_psfs}.")
+    if not np.all(np.isfinite(values)) or np.any(values <= 0.0):
+        raise ValueError(f"{label} must contain only finite values > 0.")
+    return values.astype(np.float32, copy=False), True
 
-    tel_diameter_m = meta.get(schema.KEY_META_TEL_DIAMETER_M)
-    if tel_diameter_m is None:
-        raise ValueError(f"meta['{schema.KEY_META_TEL_DIAMETER_M}'] is required for PSF stats computation.")
-    tel_diameter_m = float(tel_diameter_m)
+
+def _prepare_psf_metadata(metadata: PsfMetadata, num_psfs: int) -> _PreparedPsfMetadata:
+    if not isinstance(metadata, PsfMetadata):
+        raise TypeError("metadata must be a PsfMetadata instance.")
+
+    wavelength_um, wavelength_is_per_psf = _prepare_shared_or_per_psf_positive_vector(
+        metadata.wavelength_um,
+        label="metadata.wavelength_um",
+        num_psfs=num_psfs,
+    )
+    pixel_scale_mas, pixel_scale_is_per_psf = _prepare_shared_or_per_psf_positive_vector(
+        metadata.pixel_scale_mas,
+        label="metadata.pixel_scale_mas",
+        num_psfs=num_psfs,
+    )
+
+    tel_diameter = np.asarray(metadata.tel_diameter_m, dtype=np.float32)
+    if tel_diameter.ndim != 0:
+        raise ValueError("metadata.tel_diameter_m must be a scalar.")
+    tel_diameter_m = float(tel_diameter)
     if not np.isfinite(tel_diameter_m) or tel_diameter_m <= 0.0:
-        raise ValueError(f"meta['{schema.KEY_META_TEL_DIAMETER_M}'] must be finite and > 0.")
+        raise ValueError("metadata.tel_diameter_m must be finite and > 0.")
 
-    tel_pupil = meta.get(schema.KEY_META_TEL_PUPIL)
-    if tel_pupil is None:
-        raise ValueError(f"meta['{schema.KEY_META_TEL_PUPIL}'] is required for PSF stats computation.")
-    tel_pupil = np.asarray(tel_pupil, dtype=np.float32)
+    tel_pupil = np.asarray(metadata.tel_pupil, dtype=np.float32)
     if tel_pupil.ndim != 2:
-        raise ValueError(f"meta['{schema.KEY_META_TEL_PUPIL}'] must be 2D [Ny, Nx].")
+        raise ValueError("metadata.tel_pupil must be 2D [Ny, Nx].")
     if not np.all(np.isfinite(tel_pupil)):
-        raise ValueError(f"meta['{schema.KEY_META_TEL_PUPIL}'] must contain only finite values.")
+        raise ValueError("metadata.tel_pupil must contain only finite values.")
 
-    try:
-        ee_apertures_mas = get_ee_apertures(setup)
-    except (KeyError, AttributeError) as exc:
-        raise ValueError(f"setup['{schema.KEY_SETUP_EE_APERTURES_MAS}'] is required for PSF stats computation.") from exc
-    if ee_apertures_mas.size == 0:
-        raise ValueError("ee_apertures_mas must be non-empty.")
-    if not np.all(np.isfinite(ee_apertures_mas)) or np.any(ee_apertures_mas <= 0.0):
-        raise ValueError("ee_apertures_mas must contain only finite values > 0.")
+    return _PreparedPsfMetadata(
+        wavelength_um=wavelength_um,
+        pixel_scale_mas=pixel_scale_mas,
+        tel_diameter_m=tel_diameter_m,
+        tel_pupil=tel_pupil,
+        has_per_psf_values=wavelength_is_per_psf or pixel_scale_is_per_psf,
+    )
 
-    try:
-        sr_method = get_sr_method(setup)
-    except (KeyError, AttributeError) as exc:
-        raise ValueError(f"setup['{schema.KEY_SETUP_SR_METHOD}'] is required for PSF stats computation.") from exc
-    if sr_method not in schema.SETUP_STATS_SR_METHODS:
+
+def _prepare_ee_apertures(ee_apertures_mas: Any, num_psfs: int) -> tuple[np.ndarray, bool]:
+    apertures = np.asarray(ee_apertures_mas, dtype=np.float32)
+    if apertures.ndim == 1:
+        if apertures.size == 0:
+            raise ValueError("ee_apertures_mas must be non-empty.")
+        if not np.all(np.isfinite(apertures)) or np.any(apertures <= 0.0):
+            raise ValueError("ee_apertures_mas must contain only finite values > 0.")
+        return apertures, False
+    if apertures.ndim == 2:
+        if apertures.shape[0] != num_psfs:
+            raise ValueError(f"ee_apertures_mas per-PSF leading dimension must match the PSF cube length {num_psfs}.")
+        if apertures.shape[1] == 0:
+            raise ValueError("ee_apertures_mas must include at least one aperture per PSF.")
+        if not np.all(np.isfinite(apertures)) or np.any(apertures <= 0.0):
+            raise ValueError("ee_apertures_mas must contain only finite values > 0.")
+        return apertures, True
+    raise ValueError("ee_apertures_mas must be a 1D aperture vector or 2D per-PSF aperture array.")
+
+
+def _require_sr_method(sr_method: str) -> str:
+    value = str(sr_method).strip()
+    if value not in STATS_SR_METHODS:
         raise ValueError(
-            f"setup['{schema.KEY_SETUP_SR_METHOD}'] must be one of: {', '.join(schema.SETUP_STATS_SR_METHODS)}."
+            f"sr_method must be one of: {', '.join(STATS_SR_METHODS)}."
         )
+    return value
 
-    try:
-        fwhm_summary = get_fwhm_summary(setup)
-    except (KeyError, AttributeError) as exc:
-        raise ValueError(f"setup['{schema.KEY_SETUP_FWHM_SUMMARY}'] is required for PSF stats computation.") from exc
-    if fwhm_summary not in schema.SETUP_STATS_FWHM_SUMMARIES:
+
+def _require_fwhm_summary(fwhm_summary: str) -> str:
+    value = str(fwhm_summary).strip()
+    if value not in STATS_FWHM_SUMMARIES:
         raise ValueError(
-            f"setup['{schema.KEY_SETUP_FWHM_SUMMARY}'] must be one of: {', '.join(schema.SETUP_STATS_FWHM_SUMMARIES)}."
+            f"fwhm_summary must be one of: {', '.join(STATS_FWHM_SUMMARIES)}."
         )
+    return value
 
-    return psf_cube, scalar_output, wavelength_um, pixel_scale_mas, tel_diameter_m, tel_pupil, sr_method, ee_apertures_mas, fwhm_summary
+
+def _prepare_metrics(metrics: Sequence[str] | None) -> tuple[str, ...]:
+    if metrics is None:
+        return STATS_METRICS
+    if isinstance(metrics, str):
+        raise TypeError("metrics must be a sequence of metric names, not a string.")
+    values = tuple(str(metric).strip() for metric in metrics)
+    if not values:
+        raise ValueError("metrics must include at least one metric name.")
+    invalid = sorted(set(values) - set(STATS_METRICS))
+    if invalid:
+        raise ValueError(f"metrics contains unsupported names: {', '.join(invalid)}.")
+    if len(set(values)) != len(values):
+        raise ValueError("metrics must not contain duplicate names.")
+    return values
 
 
 # Strehl helpers
@@ -317,10 +417,30 @@ def _compute_strehl(
     tel_pupil: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Dispatch to the selected AO Predict Strehl implementation."""
-    if sr_method == schema.STATS_SR_METHOD_PIXEL_FIT:
+    if sr_method == STATS_SR_METHOD_PIXEL_FIT:
         return _compute_strehl_pixel_fit(psfs, pixel_scale_mas, wavelength_um, tel_diameter_m, tel_pupil)
-    if sr_method == schema.STATS_SR_METHOD_PIXEL_MAX:
+    if sr_method == STATS_SR_METHOD_PIXEL_MAX:
         return _compute_strehl_pixel_max(psfs, pixel_scale_mas, wavelength_um, tel_diameter_m, tel_pupil)
+    raise ValueError(f"Unsupported Strehl method: {sr_method}")
+
+
+def _compute_peak_locations(psfs: np.ndarray, sr_method: str) -> np.ndarray:
+    """Return the peak-anchor locations used by the selected SR method."""
+    psfs = np.asarray(psfs, dtype=np.float32)
+    num_sci = int(psfs.shape[0])
+    if sr_method == STATS_SR_METHOD_PIXEL_FIT:
+        peak_fits = np.asarray(
+            [
+                _fit_gaussian_core(np.asarray(psf, dtype=float), assume_centered=False)[0]
+                for psf in np.asarray(psfs, dtype=float)
+            ],
+            dtype=float,
+        )
+        return peak_fits[:, [3, 4]].astype(np.float32)
+    if sr_method == STATS_SR_METHOD_PIXEL_MAX:
+        peak_idx = np.argmax(psfs.reshape(num_sci, -1), axis=1)
+        peak_y, peak_x = np.unravel_index(peak_idx, psfs.shape[1:])
+        return np.stack((peak_y, peak_x), axis=1).astype(np.float32)
     raise ValueError(f"Unsupported Strehl method: {sr_method}")
 
 
@@ -451,8 +571,8 @@ def _interpolate_ee_at_radii(
 def _normalize_ee_geometry(ee_geometry: str) -> str:
     """Validate and return the requested EE aperture geometry."""
     value = str(ee_geometry).strip()
-    if value not in _EE_GEOMETRIES:
-        raise ValueError(f"ee_geometry must be one of: {', '.join(_EE_GEOMETRIES)}.")
+    if value not in EE_GEOMETRIES:
+        raise ValueError(f"ee_geometry must be one of: {', '.join(EE_GEOMETRIES)}.")
     return value
 
 
@@ -462,7 +582,7 @@ def _compute_enclosed_energy(
     pixel_scale_mas: float,
     peak_locations_yx: np.ndarray | None,
     *,
-    ee_geometry: str = _EE_GEOMETRY_ENSQUARED,
+    ee_geometry: str = EE_GEOMETRY_ENSQUARED,
 ) -> np.ndarray:
     """Compute EE for the requested aperture geometry."""
     ee_geometry = _normalize_ee_geometry(ee_geometry)
@@ -471,7 +591,7 @@ def _compute_enclosed_energy(
 
     psfs, peak_y, peak_x = _anchor_psfs_for_ee(psfs, peak_locations_yx)
 
-    if ee_geometry == _EE_GEOMETRY_ENSQUARED:
+    if ee_geometry == EE_GEOMETRY_ENSQUARED:
         _, ny, nx = psfs.shape
 
         # Use only aperture radii that fit around every peak anchor in the cube.
@@ -588,91 +708,279 @@ def _measure_contour_fwhms(psfs: np.ndarray, pixel_scale_mas: float) -> tuple[np
 
 def _compute_fwhm_summary(fwhm_summary: str, fwhm_min: np.ndarray, fwhm_max: np.ndarray) -> np.ndarray:
     """Select one FWHM summary vector from contour-derived minimum/maximum widths."""
-    if fwhm_summary == schema.STATS_FWHM_SUMMARY_GEOM:
+    if fwhm_summary == STATS_FWHM_SUMMARY_GEOM:
         return np.sqrt(fwhm_max * fwhm_min, dtype=np.float32)
-    if fwhm_summary == schema.STATS_FWHM_SUMMARY_MEAN:
+    if fwhm_summary == STATS_FWHM_SUMMARY_MEAN:
         return 0.5 * (fwhm_max + fwhm_min)
-    if fwhm_summary == schema.STATS_FWHM_SUMMARY_MAX:
+    if fwhm_summary == STATS_FWHM_SUMMARY_MAX:
         return fwhm_max
-    if fwhm_summary == schema.STATS_FWHM_SUMMARY_MIN:
+    if fwhm_summary == STATS_FWHM_SUMMARY_MIN:
         return fwhm_min
     raise ValueError(f"Unsupported FWHM summary: {fwhm_summary}")
 
 
-# Public entrypoint
+# Public entrypoints
+
+
+def clip_and_sum_normalize_psfs(psfs: np.ndarray) -> np.ndarray:
+    """Clip negative PSF pixels and normalize each positive-flux PSF.
+
+    Negative pixels are clipped to zero. Each PSF with positive total pixel
+    flux is then divided by its pixel sum.
+    """
+    psf_cube = np.maximum(np.asarray(psfs, dtype=np.float32), 0.0)
+    denom = np.sum(psf_cube, axis=(-2, -1), dtype=np.float32)
+    positive = denom > 0.0
+    if np.any(positive):
+        psf_cube = psf_cube.copy()
+        psf_cube[positive] /= denom[positive, np.newaxis, np.newaxis]
+    return psf_cube
+
+
+def _resolve_preprocess(preprocess: PsfPreprocessOption) -> PsfPreprocessor | None:
+    if preprocess == "default":
+        return clip_and_sum_normalize_psfs
+    if isinstance(preprocess, str) or not (preprocess is None or callable(preprocess)):
+        raise ValueError("preprocess must be None, 'default', or a callable.")
+    return preprocess
+
+
+def _apply_preprocess(psf_cube: np.ndarray, preprocess: PsfPreprocessOption) -> np.ndarray:
+    preprocess = _resolve_preprocess(preprocess)
+    if preprocess is None:
+        return psf_cube
+    prepared = np.asarray(preprocess(psf_cube), dtype=np.float32)
+    if prepared.shape != psf_cube.shape:
+        raise ValueError(f"preprocess must return a PSF cube with shape {psf_cube.shape}, got {prepared.shape}")
+    if not np.all(np.isfinite(prepared)):
+        raise ValueError("preprocess returned PSFs containing non-finite values.")
+    return prepared
+
+
+def _select_metadata_value(value: float | np.ndarray, index: int) -> float:
+    if isinstance(value, np.ndarray):
+        return float(value[index])
+    return float(value)
+
+
+def _compute_psf_stats_core(
+    psf_cube: np.ndarray,
+    *,
+    wavelength_um: float,
+    pixel_scale_mas: float,
+    tel_diameter_m: float,
+    tel_pupil: np.ndarray,
+    ee_apertures_mas: np.ndarray,
+    sr_method: str,
+    fwhm_summary: str,
+    ee_geometry: str,
+    metrics: tuple[str, ...],
+) -> dict[str, np.ndarray]:
+    output: dict[str, np.ndarray] = {}
+    peak_locations_yx = None
+
+    if STATS_METRIC_SR in metrics:
+        sr, peak_locations_yx = _compute_strehl(
+            psf_cube,
+            sr_method,
+            pixel_scale_mas,
+            wavelength_um,
+            tel_diameter_m,
+            tel_pupil,
+        )
+        output[STATS_METRIC_SR] = np.asarray(sr, dtype=np.float32)
+    elif STATS_METRIC_EE in metrics:
+        peak_locations_yx = _compute_peak_locations(psf_cube, sr_method)
+
+    if STATS_METRIC_EE in metrics:
+        output[STATS_METRIC_EE] = np.asarray(
+            _compute_enclosed_energy(
+                psf_cube,
+                ee_apertures_mas,
+                pixel_scale_mas,
+                peak_locations_yx,
+                ee_geometry=ee_geometry,
+            ),
+            dtype=np.float32,
+        )
+
+    if STATS_METRIC_FWHM_MAS in metrics:
+        fwhm_min, fwhm_max = _measure_contour_fwhms(psf_cube, pixel_scale_mas)
+        output[STATS_METRIC_FWHM_MAS] = np.asarray(
+            _compute_fwhm_summary(fwhm_summary, fwhm_min, fwhm_max),
+            dtype=np.float32,
+        )
+
+    return output
+
+
+def _format_metric_value(name: str, value: np.ndarray, *, scalar_output: bool) -> StatValue:
+    if not scalar_output:
+        return value
+    if name == STATS_METRIC_EE:
+        ee_value: StatValue = value[0].copy()
+        if ee_value.shape[0] == 1:
+            ee_value = float(ee_value[0])
+        return ee_value
+    return float(value[0])
+
+
+def _format_metric_results(results: dict[str, np.ndarray], metrics: tuple[str, ...], *, scalar_output: bool) -> tuple[StatValue, ...]:
+    return tuple(
+        _format_metric_value(name, results[name], scalar_output=scalar_output)
+        for name in metrics
+    )
 
 
 def compute_psf_stats(
     psfs: np.ndarray,
-    simulation: Simulation,
-    setup: Mapping[str, Any] | SimulationSetup,
-    options: Mapping[str, Any],
-    meta: Mapping[str, Any],
+    metadata: PsfMetadata,
     *,
-    ee_geometry: str = _EE_GEOMETRY_ENSQUARED,
-) -> tuple[StatValue, StatValue, StatValue]:
-    """Compute the core AO Predict PSF statistics for one PSF image or cube.
+    ee_apertures_mas: np.ndarray | None = None,
+    sr_method: str = DEFAULT_SR_METHOD,
+    fwhm_summary: str = DEFAULT_FWHM_SUMMARY,
+    ee_geometry: str = DEFAULT_EE_GEOMETRY,
+    preprocess: PsfPreprocessOption = None,
+    metrics: Sequence[str] | None = None,
+) -> tuple[StatValue, ...]:
+    """Compute AO Predict core PSF statistics for one PSF image or cube.
 
     Args:
-        psfs: PSF image or PSF cube.
-        simulation: Bound simulation implementation providing preprocessing.
-        setup: Setup payload or typed setup object containing the dataset-level
-            stats selectors and EE apertures.
-        options: Per-simulation options mapping. ``wavelength_um`` is required
-            for the diffraction-limited Strehl reference PSF.
-        meta: Persisted PSF metadata mapping.
+        psfs: PSF image ``[Ny, Nx]`` or PSF cube ``[M, Ny, Nx]``.
+        metadata: Physical PSF metadata. ``wavelength_um`` and
+            ``pixel_scale_mas`` may be scalar or one-dimensional per-PSF
+            vectors with length ``M``. ``tel_diameter_m`` and ``tel_pupil`` are
+            shared across the cube.
+        ee_apertures_mas: EE aperture diameters in milliarcseconds. Required
+            when ``"ee"`` is selected. Pass a 1D vector ``[A]`` for shared
+            apertures, or a 2D array ``[M, A]`` for per-PSF apertures.
+        sr_method: Strehl selector, either ``"pixel_fit"`` or ``"pixel_max"``.
+        fwhm_summary: FWHM contour summary selector.
         ee_geometry: EE aperture geometry. Defaults to ``"ensquared"`` to
             preserve the existing square-aperture statistic.
+        preprocess: Optional preprocessing control. ``None`` computes metrics
+            from the validated PSFs without additional clipping, centering, or
+            normalization. ``"default"`` applies AO Predict's shared
+            non-negative clipping and pixel-sum normalization. A callable with
+            signature ``preprocess(psfs)`` can provide custom preprocessing.
+        metrics: Optional metric names to compute. Omit it to return the
+            standard tuple ``(sr, ee, fwhm_mas)``. Pass a sequence drawn from
+            ``"sr"``, ``"ee"``, and ``"fwhm_mas"`` to compute only those
+            metrics and return a tuple in the requested order.
 
     Returns:
-        Tuple ``(sr, ee, fwhm_mas)`` matching the shared core stats contract.
-        The implemented metric family is:
-        - Strehl: image-domain `pixel_fit` or `pixel_max`
-        - EE: fixed peak-centered image-domain square-box accumulation by
-          default, or circular aperture accumulation when ``ee_geometry`` is
-          ``"encircled"``.
-        - FWHM: fixed native contour measurement summarized by
-          ``setup['fwhm_summary']``
-
-        Successful results may return ``NaN`` in ``fwhm_mas`` when the
-        contour-based FWHM is not scientifically recoverable.
+        Tuple of requested metric values. When ``metrics`` is omitted, the tuple
+        is ``(sr, ee, fwhm_mas)``. Successful results may return ``NaN`` in
+        ``fwhm_mas`` when the contour-based FWHM is not scientifically
+        recoverable.
     """
-    psf_cube, scalar_output, wavelength_um, pixel_scale_mas, tel_diameter_m, tel_pupil, sr_method, ee_apertures_mas, fwhm_summary = _prepare_stats_inputs(
+    psf_cube, scalar_output = _prepare_psf_cube(psfs)
+    num_psfs = int(psf_cube.shape[0])
+    metrics = _prepare_metrics(metrics)
+    metadata = _prepare_psf_metadata(metadata, num_psfs)
+    if STATS_METRIC_EE in metrics:
+        if ee_apertures_mas is None:
+            raise ValueError("ee_apertures_mas is required when computing EE.")
+        ee_apertures_mas, ee_apertures_are_per_psf = _prepare_ee_apertures(ee_apertures_mas, num_psfs)
+    else:
+        ee_apertures_mas = np.empty((0,), dtype=np.float32)
+        ee_apertures_are_per_psf = False
+    sr_method = _require_sr_method(sr_method)
+    fwhm_summary = _require_fwhm_summary(fwhm_summary)
+    ee_geometry = _normalize_ee_geometry(ee_geometry)
+    psf_cube = _apply_preprocess(psf_cube, preprocess)
+
+    if not metadata.has_per_psf_values and not ee_apertures_are_per_psf:
+        results = _compute_psf_stats_core(
+            psf_cube,
+            wavelength_um=float(metadata.wavelength_um),
+            pixel_scale_mas=float(metadata.pixel_scale_mas),
+            tel_diameter_m=metadata.tel_diameter_m,
+            tel_pupil=metadata.tel_pupil,
+            ee_apertures_mas=ee_apertures_mas,
+            sr_method=sr_method,
+            fwhm_summary=fwhm_summary,
+            ee_geometry=ee_geometry,
+            metrics=metrics,
+        )
+    else:
+        result_rows: dict[str, list[np.ndarray]] = {name: [] for name in metrics}
+        for index in range(num_psfs):
+            row_results = _compute_psf_stats_core(
+                psf_cube[index : index + 1],
+                wavelength_um=_select_metadata_value(metadata.wavelength_um, index),
+                pixel_scale_mas=_select_metadata_value(metadata.pixel_scale_mas, index),
+                tel_diameter_m=metadata.tel_diameter_m,
+                tel_pupil=metadata.tel_pupil,
+                ee_apertures_mas=ee_apertures_mas[index] if ee_apertures_are_per_psf else ee_apertures_mas,
+                sr_method=sr_method,
+                fwhm_summary=fwhm_summary,
+                ee_geometry=ee_geometry,
+                metrics=metrics,
+            )
+            for name in metrics:
+                result_rows[name].append(row_results[name])
+        results = {
+            name: np.concatenate(rows, axis=0).astype(np.float32, copy=False)
+            for name, rows in result_rows.items()
+        }
+
+    return _format_metric_results(results, metrics, scalar_output=scalar_output)
+
+
+def compute_psf_sr(
+    psfs: np.ndarray,
+    metadata: PsfMetadata,
+    *,
+    sr_method: str = DEFAULT_SR_METHOD,
+    preprocess: PsfPreprocessOption = None,
+) -> StatValue:
+    """Compute only PSF Strehl ratio."""
+    result = compute_psf_stats(
         psfs,
-        setup,
-        options,
-        meta,
+        metadata,
+        sr_method=sr_method,
+        preprocess=preprocess,
+        metrics=(STATS_METRIC_SR,),
     )
-    psf_cube = simulation.prepare_psfs_for_stats(psf_cube, setup, meta)
+    return result[0]
 
-    sr, peak_locations_yx = _compute_strehl(
-        psf_cube,
-        sr_method,
-        pixel_scale_mas,
-        wavelength_um,
-        tel_diameter_m,
-        tel_pupil,
-    )
-    ee = _compute_enclosed_energy(
-        psf_cube,
-        ee_apertures_mas,
-        pixel_scale_mas,
-        peak_locations_yx,
+
+def compute_psf_ee(
+    psfs: np.ndarray,
+    metadata: PsfMetadata,
+    *,
+    ee_apertures_mas: np.ndarray,
+    sr_method: str = DEFAULT_SR_METHOD,
+    ee_geometry: str = DEFAULT_EE_GEOMETRY,
+    preprocess: PsfPreprocessOption = None,
+) -> StatValue:
+    """Compute only PSF enclosed energy."""
+    result = compute_psf_stats(
+        psfs,
+        metadata,
+        ee_apertures_mas=ee_apertures_mas,
+        sr_method=sr_method,
         ee_geometry=ee_geometry,
+        preprocess=preprocess,
+        metrics=(STATS_METRIC_EE,),
     )
-    fwhm_min, fwhm_max = _measure_contour_fwhms(psf_cube, pixel_scale_mas)
-    fwhm_mas = _compute_fwhm_summary(fwhm_summary, fwhm_min, fwhm_max)
+    return result[0]
 
-    sr = np.asarray(sr, dtype=np.float32)
-    ee = np.asarray(ee, dtype=np.float32)
-    fwhm_mas = np.asarray(fwhm_mas, dtype=np.float32)
 
-    if scalar_output:
-        sr_value: StatValue = float(sr[0])
-        ee_value: StatValue = ee[0].copy()
-        if ee_value.shape[0] == 1:
-            ee_value = float(ee_value[0])
-        fwhm_value: StatValue = float(fwhm_mas[0])
-        return sr_value, ee_value, fwhm_value
-
-    return sr, ee, fwhm_mas
+def compute_psf_fwhm(
+    psfs: np.ndarray,
+    metadata: PsfMetadata,
+    *,
+    fwhm_summary: str = DEFAULT_FWHM_SUMMARY,
+    preprocess: PsfPreprocessOption = None,
+) -> StatValue:
+    """Compute only PSF FWHM in milliarcseconds."""
+    result = compute_psf_stats(
+        psfs,
+        metadata,
+        fwhm_summary=fwhm_summary,
+        preprocess=preprocess,
+        metrics=(STATS_METRIC_FWHM_MAS,),
+    )
+    return result[0]

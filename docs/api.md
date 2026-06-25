@@ -268,6 +268,90 @@ See also:
 - Existing dataset without `overwrite=True` raises `FileExistsError`.
 - Dataset/config mismatches raise `DatasetConfigMismatchError`.
 
+
+## PSF Stats API
+
+`compute_psf_stats(...)` computes AO Predict core PSF statistics from one
+PSF image or a PSF cube. Import it from the package root together with
+`PsfMetadata`, focused metric helpers, and the named preprocessing helper when
+needed:
+
+```python
+from ao_predict import (
+    PsfMetadata,
+    clip_and_sum_normalize_psfs,
+    compute_psf_ee,
+    compute_psf_fwhm,
+    compute_psf_stats,
+)
+
+metadata = PsfMetadata(
+    wavelength_um=1.65,
+    pixel_scale_mas=4.0,
+    tel_diameter_m=8.0,
+    tel_pupil=tel_pupil,
+)
+
+sr, ee, fwhm_mas = compute_psf_stats(
+    psfs,
+    metadata,
+    ee_apertures_mas=[50.0, 100.0],
+    sr_method="pixel_fit",
+    fwhm_summary="geom",
+    ee_geometry="ensquared",
+    preprocess=clip_and_sum_normalize_psfs,
+)
+
+fwhm_only = compute_psf_fwhm(
+    psfs,
+    metadata,
+    fwhm_summary="geom",
+    preprocess="default",
+)
+
+ee_only = compute_psf_ee(
+    psfs,
+    metadata,
+    ee_apertures_mas=[50.0, 100.0],
+    sr_method="pixel_fit",
+    ee_geometry="ensquared",
+    preprocess="default",
+)
+
+selected = compute_psf_stats(
+    psfs,
+    metadata,
+    metrics=("fwhm_mas", "ee"),
+    ee_apertures_mas=[50.0, 100.0],
+    preprocess="default",
+)
+```
+
+`wavelength_um` and `pixel_scale_mas` may be scalar values shared by all PSFs,
+or one-dimensional per-PSF arrays matching the PSF cube length. `ee_apertures_mas`
+may be a shared aperture vector or a per-PSF aperture array with shape `[M, A]`.
+It is required only when enclosed energy is computed.
+
+When `metrics` is omitted, `compute_psf_stats(...)` returns the legacy tuple
+`(sr, ee, fwhm_mas)`. When `metrics` is supplied, it must be a non-empty
+sequence drawn from `"sr"`, `"ee"`, and `"fwhm_mas"`; the return value is a
+tuple in the requested order. The focused helpers
+`compute_psf_sr(...)`, `compute_psf_ee(...)`, and `compute_psf_fwhm(...)` return
+only their named metric and use the same metadata, selector, and preprocessing
+contracts.
+
+Metric selector options are:
+
+- `sr_method`: `"pixel_fit"` by default; also supports `"pixel_max"`.
+- `fwhm_summary`: `"geom"` by default; also supports `"mean"`, `"max"`, and `"min"`.
+- `ee_geometry`: `"ensquared"` by default; also supports `"encircled"`.
+
+The public stats function does no clipping, centering, or normalization unless
+`preprocess` is supplied. External callers can omit `preprocess` when PSFs are
+already metric-ready, pass `clip_and_sum_normalize_psfs` or `preprocess="default"`
+to use AO Predict's shared non-negative clipping and pixel-sum normalization
+path, or pass another callable with signature `preprocess(psfs)`.
+
 ## Plotting Helpers
 
 `ao_predict.plotting` provides Matplotlib helpers for loaded analysis

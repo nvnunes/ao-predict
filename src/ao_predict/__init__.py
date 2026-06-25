@@ -19,6 +19,12 @@ from .simulation import (
     SimulationState,
     TiptopBaseConfig,
     TiptopSimulation,
+    PsfMetadata,
+    clip_and_sum_normalize_psfs,
+    compute_psf_ee,
+    compute_psf_fwhm,
+    compute_psf_sr,
+    compute_psf_stats,
 )
 from .simulation.api import (
     DatasetConfigMismatchError,
@@ -44,6 +50,12 @@ from .simulation.runner import RunSummary
 __all__ = [
     "__version__",
     "check_dataset",
+    "PsfMetadata",
+    "clip_and_sum_normalize_psfs",
+    "compute_psf_ee",
+    "compute_psf_fwhm",
+    "compute_psf_sr",
+    "compute_psf_stats",
     "DatasetStatus",
     "DatasetConfigMismatchError",
     "DatasetValidationError",

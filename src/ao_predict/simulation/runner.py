@@ -19,7 +19,7 @@ from .validation import (
     validate_setup_payload_core,
 )
 from .interfaces import Simulation, SimulationResult, SimulationState
-from .stats import compute_psf_stats
+from .stats import PsfMetadata, compute_psf_stats
 from ..utils import as_float_vector
 
 
@@ -338,12 +338,23 @@ def _populate_result_stats(simulation: Simulation, context: Any) -> None:
         f"{type(context.setup).__name__} PSFs",
     )
 
+    psf_metadata = PsfMetadata(
+        wavelength_um=context.options[schema.KEY_OPTION_WAVELENGTH_UM],
+        pixel_scale_mas=context.result.meta[schema.KEY_META_PIXEL_SCALE_MAS],
+        tel_diameter_m=context.result.meta[schema.KEY_META_TEL_DIAMETER_M],
+        tel_pupil=context.result.meta[schema.KEY_META_TEL_PUPIL],
+    )
     sr, ee, fwhm_mas = compute_psf_stats(
         context.result.psfs,
-        simulation,
-        context.setup,
-        context.options,
-        context.result.meta,
+        psf_metadata,
+        ee_apertures_mas=context.setup.ee_apertures_mas,
+        sr_method=context.setup.sr_method,
+        fwhm_summary=context.setup.fwhm_summary,
+        preprocess=lambda psfs: simulation.prepare_psfs_for_stats(
+            psfs,
+            context.setup,
+            context.result.meta,
+        ),
     )
 
     raw_extra_stats = simulation.build_extra_stats(context)
