@@ -48,3 +48,15 @@ def test_simulation_module_config_backed_exports() -> None:
     assert simulation.TiptopConfigBackedSimulation is TiptopConfigBackedSimulation
     assert simulation.TiptopBaseConfig is TiptopBaseConfig
     assert simulation.TiptopSimulation is TiptopSimulation
+
+
+def test_interpolation_submodule_exports_without_root_exports() -> None:
+    package = importlib.import_module("ao_predict")
+    interpolation = importlib.import_module("ao_predict.interpolation")
+
+    assert interpolation.ScienceHoPsfSamples.__name__ == "ScienceHoPsfSamples"
+    assert interpolation.NgsHoPsfSamples.__name__ == "NgsHoPsfSamples"
+    assert interpolation.NgsHoMetricSamples.__name__ == "NgsHoMetricSamples"
+    assert interpolation.RbfInterpolationConfig.__name__ == "RbfInterpolationConfig"
+    assert not hasattr(package, "ScienceHoPsfSamples")
+    assert not hasattr(package, "NgsHoMetricSamples")
