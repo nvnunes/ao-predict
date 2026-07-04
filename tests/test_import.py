@@ -10,6 +10,7 @@ from ao_predict import (
     __version__,
     load_analysis_dataset,
 )
+from ao_predict.simulation import ConfigBackedSimulation, TiptopBaseConfig, TiptopConfigBackedSimulation, TiptopSimulation
 
 
 def test_version_present():
@@ -38,3 +39,12 @@ def test_package_and_analysis_module_exports() -> None:
     assert analysis.load_analysis_dataset is load_analysis_dataset
     assert analysis.AnalysisSimulation is AnalysisSimulation
     assert analysis.AnalysisLoadContribution is AnalysisLoadContribution
+
+
+def test_simulation_module_config_backed_exports() -> None:
+    simulation = importlib.import_module("ao_predict.simulation")
+
+    assert simulation.ConfigBackedSimulation is ConfigBackedSimulation
+    assert simulation.TiptopConfigBackedSimulation is TiptopConfigBackedSimulation
+    assert simulation.TiptopBaseConfig is TiptopBaseConfig
+    assert simulation.TiptopSimulation is TiptopSimulation

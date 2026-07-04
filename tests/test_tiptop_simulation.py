@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import configparser
 from pathlib import Path
 import sys
 import types
@@ -7,7 +8,7 @@ import types
 import numpy as np
 import pytest
 
-from ao_predict.simulation import SimulationResult, TiptopSimulation
+from ao_predict.simulation import SimulationResult, TiptopBaseConfig, TiptopSimulation
 
 
 def _ini_text() -> str:
@@ -44,11 +45,77 @@ def test_tiptop_config_roundtrip(tmp_path: Path):
     simulation_payload = _prepare_simulation_payload(sim, {"config_path": str(ini_path)})
     assert "base_config" in simulation_payload
     assert isinstance(simulation_payload["base_config"], str)
+    assert simulation_payload["base_config"] == _ini_text()
 
     sim.load_simulation_payload(simulation_payload)
     assert sim._base_config is not None
+    assert isinstance(sim.base_config, TiptopBaseConfig)
     assert sim._base_config.parser["main"]["value"] == "42"
     assert sim._base_config.parser["science"]["wavelength_um"] == "1.65"
+
+
+def test_tiptop_config_path_resolves_relative_to_base_path(tmp_path: Path):
+    sim = TiptopSimulation()
+    ini_path = tmp_path / "tiptop.ini"
+    ini_path.write_text(_ini_text(), encoding="utf-8")
+
+    simulation_payload = _prepare_simulation_payload(
+        sim,
+        {
+            "base_path": str(tmp_path),
+            "config_path": ini_path.name,
+        },
+    )
+
+    assert simulation_payload["base_config"] == _ini_text()
+
+
+def test_tiptop_validate_simulation_payload_does_not_rebind_loaded_config(tmp_path: Path):
+    sim = TiptopSimulation()
+    ini_path = tmp_path / "tiptop.ini"
+    ini_path.write_text(_ini_text(), encoding="utf-8")
+
+    simulation_payload = _prepare_simulation_payload(sim, {"config_path": str(ini_path)})
+    sim.load_simulation_payload(simulation_payload)
+    original_base_config = sim.base_config
+
+    invalid_payload = dict(simulation_payload)
+    invalid_payload["base_config"] = "not an ini file"
+    with pytest.raises(configparser.Error):
+        sim.validate_simulation_payload(invalid_payload)
+
+    assert sim.base_config is original_base_config
+    assert sim.base_config.parser["main"]["value"] == "42"
+
+
+def test_tiptop_load_simulation_payload_rejects_malformed_ini_without_binding():
+    sim = TiptopSimulation()
+
+    with pytest.raises(configparser.Error):
+        sim.load_simulation_payload(
+            {
+                "name": sim.name,
+                "version": sim.version,
+                "extra_stat_names": np.asarray(sim.extra_stat_names, dtype=str),
+                "base_config": "not an ini file",
+            }
+        )
+
+    with pytest.raises(TypeError, match="base config is not configured"):
+        _ = sim.base_config
+
+
+def test_tiptop_prepare_simulation_payload_requires_config_path(tmp_path: Path):
+    sim = TiptopSimulation()
+
+    with pytest.raises(ValueError, match="config_path"):
+        _prepare_simulation_payload(sim, {})
+
+    with pytest.raises(TypeError, match="config_path"):
+        _prepare_simulation_payload(sim, {"config_path": 42})
+
+    with pytest.raises(FileNotFoundError, match="TIPTOP INI file not found"):
+        _prepare_simulation_payload(sim, {"config_path": str(tmp_path / "missing.ini")})
 
 
 def test_tiptop_create_context(tmp_path: Path):
