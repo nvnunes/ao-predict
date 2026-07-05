@@ -29,6 +29,7 @@ nav:
       - Testing: testing.md
       - Development Setup: development.md
   - Reference:
+      - Interpolation API: reference/interpolation.md
       - Analysis API: reference/analysis/api.md
       - Plotting API: reference/plotting.md
       - Simulation Interfaces: reference/simulation/interfaces.md

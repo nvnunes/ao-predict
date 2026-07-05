@@ -160,6 +160,7 @@ class BaseSimulation(Simulation, ABC):
             *schema.SIMULATION_KEYS_CORE,
             schema.KEY_CFG_SIMULATION_BASE_PATH,
             schema.KEY_SIMULATION_DIAGNOSTIC_FIELDS,
+            schema.KEY_SIMULATION_META_FIELDS,
             *(str(k) for k in exclude_keys or ()),
         }
         diagnostics_level = self._normalize_diagnostics_level(

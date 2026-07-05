@@ -15,6 +15,7 @@ from ao_predict.simulation.stats import (
     compute_psf_ee,
     compute_psf_fwhm,
 )
+from ao_predict.simulation.validation import validate_meta_field_name
 
 from ._core import (
     RbfInterpolationConfig,
@@ -61,6 +62,10 @@ class ScienceHoPsfSamples:
         pixel_scale_mas: Plane pixel scales in milliarcseconds per pixel.
         tel_diameter_m: Telescope diameter in meters.
         tel_pupil: Shared two-dimensional telescope pupil.
+        meta: Optional source metadata fields. Each key becomes an additional
+            scalar ``/meta`` field for simulations that consume the artifact.
+            Values may be artifact-global finite scalars or finite vectors with
+            one value per zenith-angle/wavelength source plane.
         provenance: Optional source provenance strings.
     """
 
@@ -72,6 +77,7 @@ class ScienceHoPsfSamples:
     pixel_scale_mas: np.ndarray
     tel_diameter_m: float
     tel_pupil: np.ndarray
+    meta: Mapping[str, Any] = field(default_factory=dict)
     provenance: tuple[str, ...] = ()
 
 
@@ -86,11 +92,14 @@ class ScienceHoPsfPrediction:
             pixel for the evaluated zenith-angle and wavelength plane.
         metadata: ``PsfMetadata`` carrying the requested wavelength, evaluated
             pixel scale, telescope diameter, and telescope pupil.
+        meta: Evaluated scalar source metadata fields for the requested
+            zenith-angle/wavelength plane.
     """
 
     psfs: np.ndarray
     pixel_scale_mas: float
     metadata: PsfMetadata
+    meta: Mapping[str, float] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -142,6 +151,9 @@ class ScienceHoPsfInterpolator:
             with shape ``(zenith, wavelength)``.
         tel_diameter_m: Telescope diameter in meters shared by predictions.
         tel_pupil: Telescope pupil array shared by predictions.
+        meta: Source metadata fields. Each value is either an artifact-global
+            scalar or a grid with the same ``(zenith, wavelength)`` shape as
+            ``pixel_scale_mas_grid``.
         interpolation_config: RBF configuration used to fit all field models.
         plane_model_indices: Integer grid mapping from plane axes to
             ``plane_models`` entries.
@@ -162,6 +174,7 @@ class ScienceHoPsfInterpolator:
     interpolation_config: RbfInterpolationConfig
     plane_model_indices: np.ndarray
     plane_models: tuple[Mapping[str, Any], ...]
+    meta: Mapping[str, Any] = field(default_factory=dict)
     provenance: tuple[str, ...] = ()
     builder: Mapping[str, Any] = field(default_factory=dict)
 
@@ -236,6 +249,7 @@ def build_science_ho_psf_interpolator(
         iz = axis_index(zenith_axis, float(zenith_angle_deg), label="zenith_angle_deg")
         iw = axis_index(wavelength_axis, float(wavelength_um), label="wavelength_um")
         pixel_scale_grid[iz, iw] = float(pixel_scale_mas)
+    meta = _build_artifact_meta(prepared.meta, prepared, plane_model_indices, zenith_axis, wavelength_axis)
 
     return ScienceHoPsfInterpolator(
         zenith_angle_deg_axis=zenith_axis,
@@ -247,6 +261,7 @@ def build_science_ho_psf_interpolator(
         pixel_scale_mas_grid=pixel_scale_grid,
         tel_diameter_m=float(prepared.tel_diameter_m),
         tel_pupil=np.asarray(prepared.tel_pupil, dtype=np.float32),
+        meta=meta,
         interpolation_config=config,
         plane_model_indices=plane_model_indices,
         plane_models=tuple(plane_models),
@@ -291,6 +306,7 @@ def evaluate_science_ho_psf_interpolator(
     coordinates = field_coordinates(x_arcsec, y_arcsec)
     psfs = np.zeros((coordinates.shape[0], *interpolator.psf_shape), dtype=np.float32)
     pixel_scale_mas = 0.0
+    meta = _initial_evaluated_meta(interpolator.meta, grid_shape=interpolator.pixel_scale_mas_grid.shape)
     for model_index, weight, grid_index in weights:
         model_output = evaluate_scaled_rbf_model(interpolator.plane_models[model_index], coordinates)
         psfs += float(weight) * np.asarray(model_output["psf"], dtype=np.float32).reshape(
@@ -298,6 +314,7 @@ def evaluate_science_ho_psf_interpolator(
             *interpolator.psf_shape,
         )
         pixel_scale_mas += float(weight) * float(interpolator.pixel_scale_mas_grid[grid_index])
+        _accumulate_grid_meta(meta, interpolator.meta, weight=float(weight), grid_index=grid_index)
     _validate_psf_flux(psfs, label="predicted psfs")
     pixel_scale_mas = float(pixel_scale_mas)
     return ScienceHoPsfPrediction(
@@ -309,6 +326,7 @@ def evaluate_science_ho_psf_interpolator(
             tel_diameter_m=float(interpolator.tel_diameter_m),
             tel_pupil=np.asarray(interpolator.tel_pupil, dtype=np.float32),
         ),
+        meta=meta,
     )
 
 
@@ -484,6 +502,7 @@ def _prepare_samples(samples: ScienceHoPsfSamples) -> ScienceHoPsfSamples:
         pixel_scale_mas=pixel_scale_mas,
         tel_diameter_m=require_positive_scalar(samples.tel_diameter_m, label="tel_diameter_m"),
         tel_pupil=require_pupil(samples.tel_pupil),
+        meta=_prepare_source_meta(samples.meta, num_planes=zenith_angle_deg.size),
         provenance=tuple(str(value) for value in samples.provenance),
     )
 
@@ -531,6 +550,110 @@ def _validate_psf_flux(psfs: np.ndarray, *, label: str) -> None:
         raise ValueError(f"{label} must have finite per-PSF total flux.")
     if np.any(flux <= 0.0):
         raise ValueError(f"{label} must have strictly positive per-PSF total flux.")
+
+
+def _prepare_source_meta(meta: Mapping[str, Any], *, num_planes: int) -> dict[str, float | np.ndarray]:
+    if not isinstance(meta, Mapping):
+        raise TypeError("meta must be a mapping from field name to scalar or per-plane numeric values.")
+    prepared: dict[str, float | np.ndarray] = {}
+    for raw_name, raw_value in meta.items():
+        name = validate_meta_field_name(raw_name, label="ScienceHoPsfSamples.meta")
+        if name in prepared:
+            raise ValueError(f"ScienceHoPsfSamples.meta contains duplicate field name {name!r}.")
+        value = np.asarray(raw_value, dtype=float)
+        if value.ndim == 0:
+            scalar = float(value)
+            if not np.isfinite(scalar):
+                raise ValueError(f"ScienceHoPsfSamples.meta[{name!r}] must be finite.")
+            prepared[name] = scalar
+            continue
+        vector = value.reshape(-1)
+        if vector.size != int(num_planes):
+            raise ValueError(
+                f"ScienceHoPsfSamples.meta[{name!r}] must be scalar or have one value per plane; "
+                f"got length {vector.size}, expected {int(num_planes)}."
+            )
+        if not np.all(np.isfinite(vector)):
+            raise ValueError(f"ScienceHoPsfSamples.meta[{name!r}] must contain only finite values.")
+        prepared[name] = vector.astype(float, copy=False)
+    return prepared
+
+
+def _build_artifact_meta(
+    source_meta: Mapping[str, float | np.ndarray],
+    samples: ScienceHoPsfSamples,
+    plane_model_indices: np.ndarray,
+    zenith_axis: np.ndarray,
+    wavelength_axis: np.ndarray,
+) -> dict[str, float | np.ndarray]:
+    artifact_meta: dict[str, float | np.ndarray] = {}
+    for name, value in source_meta.items():
+        array = np.asarray(value, dtype=float)
+        if array.ndim == 0:
+            artifact_meta[name] = float(array)
+            continue
+        grid = np.full(plane_model_indices.shape, np.nan, dtype=float)
+        for zenith_angle_deg, wavelength_um, meta_value in zip(
+            samples.zenith_angle_deg,
+            samples.wavelength_um,
+            array.reshape(-1),
+            strict=True,
+        ):
+            iz = axis_index(zenith_axis, float(zenith_angle_deg), label="zenith_angle_deg")
+            iw = axis_index(wavelength_axis, float(wavelength_um), label="wavelength_um")
+            grid[iz, iw] = float(meta_value)
+        artifact_meta[name] = grid
+    return artifact_meta
+
+
+def _initial_evaluated_meta(meta: Mapping[str, Any], *, grid_shape: tuple[int, int]) -> dict[str, float]:
+    evaluated: dict[str, float] = {}
+    for name, value in _validate_artifact_meta(meta, grid_shape=grid_shape).items():
+        array = np.asarray(value, dtype=float)
+        if array.ndim == 0:
+            evaluated[name] = float(array)
+        else:
+            evaluated[name] = 0.0
+    return evaluated
+
+
+def _accumulate_grid_meta(
+    evaluated: dict[str, float],
+    meta: Mapping[str, Any],
+    *,
+    weight: float,
+    grid_index: tuple[int, int],
+) -> None:
+    for name, value in meta.items():
+        array = np.asarray(value, dtype=float)
+        if array.ndim == 0:
+            continue
+        evaluated[name] += float(weight) * float(array[grid_index])
+
+
+def _validate_artifact_meta(meta: Mapping[str, Any], *, grid_shape: tuple[int, int] | None) -> dict[str, float | np.ndarray]:
+    if not isinstance(meta, Mapping):
+        raise TypeError("metadata.meta must be a mapping.")
+    validated: dict[str, float | np.ndarray] = {}
+    for raw_name, raw_value in meta.items():
+        name = validate_meta_field_name(raw_name, label="metadata.meta")
+        if name in validated:
+            raise ValueError(f"metadata.meta contains duplicate field name {name!r}.")
+        value = np.asarray(raw_value, dtype=float)
+        if value.ndim == 0:
+            scalar = float(value)
+            if not np.isfinite(scalar):
+                raise ValueError(f"metadata.meta[{name!r}] must be finite.")
+            validated[name] = scalar
+            continue
+        if grid_shape is not None and value.shape != grid_shape:
+            raise ValueError(
+                f"metadata.meta[{name!r}] must be scalar or have shape {grid_shape}; got {value.shape}."
+            )
+        if not np.all(np.isfinite(value)):
+            raise ValueError(f"metadata.meta[{name!r}] must contain only finite values.")
+        validated[name] = np.asarray(value, dtype=float)
+    return validated
 
 
 def _science_metric_errors(
@@ -607,6 +730,7 @@ def _science_to_payload(interpolator: ScienceHoPsfInterpolator) -> dict[str, Any
             "pixel_scale_mas_grid": np.asarray(interpolator.pixel_scale_mas_grid, dtype=float),
             "tel_diameter_m": float(interpolator.tel_diameter_m),
             "tel_pupil": np.asarray(interpolator.tel_pupil, dtype=np.float32),
+            "meta": {name: np.asarray(value, dtype=float) for name, value in interpolator.meta.items()},
             "provenance": tuple(interpolator.provenance),
         },
         "model": {
@@ -637,6 +761,7 @@ def _science_from_payload(payload: Mapping[str, Any]) -> ScienceHoPsfInterpolato
         pixel_scale_mas_grid=np.asarray(metadata.get("pixel_scale_mas_grid"), dtype=float),
         tel_diameter_m=require_positive_scalar(metadata.get("tel_diameter_m"), label="metadata.tel_diameter_m"),
         tel_pupil=require_pupil(metadata.get("tel_pupil"), label="metadata.tel_pupil"),
+        meta=dict(metadata.get("meta", {})),
         interpolation_config=config,
         plane_model_indices=np.asarray(model.get("plane_model_indices"), dtype=int),
         plane_models=tuple(model.get("plane_models", ())),
@@ -652,6 +777,7 @@ def _validate_interpolator(interpolator: ScienceHoPsfInterpolator) -> None:
         raise ValueError("metadata.psf_shape must contain two positive dimensions.")
     if interpolator.pixel_scale_mas_grid.shape != interpolator.plane_model_indices.shape:
         raise ValueError("pixel_scale_mas_grid shape must match plane_model_indices shape.")
+    _validate_artifact_meta(interpolator.meta, grid_shape=interpolator.pixel_scale_mas_grid.shape)
     if interpolator.plane_model_indices.shape != (
         interpolator.zenith_angle_deg_axis.size,
         interpolator.wavelength_um_axis.size,

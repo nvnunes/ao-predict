@@ -62,6 +62,7 @@ def save_science_ho_psf_inputs(
                 "pixel_scale_mas": np.asarray(prepared.pixel_scale_mas, dtype=float),
                 "tel_diameter_m": float(prepared.tel_diameter_m),
                 "tel_pupil": np.asarray(prepared.tel_pupil, dtype=np.float32),
+                "meta": {name: np.asarray(value, dtype=float) for name, value in prepared.meta.items()},
                 "provenance": tuple(prepared.provenance),
             },
         },
@@ -174,6 +175,7 @@ def _load_science_ho_psf_inputs(path: Path) -> ScienceHoPsfSamples:
             pixel_scale_mas=np.asarray(samples.get("pixel_scale_mas"), dtype=float),
             tel_diameter_m=float(samples.get("tel_diameter_m")),
             tel_pupil=np.asarray(samples.get("tel_pupil"), dtype=np.float32),
+            meta=dict(samples.get("meta", {})),
             provenance=tuple(str(value) for value in samples.get("provenance", ())),
         )
     )

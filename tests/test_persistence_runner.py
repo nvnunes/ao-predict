@@ -43,11 +43,16 @@ from mock_simulation import (
 _GIRMOS_AOSTATS = None
 
 
-def _simulation(*, extra_stat_names: tuple[str, ...] = ()) -> dict:
+def _simulation(*, extra_stat_names: tuple[str, ...] = (), meta_field_names: tuple[str, ...] = ()) -> dict:
     return {
         "name": "ao_predict.simulation.tiptop:TiptopSimulation",
         "version": "x.y",
         "extra_stat_names": np.asarray(extra_stat_names, dtype=str),
+        **(
+            {schema.KEY_SIMULATION_META_FIELDS: np.asarray(meta_field_names, dtype=str)}
+            if meta_field_names
+            else {}
+        ),
         "base_config": "[section]\nvalue=1\n",
     }
 
@@ -145,6 +150,7 @@ def _success_result(
     *,
     populate_stats: bool = True,
     extra_stats: dict[str, np.ndarray] | None = None,
+    meta: dict[str, float] | None = None,
 ) -> SimulationResult:
     stats: dict[str, np.ndarray] = {}
     if populate_stats:
@@ -155,14 +161,16 @@ def _success_result(
         }
         if extra_stats:
             stats.update(extra_stats)
+    result_meta = {
+        "pixel_scale_mas": 4.0,
+        "tel_diameter_m": 8.0,
+        "tel_pupil": np.ones((6, 6), dtype=np.float32),
+    }
+    result_meta.update(dict(meta or {}))
     return SimulationResult(
         state=SimulationState.SUCCEEDED,
         stats=stats,
-        meta={
-            "pixel_scale_mas": 4.0,
-            "tel_diameter_m": 8.0,
-            "tel_pupil": np.ones((6, 6), dtype=np.float32),
-        },
+        meta=result_meta,
         psfs=np.full((m, ny, nx), 0.1, dtype=np.float32),
     )
 
@@ -1380,6 +1388,68 @@ def test_store_create_preallocates_declared_extra_stats(tmp_path):
         )
         assert f[f"{schema.KEY_STATS_SECTION}/halo_mas"].shape == (3, 3)
         assert f[f"{schema.KEY_STATS_SECTION}/encircled_bg"].shape == (3, 3)
+
+
+def test_store_create_preallocates_declared_meta_fields(tmp_path):
+    data_path = tmp_path / "sim_data_extra_meta.h5"
+    store = SimulationStore(data_path)
+    store.create(_simulation(meta_field_names=("norm_correction",)), _setup(), _options(), save_psfs=False)
+
+    with h5py.File(data_path, "r") as f:
+        np.testing.assert_array_equal(
+            f[f"{schema.KEY_SIMULATION_SECTION}/{schema.KEY_SIMULATION_META_FIELDS}"][:].astype(str),
+            np.array(["norm_correction"]),
+        )
+        assert f[f"{schema.KEY_META_SECTION}/norm_correction"].shape == (3,)
+        assert np.all(np.isnan(f[f"{schema.KEY_META_SECTION}/norm_correction"][...]))
+
+
+def test_store_write_success_persists_declared_meta_fields(tmp_path):
+    data_path = tmp_path / "sim_data_write_extra_meta.h5"
+    store = SimulationStore(data_path)
+    store.create(_simulation(meta_field_names=("norm_correction",)), _setup(), _options(), save_psfs=False)
+
+    store.write_simulation_success(0, _success_result(meta={"norm_correction": 0.75}))
+
+    with h5py.File(data_path, "r") as f:
+        assert f[f"{schema.KEY_META_SECTION}/norm_correction"][0] == np.float32(0.75)
+        assert np.isnan(f[f"{schema.KEY_META_SECTION}/norm_correction"][1])
+
+    analysis_meta = store.read_analysis_meta()
+    simulation_meta = store.read_simulation_meta(0)
+    np.testing.assert_allclose(analysis_meta["norm_correction"], np.asarray([0.75, np.nan, np.nan], dtype=np.float32))
+    assert simulation_meta["norm_correction"] == np.float32(0.75)
+
+
+def test_store_write_failure_clears_declared_meta_fields(tmp_path):
+    data_path = tmp_path / "sim_data_clear_extra_meta.h5"
+    store = SimulationStore(data_path)
+    store.create(_simulation(meta_field_names=("norm_correction",)), _setup(), _options(), save_psfs=False)
+
+    store.write_simulation_success(0, _success_result(meta={"norm_correction": 0.75}))
+    store.reset_to_pending(indexes=[0])
+    store.write_simulation_failure(0)
+
+    with h5py.File(data_path, "r") as f:
+        assert np.isnan(f[f"{schema.KEY_META_SECTION}/norm_correction"][0])
+
+
+def test_store_write_success_rejects_bad_meta_fields(tmp_path):
+    data_path = tmp_path / "sim_data_bad_extra_meta.h5"
+    store = SimulationStore(data_path)
+    store.create(_simulation(meta_field_names=("norm_correction",)), _setup(), _options(), save_psfs=False)
+
+    with pytest.raises(ValueError, match="missing declared meta fields"):
+        store.write_simulation_success(0, _success_result())
+
+    with pytest.raises(ValueError, match="contains undeclared fields"):
+        store.write_simulation_success(0, _success_result(meta={"norm_correction": 1.0, "other": 1.0}))
+
+    with pytest.raises(ValueError, match="must contain only finite values"):
+        store.write_simulation_success(0, _success_result(meta={"norm_correction": np.nan}))
+
+    with pytest.raises(ValueError, match="must be a scalar"):
+        store.write_simulation_success(0, _success_result(meta={"norm_correction": np.asarray([1.0])}))
 
 
 @pytest.mark.parametrize(

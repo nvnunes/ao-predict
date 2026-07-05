@@ -10,6 +10,7 @@ import numpy as np
 
 from ..simulation import schema
 from ..simulation.validation import (
+    normalize_meta_field_names,
     validate_atm_profile_ids,
     validate_options_payload_core,
     validate_successful_result,
@@ -217,6 +218,12 @@ def _read_declared_diagnostic_field_specs(f: h5py.File) -> dict[str, dict[str, A
     return _read_diagnostic_field_specs(_read_node(f[schema.KEY_SIMULATION_SECTION]))
 
 
+def _read_declared_meta_field_names(f: h5py.File) -> tuple[str, ...]:
+    """Read declared extra scalar meta field names from ``/simulation``."""
+    simulation = _read_node(f[schema.KEY_SIMULATION_SECTION])
+    return normalize_meta_field_names(simulation.get(schema.KEY_SIMULATION_META_FIELDS, ()))
+
+
 def _read_declared_stat_names(f: h5py.File) -> tuple[str, ...]:
     """Read the full declared stats key set in stable store order."""
     return schema.CORE_STATS_KEYS + _read_declared_extra_stat_names(f)
@@ -259,6 +266,37 @@ def _read_dataset_value(ds: h5py.Dataset) -> Any:
     return data
 
 
+def _read_meta_values(f: h5py.File) -> dict[str, Any]:
+    """Read the full analysis-level ``/meta`` view including declared extras."""
+    meta = f[schema.KEY_META_SECTION]
+    pixel_scale_path = f"/{schema.KEY_META_SECTION}/{schema.KEY_META_PIXEL_SCALE_MAS}"
+    tel_diameter_path = f"/{schema.KEY_META_SECTION}/{schema.KEY_META_TEL_DIAMETER_M}"
+    tel_pupil_path = f"/{schema.KEY_META_SECTION}/{schema.KEY_META_TEL_PUPIL}"
+    values = {
+        schema.KEY_META_PIXEL_SCALE_MAS: _read_dataset_value(
+            _require_dataset_ndim(_require_dataset(f, pixel_scale_path), path=pixel_scale_path, ndim=1)
+        ),
+        schema.KEY_META_TEL_DIAMETER_M: _read_dataset_value(
+            _require_dataset_ndim(_require_dataset(f, tel_diameter_path), path=tel_diameter_path, ndim=0)
+        ),
+        schema.KEY_META_TEL_PUPIL: _read_dataset_value(
+            _require_dataset_ndim(_require_dataset(f, tel_pupil_path), path=tel_pupil_path, ndim=2)
+        ),
+    }
+    for name in _read_declared_meta_field_names(f):
+        path = f"/{schema.KEY_META_SECTION}/{name}"
+        values[name] = _read_dataset_value(_require_dataset_ndim(_require_dataset(f, path), path=path, ndim=1))
+    return values
+
+
+def _write_result_meta_fields(f: h5py.File, sim_idx: int, result: SimulationResult) -> None:
+    """Persist declared scalar per-simulation meta fields."""
+    meta = f[schema.KEY_META_SECTION]
+    for name in _read_declared_meta_field_names(f):
+        value = np.asarray(result.meta[name], dtype=np.float32)
+        meta[name][sim_idx] = np.float32(value.item())
+
+
 def _decode_dataset_value(data: Any) -> Any:
     """Decode one already-read HDF5 value into plain Python/NumPy values.
 
@@ -282,6 +320,8 @@ def _clear_simulation_outputs(f: h5py.File, sim_idx: int) -> None:
         stats[key][sim_idx, ...] = np.nan
 
     meta[schema.KEY_META_PIXEL_SCALE_MAS][sim_idx] = np.nan
+    for key in _read_declared_meta_field_names(f):
+        meta[key][sim_idx] = np.nan
 
     if schema.KEY_PSFS_SECTION in f and schema.KEY_PSFS_DATA in f[schema.KEY_PSFS_SECTION]:
         f[f"{schema.KEY_PSFS_SECTION}/{schema.KEY_PSFS_DATA}"][sim_idx, ...] = np.nan
@@ -583,6 +623,7 @@ class SimulationStore:
         num_sims = validate_options_payload_core(options)
         validate_atm_profile_ids(setup, options)
         extra_stat_names = _read_extra_stat_names(simulation)
+        meta_field_names = normalize_meta_field_names(simulation.get(schema.KEY_SIMULATION_META_FIELDS, ()))
         diagnostic_field_specs = _read_diagnostic_field_specs(simulation)
 
         m_sci = get_num_sci(setup)
@@ -625,6 +666,8 @@ class SimulationStore:
                 chunks=True,
                 dtype=np.float32,
             )
+            for name in meta_field_names:
+                g_meta.create_dataset(name, data=np.full((num_sims,), np.nan, dtype=np.float32))
 
             g_stats.create_dataset(schema.KEY_STATS_SR, data=np.full((num_sims, m_sci), np.nan, dtype=np.float32))
             g_stats.create_dataset(
@@ -698,20 +741,7 @@ class SimulationStore:
         """Read the persisted loaded-analysis ``/meta`` view."""
 
         with h5py.File(self.path, "r") as f:
-            pixel_scale_path = f"/{schema.KEY_META_SECTION}/{schema.KEY_META_PIXEL_SCALE_MAS}"
-            tel_diameter_path = f"/{schema.KEY_META_SECTION}/{schema.KEY_META_TEL_DIAMETER_M}"
-            tel_pupil_path = f"/{schema.KEY_META_SECTION}/{schema.KEY_META_TEL_PUPIL}"
-            return {
-                schema.KEY_META_PIXEL_SCALE_MAS: _read_dataset_value(
-                    _require_dataset_ndim(_require_dataset(f, pixel_scale_path), path=pixel_scale_path, ndim=1)
-                ),
-                schema.KEY_META_TEL_DIAMETER_M: _read_dataset_value(
-                    _require_dataset_ndim(_require_dataset(f, tel_diameter_path), path=tel_diameter_path, ndim=0)
-                ),
-                schema.KEY_META_TEL_PUPIL: _read_dataset_value(
-                    _require_dataset_ndim(_require_dataset(f, tel_pupil_path), path=tel_pupil_path, ndim=2)
-                ),
-            }
+            return _read_meta_values(f)
 
     def read_analysis_stats(self) -> dict[str, Any]:
         """Read the persisted loaded-analysis ``/stats`` group as dataset-level columns."""
@@ -798,12 +828,20 @@ class SimulationStore:
                 path=tel_pupil_path,
                 ndim=2,
             )[...,]
+            meta = {
+                schema.KEY_META_PIXEL_SCALE_MAS: pixel_scale_mas,
+                schema.KEY_META_TEL_DIAMETER_M: tel_diameter_m,
+                schema.KEY_META_TEL_PUPIL: tel_pupil,
+            }
+            for name in _read_declared_meta_field_names(f):
+                path = f"/{schema.KEY_META_SECTION}/{name}"
+                meta[name] = _read_simulation_dataset_row(
+                    _require_dataset_ndim(_require_dataset(f, path), path=path, ndim=1),
+                    sim_idx,
+                    path=path,
+                )
 
-        return {
-            schema.KEY_META_PIXEL_SCALE_MAS: pixel_scale_mas,
-            schema.KEY_META_TEL_DIAMETER_M: tel_diameter_m,
-            schema.KEY_META_TEL_PUPIL: tel_pupil,
-        }
+        return meta
 
     def read_simulation_stats(self, sim_idx: int) -> dict[str, Any]:
         """Read one simulation's persisted stats view."""
@@ -1024,10 +1062,14 @@ class SimulationStore:
                 simulation_data = _read_node(f[schema.KEY_SIMULATION_SECTION])
                 validate_simulation_payload_core(simulation_data)
                 extra_stat_names = _read_extra_stat_names(simulation_data)
+                meta_field_names = normalize_meta_field_names(
+                    simulation_data.get(schema.KEY_SIMULATION_META_FIELDS, ())
+                )
                 diagnostic_field_specs = _read_diagnostic_field_specs(simulation_data)
             except Exception as exc:
                 issues.append(f"Invalid /simulation payload: {exc}")
                 extra_stat_names = ()
+                meta_field_names = ()
                 diagnostic_field_specs = {}
 
             try:
@@ -1048,6 +1090,11 @@ class SimulationStore:
             pixel_scale_mas_data = f[f"{schema.KEY_META_SECTION}/{schema.KEY_META_PIXEL_SCALE_MAS}"]
             tel_diameter_m_data = f[f"{schema.KEY_META_SECTION}/{schema.KEY_META_TEL_DIAMETER_M}"]
             tel_pupil_data = f[f"{schema.KEY_META_SECTION}/{schema.KEY_META_TEL_PUPIL}"]
+            extra_meta_data = {
+                name: f[f"{schema.KEY_META_SECTION}/{name}"]
+                for name in meta_field_names
+                if name in meta_group
+            }
 
             sr_data = f[f"{schema.KEY_STATS_SECTION}/{schema.KEY_STATS_SR}"]
             ee_data = f[f"{schema.KEY_STATS_SECTION}/{schema.KEY_STATS_EE}"]
@@ -1069,6 +1116,11 @@ class SimulationStore:
                     issues.append(f"Missing declared extra stats dataset '/stats/{name}'.")
                 elif stats_group[name].ndim != 2:
                     issues.append(f"/stats/{name} must be 2D [N, M].")
+            for name in meta_field_names:
+                if name not in extra_meta_data:
+                    issues.append(f"Missing declared meta dataset '/meta/{name}'.")
+                elif extra_meta_data[name].ndim != 1:
+                    issues.append(f"/meta/{name} must be 1D [N].")
             if pixel_scale_mas_data.ndim != 1:
                 issues.append("/meta/pixel_scale_mas must be 1D [N].")
             if tel_diameter_m_data.ndim != 0:
@@ -1081,6 +1133,9 @@ class SimulationStore:
             )
             if undeclared_stats:
                 issues.append(f"Undeclared stats datasets found under /stats: {', '.join(undeclared_stats)}.")
+            undeclared_meta = sorted(set(meta_group.keys()) - set(schema.CORE_META_KEYS) - set(meta_field_names))
+            if undeclared_meta:
+                issues.append(f"Undeclared meta datasets found under /meta: {', '.join(undeclared_meta)}.")
 
             if not issues:
                 if (
@@ -1094,6 +1149,9 @@ class SimulationStore:
                         issues.append(f"/stats/{name} first dimension must match /status/state length.")
                 if pixel_scale_mas_data.shape[0] != n:
                     issues.append("/meta/pixel_scale_mas first dimension must match /status/state length.")
+                for name, ds in extra_meta_data.items():
+                    if ds.shape[0] != n:
+                        issues.append(f"/meta/{name} first dimension must match /status/state length.")
                 if (
                     sr_data.shape[1] != ee_data.shape[1]
                     or sr_data.shape[1] != fwhm_mas_data.shape[1]
@@ -1180,6 +1238,7 @@ class SimulationStore:
                 raise ValueError("/stats/ee must be 3D [N, M, A].")
             num_ee = int(ee_ds.shape[2])
             extra_stat_names = _read_declared_extra_stat_names(f)
+            meta_field_names = _read_declared_meta_field_names(f)
             require_psfs = schema.KEY_PSFS_SECTION in f
 
             validate_successful_result(
@@ -1187,6 +1246,7 @@ class SimulationStore:
                 num_sci,
                 num_ee,
                 extra_stat_names=extra_stat_names,
+                meta_field_names=meta_field_names,
                 require_psfs=require_psfs,
             )
 
@@ -1195,6 +1255,7 @@ class SimulationStore:
             pixel_scale = np.asarray(result.meta[schema.KEY_META_PIXEL_SCALE_MAS], dtype=np.float32)
             meta[schema.KEY_META_PIXEL_SCALE_MAS][sim_idx] = np.float32(pixel_scale.item())
             _write_dataset_level_telescope_meta(f, result)
+            _write_result_meta_fields(f, sim_idx, result)
 
             # Persist stats arrays.
             sr = np.asarray(result.stats[schema.KEY_STATS_SR], dtype=np.float32)

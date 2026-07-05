@@ -6,6 +6,7 @@ across simulation implementations.
 
 from __future__ import annotations
 
+import re
 from typing import Any, Mapping
 
 import numpy as np
@@ -18,6 +19,8 @@ from ..utils import (
     as_float_vector,
     require_keys,
 )
+
+_META_FIELD_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 #
@@ -98,6 +101,45 @@ def validate_simulation_payload_core(
             f"payload has {list(extra_stat_names)}, "
             f"but instantiated simulation declares {list(expected_extra_stat_names)}."
         )
+
+    normalize_meta_field_names(simulation.get(schema.KEY_SIMULATION_META_FIELDS, ()))
+
+
+def validate_meta_field_name(name: Any, *, label: str = "meta field") -> str:
+    """Return one validated simulation-owned scalar ``/meta`` field name.
+
+    Extra meta fields are direct children of the persisted ``/meta`` group and
+    carry one scalar value per simulation. Names therefore use the same simple
+    key grammar as core metadata and may not collide with core AO Predict meta
+    fields such as ``pixel_scale_mas``.
+    """
+
+    normalized = str(name).strip()
+    if not normalized:
+        raise ValueError(f"{label} names must be non-empty.")
+    if "/" in normalized:
+        raise ValueError(f"{label} names must be direct /meta dataset names, got {normalized!r}.")
+    if not _META_FIELD_NAME_RE.match(normalized):
+        raise ValueError(
+            f"{label} name {normalized!r} must start with a letter or underscore "
+            "and contain only letters, digits, and underscores."
+        )
+    if normalized in schema.CORE_META_KEYS:
+        raise ValueError(f"{label} name {normalized!r} collides with a core /meta field.")
+    return normalized
+
+
+def normalize_meta_field_names(value: Any, *, label: str = "simulation['meta_fields']") -> tuple[str, ...]:
+    """Return validated declared scalar ``/meta`` field names."""
+
+    names_array = as_array(value)
+    if names_array.ndim > 1:
+        raise ValueError(f"{label} must be a scalar or 1D string array.")
+    names = tuple(validate_meta_field_name(name, label=label) for name in names_array.reshape(-1).tolist())
+    duplicates = sorted({name for name in names if names.count(name) > 1})
+    if duplicates:
+        raise ValueError(f"{label} contains duplicate names: {duplicates}.")
+    return names
 
 
 def validate_setup_payload_core(setup: Mapping[str, Any]) -> None:
@@ -339,6 +381,7 @@ def validate_successful_result(
     num_ee: int,
     *,
     extra_stat_names: tuple[str, ...] = (),
+    meta_field_names: tuple[str, ...] = (),
     require_psfs: bool = False,
 ) -> None:
     """Validate one successful simulation result against core persistence rules.
@@ -347,6 +390,9 @@ def validate_successful_result(
         result: Successful per-simulation result payload.
         num_sci: Required science-target count ``M``.
         num_ee: Required EE-aperture count ``A``.
+        extra_stat_names: Declared simulation-owned extra stat names.
+        meta_field_names: Declared simulation-owned scalar ``/meta`` field
+            names in addition to core PSF metadata.
         require_psfs: Whether a valid PSF cube must be present.
 
     Raises:
@@ -426,6 +472,23 @@ def validate_successful_result(
         raise ValueError("result.meta.tel_diameter_m must contain only finite values.")
     if not np.all(np.isfinite(tel_pupil)):
         raise ValueError("result.meta.tel_pupil must contain only finite values.")
+
+    meta_field_names = normalize_meta_field_names(meta_field_names, label="meta_field_names")
+    missing_meta_fields = [key for key in meta_field_names if key not in result.meta]
+    if missing_meta_fields:
+        raise ValueError(f"result.meta is missing declared meta fields: {', '.join(missing_meta_fields)}")
+
+    allowed_meta_names = set(schema.CORE_META_KEYS) | set(meta_field_names)
+    unexpected_meta_names = sorted(set(result.meta) - allowed_meta_names)
+    if unexpected_meta_names:
+        raise ValueError(f"result.meta contains undeclared fields: {', '.join(unexpected_meta_names)}")
+
+    for key in meta_field_names:
+        value = np.asarray(result.meta[key], dtype=np.float32)
+        if value.ndim != 0:
+            raise ValueError(f"result.meta.{key} must be a scalar.")
+        if not np.all(np.isfinite(value.reshape(1))):
+            raise ValueError(f"result.meta.{key} must contain only finite values.")
 
     if result.psfs is None:
         if require_psfs:

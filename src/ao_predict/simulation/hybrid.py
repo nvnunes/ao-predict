@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from configparser import ConfigParser
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 import tempfile
 from typing import Any, Mapping
@@ -35,6 +35,7 @@ from .tiptop_config_backed import (
     _format_ini_array,
     _serialize_parser,
 )
+from .validation import normalize_meta_field_names
 from ..utils import as_float_vector
 
 
@@ -58,10 +59,13 @@ class SciencePsfProviderResult:
         metadata: Full PSF metadata for the predicted science PSFs. The pixel
             scale may come from the artifact-backed provider or a subclass
             override, and the flux convention must match ``psfs``.
+        meta: Evaluated scalar source metadata fields that should travel with
+            the simulation result under ``/meta``.
     """
 
     psfs: np.ndarray
     metadata: PsfMetadata
+    meta: Mapping[str, float] = field(default_factory=dict)
 
     @property
     def pixel_scale_mas(self) -> float | np.ndarray:
@@ -140,6 +144,7 @@ class HybridDiagnosticsContext:
 class _HybridRuntimeResult:
     psfs: np.ndarray
     metadata: PsfMetadata
+    meta: Mapping[str, float]
     jitter_mas: np.ndarray
     diagnostics_context: HybridDiagnosticsContext
 
@@ -264,6 +269,9 @@ class HybridSimulation(TiptopConfigBackedSimulation):
         simulation_payload[self.KEY_SCIENCE_HO_PSF_INTERPOLATOR_BUILDER] = dict(science.builder)
         simulation_payload[self.KEY_NGS_HO_METRIC_INTERPOLATOR_PROVENANCE] = np.asarray(ngs.provenance, dtype=str)
         simulation_payload[self.KEY_NGS_HO_METRIC_INTERPOLATOR_BUILDER] = dict(ngs.builder)
+        meta_fields = _science_meta_field_names(science)
+        if meta_fields:
+            simulation_payload[schema.KEY_SIMULATION_META_FIELDS] = np.asarray(meta_fields, dtype=str)
         return simulation_payload
 
     def validate_simulation_payload(self, simulation_payload: Mapping[str, Any]) -> None:
@@ -281,7 +289,9 @@ class HybridSimulation(TiptopConfigBackedSimulation):
         super().validate_simulation_payload(simulation_payload)
         science_path = self._get_required_payload_path(simulation_payload, self.KEY_SCIENCE_HO_PSF_INTERPOLATOR_PATH)
         ngs_path = self._get_required_payload_path(simulation_payload, self.KEY_NGS_HO_METRIC_INTERPOLATOR_PATH)
-        validate_science_ho_psf_interpolator(load_science_ho_psf_interpolator(science_path))
+        science = load_science_ho_psf_interpolator(science_path)
+        validate_science_ho_psf_interpolator(science)
+        _validate_science_meta_fields_match(simulation_payload, science)
         validate_ngs_ho_metric_interpolator(load_ngs_ho_metric_interpolator(ngs_path))
 
     def load_simulation_payload(self, simulation_payload: Mapping[str, Any]) -> None:
@@ -309,6 +319,7 @@ class HybridSimulation(TiptopConfigBackedSimulation):
         ngs = load_ngs_ho_metric_interpolator(ngs_path)
         validate_science_ho_psf_interpolator(science)
         validate_ngs_ho_metric_interpolator(ngs)
+        _validate_science_meta_fields_match(simulation_payload, science)
         self._load_base_simulation_payload(simulation_payload)
         self._base_config_text = base_config_text
         self._bind_base_config(base_config)
@@ -435,6 +446,7 @@ class HybridSimulation(TiptopConfigBackedSimulation):
         context.runtime[self.KEY_RUNTIME_RESULT] = _HybridRuntimeResult(
             psfs=psfs,
             metadata=science.metadata,
+            meta=dict(science.meta),
             jitter_mas=jitter_mas_from_ctot(ctot.ctot_mas2),
             diagnostics_context=HybridDiagnosticsContext(
                 active_ngs=active_ngs,
@@ -478,6 +490,19 @@ class HybridSimulation(TiptopConfigBackedSimulation):
             tel_diameter_m=float(result.metadata.tel_diameter_m),
             tel_pupil=np.asarray(result.metadata.tel_pupil, dtype=np.float32),
         )
+
+    def finalize(self, context: SimulationContext) -> None:
+        """Finalize Hybrid output and attach provider source metadata.
+
+        Hybrid providers may supply evaluated scalar metadata from their
+        science-HO-PSF source artifacts. These fields are declared in
+        ``/simulation/meta_fields`` and copied into ``SimulationResult.meta``
+        before the runner computes core PSF statistics.
+        """
+        super().finalize(context)
+        if context.result is None:
+            raise ValueError("Hybrid finalize did not produce a simulation result.")
+        context.result.meta.update(dict(_require_hybrid_result(context).meta))
 
     def build_extra_stats(self, context: SimulationContext) -> Mapping[str, Any]:
         """Return Hybrid jitter from MASTSEL Ctot.
@@ -695,6 +720,7 @@ class HybridSimulation(TiptopConfigBackedSimulation):
         return SciencePsfProviderResult(
             psfs=np.asarray(prediction.psfs, dtype=np.float32),
             metadata=prediction.metadata,
+            meta=prediction.meta,
         )
 
     def _predict_ngs_metrics(self, active_ngs: _ActiveNgs, options: Mapping[str, Any]) -> NgsMetricProviderResult:
@@ -987,6 +1013,23 @@ def _require_hybrid_result(context: SimulationContext) -> _HybridRuntimeResult:
     if not isinstance(result, _HybridRuntimeResult):
         raise ValueError("Missing Hybrid runtime result. Did run(...) complete?")
     return result
+
+
+def _science_meta_field_names(interpolator: ScienceHoPsfInterpolator) -> tuple[str, ...]:
+    return tuple(str(name) for name in interpolator.meta.keys())
+
+
+def _validate_science_meta_fields_match(
+    simulation_payload: Mapping[str, Any],
+    interpolator: ScienceHoPsfInterpolator,
+) -> None:
+    payload_fields = normalize_meta_field_names(simulation_payload.get(schema.KEY_SIMULATION_META_FIELDS, ()))
+    artifact_fields = _science_meta_field_names(interpolator)
+    if payload_fields != artifact_fields:
+        raise ValueError(
+            "HybridSimulation science meta field registry mismatch: "
+            f"payload has {list(payload_fields)}, artifact has {list(artifact_fields)}."
+        )
 
 
 def _runtime_r0_m(setup: HybridSetup, options: Mapping[str, Any]) -> float:

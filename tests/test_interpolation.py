@@ -55,6 +55,10 @@ def test_science_ho_psf_interpolator_round_trips_and_replays_sources(tmp_path) -
 
     assert loaded.interpolation_config.smoothing == pytest.approx(0.0)
     assert loaded.interpolation_config.degree == 1
+    assert loaded.meta["norm_correction"] == pytest.approx(0.75)
+    np.testing.assert_allclose(loaded.meta["plane_correction"], np.asarray([[1.0, 2.0], [3.0, 4.0]]))
+    assert prediction.meta["norm_correction"] == pytest.approx(0.75)
+    assert prediction.meta["plane_correction"] == pytest.approx(1.0)
     np.testing.assert_allclose(np.sum(prediction.psfs, axis=(-2, -1)), expected_flux, rtol=1.0e-6)
     assert not np.allclose(expected_flux, 1.0)
     assert replay.psf_nrms_max == pytest.approx(0.0, abs=1.0e-5)
@@ -88,6 +92,8 @@ def test_science_ho_psf_interpolator_interpolates_wavelength_zenith_and_pixel_sc
     assert float(np.sum(prediction.psfs)) > 1.0
     assert prediction.pixel_scale_mas == pytest.approx(6.375)
     assert prediction.metadata.pixel_scale_mas == pytest.approx(6.375)
+    assert prediction.meta["norm_correction"] == pytest.approx(0.75)
+    assert prediction.meta["plane_correction"] == pytest.approx(2.5)
 
 
 def test_science_ho_psf_query_validation_rejects_out_of_range_before_runtime() -> None:
@@ -145,6 +151,92 @@ def test_science_ho_psf_interpolator_rejects_malformed_grids() -> None:
                 tel_pupil=samples.tel_pupil,
             )
         )
+
+    with pytest.raises(ValueError, match="meta\\['bad'\\]"):
+        build_science_ho_psf_interpolator(
+            ScienceHoPsfSamples(
+                zenith_angle_deg=samples.zenith_angle_deg,
+                wavelength_um=samples.wavelength_um,
+                x_arcsec=samples.x_arcsec,
+                y_arcsec=samples.y_arcsec,
+                psfs=samples.psfs,
+                pixel_scale_mas=samples.pixel_scale_mas,
+                tel_diameter_m=samples.tel_diameter_m,
+                tel_pupil=samples.tel_pupil,
+                meta={"bad": np.array([1.0, 2.0])},
+            )
+        )
+
+    with pytest.raises(ValueError, match="must be finite"):
+        build_science_ho_psf_interpolator(
+            ScienceHoPsfSamples(
+                zenith_angle_deg=samples.zenith_angle_deg,
+                wavelength_um=samples.wavelength_um,
+                x_arcsec=samples.x_arcsec,
+                y_arcsec=samples.y_arcsec,
+                psfs=samples.psfs,
+                pixel_scale_mas=samples.pixel_scale_mas,
+                tel_diameter_m=samples.tel_diameter_m,
+                tel_pupil=samples.tel_pupil,
+                meta={"bad": np.nan},
+            )
+        )
+
+    with pytest.raises(ValueError, match="collides with a core /meta field"):
+        build_science_ho_psf_interpolator(
+            ScienceHoPsfSamples(
+                zenith_angle_deg=samples.zenith_angle_deg,
+                wavelength_um=samples.wavelength_um,
+                x_arcsec=samples.x_arcsec,
+                y_arcsec=samples.y_arcsec,
+                psfs=samples.psfs,
+                pixel_scale_mas=samples.pixel_scale_mas,
+                tel_diameter_m=samples.tel_diameter_m,
+                tel_pupil=samples.tel_pupil,
+                meta={"pixel_scale_mas": 1.0},
+            )
+        )
+
+
+def test_science_ho_psf_interpolator_defaults_missing_payload_meta(tmp_path) -> None:
+    interpolator = build_science_ho_psf_interpolator(_science_samples())
+    path = tmp_path / "missing-meta.pkl"
+    payload = {
+        "kind": "ao_predict_science_ho_psf_interpolator",
+        "version": 1,
+        "builder": dict(interpolator.builder),
+        "interpolation_config": interpolator.interpolation_config,
+        "metadata": {
+            "zenith_angle_deg_axis": interpolator.zenith_angle_deg_axis,
+            "airmass_axis": interpolator.airmass_axis,
+            "wavelength_um_axis": interpolator.wavelength_um_axis,
+            "x_arcsec": interpolator.x_arcsec,
+            "y_arcsec": interpolator.y_arcsec,
+            "psf_shape": interpolator.psf_shape,
+            "pixel_scale_mas_grid": interpolator.pixel_scale_mas_grid,
+            "tel_diameter_m": interpolator.tel_diameter_m,
+            "tel_pupil": interpolator.tel_pupil,
+            "provenance": tuple(interpolator.provenance),
+        },
+        "model": {
+            "plane_model_indices": interpolator.plane_model_indices,
+            "plane_models": tuple(interpolator.plane_models),
+        },
+    }
+    with path.open("wb") as handle:
+        pickle.dump(payload, handle)
+
+    loaded = load_science_ho_psf_interpolator(path)
+    prediction = evaluate_science_ho_psf_interpolator(
+        loaded,
+        zenith_angle_deg=20.0,
+        wavelength_um=1.0,
+        x_arcsec=_science_samples().x_arcsec,
+        y_arcsec=_science_samples().y_arcsec,
+    )
+
+    assert loaded.meta == {}
+    assert prediction.meta == {}
 
 
 def test_ngs_ho_metric_interpolator_round_trips_and_replays_sources(tmp_path) -> None:
@@ -484,6 +576,48 @@ def test_interpolation_cli_rejects_malformed_input_package(tmp_path, monkeypatch
         cli_main()
 
 
+def test_interpolation_cli_accepts_science_input_missing_meta(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    samples = _science_samples()
+    inputs = tmp_path / "missing-meta-inputs.pkl"
+    artifact = tmp_path / "artifact.pkl"
+    with inputs.open("wb") as handle:
+        pickle.dump(
+            {
+                "kind": "ao_predict_science_ho_psf_inputs",
+                "version": 1,
+                "samples": {
+                    "zenith_angle_deg": samples.zenith_angle_deg,
+                    "wavelength_um": samples.wavelength_um,
+                    "x_arcsec": samples.x_arcsec,
+                    "y_arcsec": samples.y_arcsec,
+                    "psfs": samples.psfs,
+                    "pixel_scale_mas": samples.pixel_scale_mas,
+                    "tel_diameter_m": samples.tel_diameter_m,
+                    "tel_pupil": samples.tel_pupil,
+                    "provenance": tuple(samples.provenance),
+                },
+            },
+            handle,
+        )
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "ao-predict",
+            "interpolation",
+            "build-science-ho-psf",
+            "--inputs",
+            str(inputs),
+            "--output",
+            str(artifact),
+        ],
+    )
+    cli_main()
+    loaded = load_science_ho_psf_interpolator(artifact)
+    assert loaded.meta == {}
+
+
 def _read_csv_rows(path) -> list[dict[str, str]]:
     with path.open("r", encoding="utf-8", newline="") as handle:
         return list(csv.DictReader(handle))
@@ -510,6 +644,10 @@ def _science_samples() -> ScienceHoPsfSamples:
         pixel_scale_mas=np.asarray([4.0, 8.0, 4.5, 9.0]),
         tel_diameter_m=30.0,
         tel_pupil=np.ones((4, 4), dtype=np.float32),
+        meta={
+            "norm_correction": 0.75,
+            "plane_correction": np.asarray([1.0, 2.0, 3.0, 4.0]),
+        },
         provenance=("synthetic",),
     )
 

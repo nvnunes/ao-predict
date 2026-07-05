@@ -35,7 +35,7 @@ from ao_predict.simulation.hybrid import (
     apply_direct_ctot_blur,
     jitter_mas_from_ctot,
 )
-from ao_predict.simulation.runner import create_simulation_from_config
+from ao_predict.simulation.runner import _populate_result_stats, create_simulation_from_config
 from ao_predict.simulation.stats import PsfMetadata
 
 
@@ -125,6 +125,7 @@ def test_hybrid_payload_lifecycle_resolves_and_loads_interpolators(tmp_path: Pat
     assert payload["base_config"] == _ini_text()
     assert payload["diagnostics_level"] == "none"
     assert "diagnostic_fields" not in payload
+    np.testing.assert_array_equal(payload[schema.KEY_SIMULATION_META_FIELDS], np.asarray(["norm_correction"]))
     assert Path(str(payload["science_ho_psf_interpolator_path"])).is_absolute()
     assert Path(str(payload["ngs_ho_metric_interpolator_path"])).is_absolute()
 
@@ -169,6 +170,7 @@ def test_hybrid_provider_uses_artifact_pixel_scale_and_preserves_flux(tmp_path: 
     result = sim._predict_science_psfs(setup, _options())
 
     assert result.pixel_scale_mas == pytest.approx(4.0)
+    assert result.meta["norm_correction"] == pytest.approx(0.75)
     assert isinstance(result.metadata, PsfMetadata)
     assert result.metadata.wavelength_um == pytest.approx(1.0)
     np.testing.assert_allclose(
@@ -361,9 +363,45 @@ def test_hybrid_run_persists_jitter_through_public_dataset_path(tmp_path: Path, 
     assert summary.succeeded == 1
     store = SimulationStore(dataset_path)
     stats = store.read_simulation_stats(0)
+    meta = store.read_simulation_meta(0)
     np.testing.assert_allclose(stats["jitter"], np.sqrt(np.array([0.5, 2.0])), rtol=1.0e-6)
+    assert meta["norm_correction"] == pytest.approx(0.75)
     assert store.read_analysis_diagnostics() == {}
     assert store.read_simulation_diagnostics(0) == {}
+
+
+def test_hybrid_source_meta_is_available_during_stats_preprocessing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    class FakeMavisLO:
+        def __init__(self, path2param, parameters_file, verbose=False):
+            del path2param, parameters_file, verbose
+            self.error = False
+            self.mas2nm = 2.0
+
+        def computeTotalResidualMatrix(self, *args, **kwargs):
+            del args, kwargs
+            return np.stack([np.eye(2), 4.0 * np.eye(2)])
+
+    observed_meta: list[float] = []
+
+    class ObservingHybrid(HybridSimulation):
+        def prepare_psfs_for_stats(self, psfs, setup, meta):
+            observed_meta.append(float(meta["norm_correction"]))
+            return super().prepare_psfs_for_stats(psfs, setup, meta)
+
+    monkeypatch.setattr("ao_predict.simulation.hybrid._load_mavis_lo", lambda: FakeMavisLO)
+    sim = ObservingHybrid()
+    sim.load_simulation_payload(_simulation_payload(tmp_path))
+    sim.load_setup_payload(_setup_payload())
+    context = sim.create(0, _options())
+    context.runtime["extra_stat_names"] = sim.extra_stat_names
+
+    sim.run(context)
+    sim.finalize(context)
+    _populate_result_stats(sim, context)
+
+    assert observed_meta == [pytest.approx(0.75)]
+    assert context.result is not None
+    assert context.result.meta["norm_correction"] == pytest.approx(0.75)
 
 
 def test_hybrid_validation_diagnostics_are_persisted_and_readable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -725,6 +763,7 @@ def _science_samples() -> ScienceHoPsfSamples:
         pixel_scale_mas=np.array([4.0]),
         tel_diameter_m=8.0,
         tel_pupil=np.ones((5, 5), dtype=np.float32),
+        meta={"norm_correction": 0.75},
     )
 
 
