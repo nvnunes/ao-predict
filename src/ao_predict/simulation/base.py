@@ -45,6 +45,46 @@ class PsfParameters:
 TBaseSetup = TypeVar("TBaseSetup", bound=BaseSimulationSetup)
 
 
+def _normalize_diagnostic_field_specs(fields: Any, *, prefix: str = "") -> dict[str, dict[str, Any]]:
+    """Return normalized slash-delimited diagnostic field specs.
+
+    The simulation payload accepts flat slash-delimited specs or nested specs
+    that mirror the eventual ``/diagnostics`` group structure. This helper
+    normalizes both forms so payload validation can compare the complete
+    persisted diagnostic contract, not just the declared field names.
+    """
+    if not isinstance(fields, Mapping):
+        raise TypeError(f"simulation['{schema.KEY_SIMULATION_DIAGNOSTIC_FIELDS}'] must be a mapping.")
+    specs: dict[str, dict[str, Any]] = {}
+    for key, value in fields.items():
+        name = f"{prefix}/{key}" if prefix else str(key)
+        if not isinstance(value, Mapping):
+            raise TypeError(f"diagnostic field spec for '{name}' must be a mapping.")
+        if "dtype" in value or "shape" in value:
+            field_name = name.strip("/")
+            if not field_name:
+                raise ValueError("diagnostic field names must be non-empty.")
+            dtype = str(value.get("dtype", "float32")).strip()
+            if not dtype:
+                raise ValueError(f"diagnostic field spec for '{field_name}' must declare a dtype.")
+            shape_values: list[str | int] = []
+            for shape_value in np.asarray(value.get("shape", ()), dtype=object).reshape(-1).tolist():
+                if isinstance(shape_value, str) and shape_value not in {"num_sci", "num_ngs"}:
+                    try:
+                        shape_value = int(shape_value)
+                    except ValueError as exc:
+                        raise ValueError(
+                            f"diagnostic field spec for '{field_name}' has unsupported shape token {shape_value!r}."
+                        ) from exc
+                elif not isinstance(shape_value, str):
+                    shape_value = int(shape_value)
+                shape_values.append(shape_value)
+            specs[field_name] = {"dtype": dtype, "shape": shape_values}
+        else:
+            specs.update(_normalize_diagnostic_field_specs(value, prefix=name))
+    return specs
+
+
 class BaseSimulation(Simulation, ABC):
     """Partial `Simulation` implementation with shared lifecycle scaffolding.
 
@@ -77,6 +117,7 @@ class BaseSimulation(Simulation, ABC):
     def __init__(self) -> None:
         """Initialize base simulation state."""
         self._setup: BaseSimulationSetup | None = None
+        self._diagnostics_level: str = schema.DIAGNOSTICS_LEVEL_NONE
 
     @property
     def setup(self) -> BaseSimulationSetup:
@@ -84,6 +125,21 @@ class BaseSimulation(Simulation, ABC):
         if self._setup is None:
             raise TypeError(f"{type(self).__name__} setup is not configured. Call load_setup_payload(...) first.")
         return self._setup
+
+    @property
+    def diagnostics_level(self) -> str:
+        """Return the bound generic diagnostics level for this simulation."""
+        return self._diagnostics_level
+
+    @property
+    def supported_extra_diagnostics_levels(self) -> tuple[str, ...]:
+        """Return non-``none`` diagnostics levels implemented by this simulation.
+
+        The base implementation opts out of diagnostics. Subclasses that
+        produce per-run diagnostics should return a subset of the core
+        diagnostics vocabulary excluding ``none``.
+        """
+        return ()
 
     # Simulation payload lifecycle
 
@@ -103,8 +159,12 @@ class BaseSimulation(Simulation, ABC):
         exclude_keys = {
             *schema.SIMULATION_KEYS_CORE,
             schema.KEY_CFG_SIMULATION_BASE_PATH,
+            schema.KEY_SIMULATION_DIAGNOSTIC_FIELDS,
             *(str(k) for k in exclude_keys or ()),
         }
+        diagnostics_level = self._normalize_diagnostics_level(
+            simulation_cfg.get(schema.KEY_SIMULATION_DIAGNOSTICS_LEVEL, schema.DIAGNOSTICS_LEVEL_NONE)
+        )
         payload = {str(k): v for k, v in dict(base_simulation_payload).items()}
         payload.update(
             {
@@ -113,15 +173,96 @@ class BaseSimulation(Simulation, ABC):
                 if str(k) not in exclude_keys
             }
         )
+        payload[schema.KEY_SIMULATION_DIAGNOSTICS_LEVEL] = diagnostics_level
+        if diagnostics_level != schema.DIAGNOSTICS_LEVEL_NONE:
+            diagnostic_fields = dict(self._diagnostic_field_specs(diagnostics_level))
+            if not diagnostic_fields:
+                raise ValueError(f"{type(self).__name__} diagnostics_level={diagnostics_level!r} declared no diagnostics fields.")
+            payload[schema.KEY_SIMULATION_DIAGNOSTIC_FIELDS] = diagnostic_fields
         return payload
 
     def validate_simulation_payload(self, simulation_payload: Mapping[str, Any]) -> None:
         """Validate simulation-specific persisted ``/simulation`` fields.
 
-        The base implementation is a no-op. Core identity/version checks are
-        handled in core validation code before this hook is called.
+        The base implementation validates the generic diagnostics-level
+        contract. Core identity/version checks are handled in core validation
+        code before this hook is called.
         """
-        del simulation_payload
+        self._diagnostics_level_from_payload(simulation_payload)
+
+    def _load_base_simulation_payload(self, simulation_payload: Mapping[str, Any]) -> None:
+        """Bind generic simulation-level state from persisted ``/simulation``."""
+        self._diagnostics_level = self._diagnostics_level_from_payload(simulation_payload)
+
+    def _normalize_diagnostics_level(self, value: Any) -> str:
+        """Normalize and validate a requested diagnostics level."""
+        level = str(value).strip().lower()
+        if level not in schema.DIAGNOSTICS_LEVELS:
+            allowed = ", ".join(schema.DIAGNOSTICS_LEVELS)
+            raise ValueError(f"diagnostics_level must be one of: {allowed}.")
+        if level != schema.DIAGNOSTICS_LEVEL_NONE and level not in self.supported_extra_diagnostics_levels:
+            supported = ", ".join(self.supported_extra_diagnostics_levels) or "none"
+            raise ValueError(
+                f"{type(self).__name__} does not support diagnostics_level={level!r}; "
+                f"supported extra diagnostics levels: {supported}."
+            )
+        return level
+
+    def _diagnostics_level_from_payload(self, simulation_payload: Mapping[str, Any]) -> str:
+        """Read and validate persisted ``diagnostics_level`` without binding."""
+        level = self._normalize_diagnostics_level(
+            simulation_payload.get(schema.KEY_SIMULATION_DIAGNOSTICS_LEVEL, schema.DIAGNOSTICS_LEVEL_NONE)
+        )
+        if level == schema.DIAGNOSTICS_LEVEL_NONE:
+            return level
+        if schema.KEY_SIMULATION_DIAGNOSTIC_FIELDS not in simulation_payload:
+            raise ValueError(
+                f"{type(self).__name__} diagnostics_level={level!r} requires "
+                f"simulation['{schema.KEY_SIMULATION_DIAGNOSTIC_FIELDS}']."
+            )
+        expected_fields = dict(self._diagnostic_field_specs(level))
+        if not expected_fields:
+            raise ValueError(f"{type(self).__name__} diagnostics_level={level!r} declared no diagnostics fields.")
+        payload_fields = _normalize_diagnostic_field_specs(simulation_payload[schema.KEY_SIMULATION_DIAGNOSTIC_FIELDS])
+        expected_fields = _normalize_diagnostic_field_specs(expected_fields)
+        if payload_fields != expected_fields:
+            missing = sorted(set(expected_fields) - set(payload_fields))
+            unexpected = sorted(set(payload_fields) - set(expected_fields))
+            changed = sorted(
+                name
+                for name in set(expected_fields) & set(payload_fields)
+                if payload_fields[name] != expected_fields[name]
+            )
+            details = []
+            if missing:
+                details.append(f"missing: {', '.join(missing)}")
+            if unexpected:
+                details.append(f"unexpected: {', '.join(unexpected)}")
+            if changed:
+                details.append(f"changed specs: {', '.join(changed)}")
+            raise ValueError(
+                f"{type(self).__name__} diagnostics fields do not match diagnostics_level={level!r} "
+                + "; ".join(details)
+            )
+        return level
+
+    def _diagnostic_field_specs(self, diagnostics_level: str) -> Mapping[str, Mapping[str, Any]]:
+        """Return declared ``/diagnostics`` field specs for one level.
+
+        Subclasses that support non-``none`` diagnostics levels must override
+        this hook and return specs keyed by slash-delimited diagnostic paths.
+        Each spec declares a storage ``dtype`` and a per-simulation shape
+        excluding the leading simulation dimension ``N``. The base
+        implementation declares no diagnostics fields.
+
+        Args:
+            diagnostics_level: Normalized non-``none`` diagnostics level.
+
+        Returns:
+            Mapping from diagnostic path to dtype/shape spec.
+        """
+        del diagnostics_level
+        return {}
 
     # Setup payload lifecycle
 
@@ -535,6 +676,16 @@ class BaseSimulation(Simulation, ABC):
             Extracted PSF metadata for the completed simulation.
         """
 
+    def _extract_diagnostics(self, context: SimulationContext) -> Mapping[str, Any]:
+        """Extract optional diagnostics for one completed simulation context.
+
+        Subclasses that declare diagnostics fields should override this hook
+        and return values matching their persisted field specs. The base
+        implementation returns no diagnostics.
+        """
+        del context
+        return {}
+
     def finalize(self, context: SimulationContext) -> None:
         """Populate ``context.result`` from subclass PSF extraction hooks.
 
@@ -564,6 +715,7 @@ class BaseSimulation(Simulation, ABC):
                 schema.KEY_META_TEL_DIAMETER_M: np.float32(psf_parameters.tel_diameter_m),
                 schema.KEY_META_TEL_PUPIL: psf_parameters.tel_pupil,
             },
+            diagnostics=dict(self._extract_diagnostics(context)),
         )
 
     def prepare_psfs_for_stats(

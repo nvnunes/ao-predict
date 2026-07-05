@@ -72,6 +72,8 @@ class SimulationResult:
             the core stats (`sr`, `ee`, and `fwhm_mas`) later from the PSFs
             and merges in simulation-provided declared extra stats returned
             by `build_extra_stats(...)`.
+        diagnostics: Optional per-simulation diagnostics persisted only when
+            the simulation payload declares diagnostics fields.
         errors: Failure details when ``state=SimulationState.FAILED``.
         runtime: Non-persisted diagnostics for API-side inspection.
 
@@ -87,6 +89,7 @@ class SimulationResult:
     psfs: np.ndarray | None = None
     meta: dict[str, Any] = field(default_factory=dict)
     stats: dict[str, np.ndarray] = field(default_factory=dict)
+    diagnostics: dict[str, Any] = field(default_factory=dict)
     errors: list[str] = field(default_factory=list)
     runtime: dict[str, Any] = field(default_factory=dict)
 

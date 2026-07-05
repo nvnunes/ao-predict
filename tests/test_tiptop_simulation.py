@@ -118,6 +118,21 @@ def test_tiptop_prepare_simulation_payload_requires_config_path(tmp_path: Path):
         _prepare_simulation_payload(sim, {"config_path": str(tmp_path / "missing.ini")})
 
 
+def test_tiptop_rejects_unsupported_diagnostics_level(tmp_path: Path):
+    sim = TiptopSimulation()
+    ini_path = tmp_path / "tiptop.ini"
+    ini_path.write_text(_ini_text(), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="does not support diagnostics_level"):
+        _prepare_simulation_payload(
+            sim,
+            {
+                "config_path": str(ini_path),
+                "diagnostics_level": "validation",
+            },
+        )
+
+
 def test_tiptop_create_context(tmp_path: Path):
     sim = TiptopSimulation()
     ini_path = tmp_path / "tiptop.ini"

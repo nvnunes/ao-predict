@@ -112,6 +112,7 @@ class ConfigBackedSimulation(BaseSimulation):
         """
         base_config_text = self._get_required_base_config_text(simulation_payload)
         base_config = self._prepare_base_config_binding(base_config_text)
+        self._load_base_simulation_payload(simulation_payload)
         self._base_config_text = base_config_text
         self._bind_base_config(base_config)
 

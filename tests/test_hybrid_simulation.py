@@ -75,18 +75,21 @@ def _write_hybrid_inputs(tmp_path: Path) -> tuple[Path, Path, Path]:
     return ini_path, science_path, ngs_path
 
 
-def _simulation_payload(tmp_path: Path) -> dict[str, object]:
+def _simulation_payload(tmp_path: Path, *, diagnostics_level: str | None = None) -> dict[str, object]:
     sim = HybridSimulation()
     ini_path, science_path, ngs_path = _write_hybrid_inputs(tmp_path)
+    simulation_cfg = {
+        "base_path": str(tmp_path),
+        "config_path": ini_path.name,
+        "science_ho_psf_interpolator_path": science_path.name,
+        "ngs_ho_metric_interpolator_path": ngs_path.name,
+    }
+    if diagnostics_level is not None:
+        simulation_cfg["diagnostics_level"] = diagnostics_level
     return dict(
         sim.prepare_simulation_payload(
             _base_payload(sim),
-            {
-                "base_path": str(tmp_path),
-                "config_path": ini_path.name,
-                "science_ho_psf_interpolator_path": science_path.name,
-                "ngs_ho_metric_interpolator_path": ngs_path.name,
-            },
+            simulation_cfg,
         )
     )
 
@@ -120,6 +123,8 @@ def test_hybrid_payload_lifecycle_resolves_and_loads_interpolators(tmp_path: Pat
     payload = _simulation_payload(tmp_path)
 
     assert payload["base_config"] == _ini_text()
+    assert payload["diagnostics_level"] == "none"
+    assert "diagnostic_fields" not in payload
     assert Path(str(payload["science_ho_psf_interpolator_path"])).is_absolute()
     assert Path(str(payload["ngs_ho_metric_interpolator_path"])).is_absolute()
 
@@ -354,8 +359,284 @@ def test_hybrid_run_persists_jitter_through_public_dataset_path(tmp_path: Path, 
     summary = run_simulations_by_state(dataset_path, num_workers=1)
 
     assert summary.succeeded == 1
-    stats = SimulationStore(dataset_path).read_simulation_stats(0)
+    store = SimulationStore(dataset_path)
+    stats = store.read_simulation_stats(0)
     np.testing.assert_allclose(stats["jitter"], np.sqrt(np.array([0.5, 2.0])), rtol=1.0e-6)
+    assert store.read_analysis_diagnostics() == {}
+    assert store.read_simulation_diagnostics(0) == {}
+
+
+def test_hybrid_validation_diagnostics_are_persisted_and_readable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    ini_path, science_path, ngs_path = _write_hybrid_inputs(tmp_path)
+    dataset_path = tmp_path / "hybrid_validation.h5"
+
+    class FakeMavisLO:
+        def __init__(self, path2param, parameters_file, verbose=False):
+            del path2param, parameters_file, verbose
+            self.error = False
+            self.mas2nm = 2.0
+
+        def computeTotalResidualMatrix(self, *args, **kwargs):
+            del args, kwargs
+            return np.stack([np.eye(2), 4.0 * np.eye(2)])
+
+    monkeypatch.setattr("ao_predict.simulation.hybrid._load_mavis_lo", lambda: FakeMavisLO)
+
+    ao_predict.init_dataset(
+        InitDatasetRequest(
+            dataset_path=dataset_path,
+            simulation=SimulationConfig(
+                name="Hybrid",
+                base_path=str(tmp_path),
+                specific_fields={
+                    "config_path": ini_path.name,
+                    "science_ho_psf_interpolator_path": science_path.name,
+                    "ngs_ho_metric_interpolator_path": ngs_path.name,
+                    "diagnostics_level": "validation",
+                },
+            ),
+            setup=SetupConfig(
+                ee_apertures_mas=[50.0],
+                specific_fields={
+                    "atm_wavelength_um": 0.5,
+                    "atm_profiles": _setup_payload()["atm_profiles"],
+                    "lgs_r_arcsec": [],
+                    "lgs_theta_deg": [],
+                    "ngs_mag_zeropoint": 3.0e10,
+                    "sci_r_arcsec": [0.0, 1.0],
+                    "sci_theta_deg": [0.0, 0.0],
+                },
+            ),
+            options=OptionsConfig(
+                option_arrays={
+                    "wavelength_um": np.array([1.0]),
+                    "zenith_angle_deg": np.array([20.0]),
+                    "atm_profile_id": np.array([0]),
+                    "r0_m": np.array([0.16]),
+                    "ngs_r_arcsec": np.array([[0.0, np.nan]]),
+                    "ngs_theta_deg": np.array([[0.0, np.nan]]),
+                    "ngs_mag": np.array([[14.0, np.nan]]),
+                }
+            ),
+        )
+    )
+
+    store = SimulationStore(dataset_path)
+    summary = run_simulations_by_state(dataset_path, num_workers=1)
+
+    assert summary.succeeded == 1
+    store.validate_schema()
+    diagnostics = store.read_simulation_diagnostics(0)
+    all_diagnostics = store.read_analysis_diagnostics()
+    assert "diagnostics" not in store.read_simulation_stats(0)
+    assert diagnostics["hybrid"]["mas2nm"] == pytest.approx(2.0)
+    assert diagnostics["hybrid"]["psd_valid_count"] == 2
+    assert diagnostics["hybrid"]["psd_valid_fraction"] == pytest.approx(1.0)
+    np.testing.assert_array_equal(diagnostics["hybrid"]["psd_valid_mask"], np.array([True, True]))
+    np.testing.assert_array_equal(diagnostics["hybrid"]["ngs_used"], np.array([True, False]))
+    np.testing.assert_allclose(diagnostics["hybrid"]["ngs"]["ee"], np.array([0.3, np.nan]), equal_nan=True)
+    assert "ctot_nm2" not in diagnostics["hybrid"]
+    assert "runtime_ini_text" not in diagnostics["hybrid"]
+    assert all_diagnostics["hybrid"]["mas2nm"].shape == (1,)
+
+
+def test_hybrid_debug_string_diagnostics_read_as_text(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    ini_path, science_path, ngs_path = _write_hybrid_inputs(tmp_path)
+    dataset_path = tmp_path / "hybrid_debug.h5"
+
+    class FakeMavisLO:
+        def __init__(self, path2param, parameters_file, verbose=False):
+            del path2param, parameters_file, verbose
+            self.error = False
+            self.mas2nm = 2.0
+
+        def computeTotalResidualMatrix(self, *args, **kwargs):
+            del args, kwargs
+            return np.stack([np.eye(2), 4.0 * np.eye(2)])
+
+    monkeypatch.setattr("ao_predict.simulation.hybrid._load_mavis_lo", lambda: FakeMavisLO)
+
+    ao_predict.init_dataset(
+        InitDatasetRequest(
+            dataset_path=dataset_path,
+            simulation=SimulationConfig(
+                name="Hybrid",
+                base_path=str(tmp_path),
+                specific_fields={
+                    "config_path": ini_path.name,
+                    "science_ho_psf_interpolator_path": science_path.name,
+                    "ngs_ho_metric_interpolator_path": ngs_path.name,
+                    "diagnostics_level": "debug",
+                },
+            ),
+            setup=SetupConfig(
+                ee_apertures_mas=[50.0],
+                specific_fields={
+                    "atm_wavelength_um": 0.5,
+                    "atm_profiles": _setup_payload()["atm_profiles"],
+                    "lgs_r_arcsec": [],
+                    "lgs_theta_deg": [],
+                    "ngs_mag_zeropoint": 3.0e10,
+                    "sci_r_arcsec": [0.0, 1.0],
+                    "sci_theta_deg": [0.0, 0.0],
+                },
+            ),
+            options=OptionsConfig(
+                option_arrays={
+                    "wavelength_um": np.array([1.0]),
+                    "zenith_angle_deg": np.array([20.0]),
+                    "atm_profile_id": np.array([0]),
+                    "r0_m": np.array([0.16]),
+                    "ngs_r_arcsec": np.array([[0.0, np.nan]]),
+                    "ngs_theta_deg": np.array([[0.0, np.nan]]),
+                    "ngs_mag": np.array([[14.0, np.nan]]),
+                }
+            ),
+        )
+    )
+
+    summary = run_simulations_by_state(dataset_path, num_workers=1)
+
+    assert summary.succeeded == 1
+    runtime_ini_text = SimulationStore(dataset_path).read_simulation_diagnostics(0)["hybrid"]["runtime_ini_text"]
+    assert isinstance(runtime_ini_text, str)
+    assert "[telescope]" in runtime_ini_text
+
+
+def test_hybrid_debug_diagnostics_include_full_ctot_and_runtime_ini(tmp_path: Path) -> None:
+    class CustomHybrid(HybridSimulation):
+        def _predict_science_psfs(self, setup, options):
+            del setup, options
+            return SciencePsfProviderResult(
+                psfs=np.full((2, 5, 5), 1.0, dtype=np.float32),
+                metadata=PsfMetadata(
+                    wavelength_um=1.0,
+                    pixel_scale_mas=4.0,
+                    tel_diameter_m=8.0,
+                    tel_pupil=np.ones((5, 5), dtype=np.float32),
+                ),
+            )
+
+        def _predict_ngs_metrics(self, active_ngs, options):
+            del active_ngs, options
+            return NgsMetricProviderResult(ee=np.array([0.3]), fwhm_mas=np.array([80.0]), sr=np.array([0.1]))
+
+        def _compute_mastsel_ctot(self, parser, setup, active_ngs, metrics):
+            del parser, setup, active_ngs, metrics
+            ctot_nm2 = np.stack([np.eye(2), 2.0 * np.eye(2)])
+            return HybridCtotResult(
+                ctot_nm2=ctot_nm2,
+                ctot_mas2=ctot_nm2 / 4.0,
+                mas2nm=2.0,
+                ngs_flux=np.array([10.0]),
+                ngs_frequency=np.array([500.0]),
+                runtime_ini_text="[runtime]\n",
+            )
+
+    sim = CustomHybrid()
+    sim.load_simulation_payload(_simulation_payload(tmp_path, diagnostics_level="debug"))
+    sim.load_setup_payload(_setup_payload())
+    context = sim.create(0, _options())
+    sim.run(context)
+    sim.finalize(context)
+
+    assert context.result is not None
+    diagnostics = context.result.diagnostics
+    assert diagnostics["hybrid/runtime_ini_text"] == "[runtime]\n"
+    np.testing.assert_allclose(diagnostics["hybrid/ctot_nm2"], np.stack([np.eye(2), 2.0 * np.eye(2)]))
+    np.testing.assert_allclose(diagnostics["hybrid/ctot_mas2"], np.stack([np.eye(2), 2.0 * np.eye(2)]) / 4.0)
+
+
+def test_hybrid_load_rejects_changed_diagnostic_field_specs(tmp_path: Path) -> None:
+    payload = _simulation_payload(tmp_path, diagnostics_level="validation")
+    fields = dict(payload["diagnostic_fields"])
+    fields["hybrid/mas2nm"] = {**fields["hybrid/mas2nm"], "dtype": "float64"}
+    payload["diagnostic_fields"] = fields
+
+    with pytest.raises(ValueError, match="changed specs: hybrid/mas2nm"):
+        HybridSimulation().load_simulation_payload(payload)
+
+
+def test_hybrid_diagnostic_extension_fields_cannot_collide(tmp_path: Path) -> None:
+    class CollidingHybrid(HybridSimulation):
+        def _extend_hybrid_diagnostic_field_specs(self, diagnostics_level):
+            del diagnostics_level
+            return {"hybrid/mas2nm": {"dtype": "float32", "shape": ()}}
+
+    sim = CollidingHybrid()
+    with pytest.raises(ValueError, match="collide"):
+        sim.prepare_simulation_payload(
+            _base_payload(sim),
+            {
+                "base_path": str(tmp_path),
+                "config_path": _write_hybrid_inputs(tmp_path)[0].name,
+                "science_ho_psf_interpolator_path": "science.pkl",
+                "ngs_ho_metric_interpolator_path": "ngs.pkl",
+                "diagnostics_level": "validation",
+            },
+        )
+
+
+def test_hybrid_diagnostic_extension_fields_are_appended(tmp_path: Path) -> None:
+    class ExtendedHybrid(HybridSimulation):
+        def _extend_hybrid_diagnostic_field_specs(self, diagnostics_level):
+            del diagnostics_level
+            return {"project/custom_scalar": {"dtype": "float32", "shape": ()}}
+
+        def _extend_hybrid_diagnostics(self, diagnostics_context):
+            del diagnostics_context
+            return {"project/custom_scalar": np.float32(12.5)}
+
+    class CustomHybrid(ExtendedHybrid):
+        def _predict_science_psfs(self, setup, options):
+            del setup, options
+            return SciencePsfProviderResult(
+                psfs=np.full((2, 5, 5), 1.0, dtype=np.float32),
+                metadata=PsfMetadata(
+                    wavelength_um=1.0,
+                    pixel_scale_mas=4.0,
+                    tel_diameter_m=8.0,
+                    tel_pupil=np.ones((5, 5), dtype=np.float32),
+                ),
+            )
+
+        def _predict_ngs_metrics(self, active_ngs, options):
+            del active_ngs, options
+            return NgsMetricProviderResult(ee=np.array([0.3]), fwhm_mas=np.array([80.0]), sr=np.array([0.1]))
+
+        def _compute_mastsel_ctot(self, parser, setup, active_ngs, metrics):
+            del parser, setup, active_ngs, metrics
+            ctot_nm2 = np.stack([np.eye(2), 2.0 * np.eye(2)])
+            return HybridCtotResult(
+                ctot_nm2=ctot_nm2,
+                ctot_mas2=ctot_nm2 / 4.0,
+                mas2nm=2.0,
+                ngs_flux=np.array([10.0]),
+                ngs_frequency=np.array([500.0]),
+                runtime_ini_text="[runtime]\n",
+            )
+
+    sim = CustomHybrid()
+    payload = sim.prepare_simulation_payload(
+        _base_payload(sim),
+        {
+            "base_path": str(tmp_path),
+            "config_path": _write_hybrid_inputs(tmp_path)[0].name,
+            "science_ho_psf_interpolator_path": "science.pkl",
+            "ngs_ho_metric_interpolator_path": "ngs.pkl",
+            "diagnostics_level": "validation",
+        },
+    )
+    assert "project/custom_scalar" in payload["diagnostic_fields"]
+    sim.load_simulation_payload(payload)
+    sim.load_setup_payload(_setup_payload())
+    context = sim.create(0, _options())
+    sim.run(context)
+    sim.finalize(context)
+
+    assert context.result is not None
+    assert context.result.diagnostics["project/custom_scalar"] == pytest.approx(12.5)
+    assert "hybrid/mas2nm" in context.result.diagnostics
 
 
 def test_direct_ctot_blur_preserves_zero_ctot_and_flux() -> None:

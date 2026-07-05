@@ -104,11 +104,36 @@ class HybridCtotResult:
         ctot_mas2: Same covariance cube converted to ``mas^2`` using the
             MASTSEL-provided ``mas2nm`` value.
         mas2nm: MASTSEL covariance conversion value used for this Ctot.
+        ngs_flux: Active NGS flux values passed to MASTSEL.
+        ngs_frequency: Active NGS frequency values passed to MASTSEL.
+        runtime_ini_text: Serialized runtime INI text passed to MASTSEL.
     """
 
     ctot_nm2: np.ndarray
     ctot_mas2: np.ndarray
     mas2nm: float
+    ngs_flux: np.ndarray | None = None
+    ngs_frequency: np.ndarray | None = None
+    runtime_ini_text: str | None = None
+
+
+@dataclass(frozen=True)
+class HybridDiagnosticsContext:
+    """Typed runtime state available to Hybrid diagnostics hooks.
+
+    Attributes:
+        active_ngs: Active NGS coordinate and magnitude vectors.
+        metrics: Active NGS-HO metrics passed to MASTSEL.
+        ctot: MASTSEL Ctot result and unit conversion metadata.
+        psd_mask: Per-science-point mask of PSD, nonzero Ctot matrices.
+        ngs_used: Slot-aligned mask of active NGS stars for this option row.
+    """
+
+    active_ngs: "_ActiveNgs"
+    metrics: NgsMetricProviderResult
+    ctot: HybridCtotResult
+    psd_mask: np.ndarray
+    ngs_used: np.ndarray
 
 
 @dataclass(frozen=True)
@@ -116,6 +141,7 @@ class _HybridRuntimeResult:
     psfs: np.ndarray
     metadata: PsfMetadata
     jitter_mas: np.ndarray
+    diagnostics_context: HybridDiagnosticsContext
 
 
 @dataclass(frozen=True)
@@ -152,6 +178,10 @@ class HybridSimulation(TiptopConfigBackedSimulation):
     EXTRA_STAT_JITTER = "jitter"
     KEY_SCIENCE_HO_PSF_INTERPOLATOR_PATH = "science_ho_psf_interpolator_path"
     KEY_NGS_HO_METRIC_INTERPOLATOR_PATH = "ngs_ho_metric_interpolator_path"
+    KEY_SCIENCE_HO_PSF_INTERPOLATOR_PROVENANCE = "science_ho_psf_interpolator_provenance"
+    KEY_SCIENCE_HO_PSF_INTERPOLATOR_BUILDER = "science_ho_psf_interpolator_builder"
+    KEY_NGS_HO_METRIC_INTERPOLATOR_PROVENANCE = "ngs_ho_metric_interpolator_provenance"
+    KEY_NGS_HO_METRIC_INTERPOLATOR_BUILDER = "ngs_ho_metric_interpolator_builder"
     KEY_RUNTIME_EFFECTIVE_PARSER = "effective_parser"
     KEY_RUNTIME_RESULT = "hybrid_result"
 
@@ -159,6 +189,11 @@ class HybridSimulation(TiptopConfigBackedSimulation):
     def extra_stat_names(self) -> tuple[str, ...]:
         """Return Hybrid extra stat names persisted under ``/stats``."""
         return (self.EXTRA_STAT_JITTER,)
+
+    @property
+    def supported_extra_diagnostics_levels(self) -> tuple[str, ...]:
+        """Return non-``none`` diagnostics levels implemented by Hybrid."""
+        return (schema.DIAGNOSTICS_LEVEL_VALIDATION, schema.DIAGNOSTICS_LEVEL_DEBUG)
 
     def __init__(self) -> None:
         """Initialize unbound Hybrid simulation state."""
@@ -189,20 +224,46 @@ class HybridSimulation(TiptopConfigBackedSimulation):
         base_simulation_payload: Mapping[str, Any],
         simulation_cfg: Mapping[str, Any],
     ) -> Mapping[str, Any]:
-        """Build persisted Hybrid simulation payload with interpolator paths.
+        """Build the persisted Hybrid ``/simulation`` payload.
 
         The MASTSEL base INI is persisted through the inherited
         ``base_config`` lifecycle. Interpolator artifact paths are resolved
-        relative to ``simulation.base_path`` and persisted as strings under
-        ``/simulation``.
+        relative to ``simulation.base_path``, loaded, validated, and persisted
+        as resolved strings under ``/simulation``. The payload also records the
+        compact interpolator provenance and builder identity so datasets retain
+        static Hybrid input identity independently of optional per-run
+        ``/diagnostics``. The exact MASTSEL base INI text remains available as
+        inherited ``/simulation/base_config`` provenance.
+
+        Args:
+            base_simulation_payload: Core simulation payload containing name,
+                version, and declared extra stats.
+            simulation_cfg: User-facing simulation config. Hybrid requires
+                ``config_path``, ``science_ho_psf_interpolator_path``, and
+                ``ngs_ho_metric_interpolator_path``.
+
+        Returns:
+            Persisted ``/simulation`` mapping for Hybrid datasets.
+
+        Raises:
+            TypeError: If required path fields have invalid types.
+            ValueError: If the MASTSEL INI text or interpolator artifacts are
+                invalid, or if the selected diagnostics level is unsupported.
+            FileNotFoundError: If required config or artifact paths are missing.
         """
         simulation_payload = dict(super().prepare_simulation_payload(base_simulation_payload, simulation_cfg))
-        simulation_payload[self.KEY_SCIENCE_HO_PSF_INTERPOLATOR_PATH] = str(
-            self._resolve_required_artifact_path(simulation_cfg, self.KEY_SCIENCE_HO_PSF_INTERPOLATOR_PATH)
-        )
-        simulation_payload[self.KEY_NGS_HO_METRIC_INTERPOLATOR_PATH] = str(
-            self._resolve_required_artifact_path(simulation_cfg, self.KEY_NGS_HO_METRIC_INTERPOLATOR_PATH)
-        )
+        science_path = self._resolve_required_artifact_path(simulation_cfg, self.KEY_SCIENCE_HO_PSF_INTERPOLATOR_PATH)
+        ngs_path = self._resolve_required_artifact_path(simulation_cfg, self.KEY_NGS_HO_METRIC_INTERPOLATOR_PATH)
+        science = load_science_ho_psf_interpolator(science_path)
+        ngs = load_ngs_ho_metric_interpolator(ngs_path)
+        validate_science_ho_psf_interpolator(science)
+        validate_ngs_ho_metric_interpolator(ngs)
+        simulation_payload[self.KEY_SCIENCE_HO_PSF_INTERPOLATOR_PATH] = str(science_path)
+        simulation_payload[self.KEY_NGS_HO_METRIC_INTERPOLATOR_PATH] = str(ngs_path)
+        simulation_payload[self.KEY_SCIENCE_HO_PSF_INTERPOLATOR_PROVENANCE] = np.asarray(science.provenance, dtype=str)
+        simulation_payload[self.KEY_SCIENCE_HO_PSF_INTERPOLATOR_BUILDER] = dict(science.builder)
+        simulation_payload[self.KEY_NGS_HO_METRIC_INTERPOLATOR_PROVENANCE] = np.asarray(ngs.provenance, dtype=str)
+        simulation_payload[self.KEY_NGS_HO_METRIC_INTERPOLATOR_BUILDER] = dict(ngs.builder)
         return simulation_payload
 
     def validate_simulation_payload(self, simulation_payload: Mapping[str, Any]) -> None:
@@ -248,6 +309,7 @@ class HybridSimulation(TiptopConfigBackedSimulation):
         ngs = load_ngs_ho_metric_interpolator(ngs_path)
         validate_science_ho_psf_interpolator(science)
         validate_ngs_ho_metric_interpolator(ngs)
+        self._load_base_simulation_payload(simulation_payload)
         self._base_config_text = base_config_text
         self._bind_base_config(base_config)
         self._science_ho_psf_interpolator_path = science_path
@@ -362,6 +424,7 @@ class HybridSimulation(TiptopConfigBackedSimulation):
         science = self._predict_science_psfs(setup, options)
         metrics = self._predict_ngs_metrics(active_ngs, options)
         ctot = self._compute_mastsel_ctot(parser, setup, active_ngs, metrics)
+        psd_mask = psd_valid_mask(ctot.ctot_nm2)
         psfs = np.asarray(science.psfs, dtype=np.float32).copy()
         apply_direct_ctot_blur(
             psfs,
@@ -373,6 +436,13 @@ class HybridSimulation(TiptopConfigBackedSimulation):
             psfs=psfs,
             metadata=science.metadata,
             jitter_mas=jitter_mas_from_ctot(ctot.ctot_mas2),
+            diagnostics_context=HybridDiagnosticsContext(
+                active_ngs=active_ngs,
+                metrics=metrics,
+                ctot=ctot,
+                psd_mask=psd_mask,
+                ngs_used=_ngs_used_mask(options),
+            ),
         )
 
     def _extract_psfs(self, context: SimulationContext) -> np.ndarray | None:
@@ -424,6 +494,186 @@ class HybridSimulation(TiptopConfigBackedSimulation):
         """
         return {self.EXTRA_STAT_JITTER: np.asarray(_require_hybrid_result(context).jitter_mas, dtype=np.float32)}
 
+    def _diagnostic_field_specs(self, diagnostics_level: str) -> Mapping[str, Mapping[str, Any]]:
+        """Return persisted Hybrid diagnostic field specs for one level.
+
+        Specs are keyed by slash-delimited ``/diagnostics`` paths and contain a
+        storage ``dtype`` plus a shape excluding the leading simulation
+        dimension ``N``. The supported non-``none`` levels are ``validation``
+        and ``debug``. ``debug`` includes all validation diagnostics plus full
+        Ctot cubes and runtime INI text.
+
+        Args:
+            diagnostics_level: Requested non-``none`` diagnostics level.
+
+        Returns:
+            Mapping from slash-delimited diagnostic field path to dtype/shape
+            spec. Shape tokens use the generic diagnostics vocabulary
+            ``num_sci`` and ``num_ngs``.
+
+        Raises:
+            ValueError: If subclass extension specs collide with upstream
+                Hybrid diagnostic fields.
+        """
+        specs: dict[str, Mapping[str, Any]] = {
+            "hybrid/mas2nm": {"dtype": "float32", "shape": ()},
+            "hybrid/psd_valid_count": {"dtype": "int32", "shape": ()},
+            "hybrid/psd_valid_fraction": {"dtype": "float32", "shape": ()},
+            "hybrid/psd_valid_mask": {"dtype": "bool", "shape": ("num_sci",)},
+            "hybrid/ctot_trace_mas2_min": {"dtype": "float32", "shape": ()},
+            "hybrid/ctot_trace_mas2_max": {"dtype": "float32", "shape": ()},
+            "hybrid/ctot_trace_mas2_mean": {"dtype": "float32", "shape": ()},
+            "hybrid/ctot_det_mas4_min": {"dtype": "float32", "shape": ()},
+            "hybrid/ctot_det_mas4_max": {"dtype": "float32", "shape": ()},
+            "hybrid/ctot_det_mas4_mean": {"dtype": "float32", "shape": ()},
+            "hybrid/ngs_used": {"dtype": "bool", "shape": ("num_ngs",)},
+            "hybrid/ngs/ee": {"dtype": "float32", "shape": ("num_ngs",)},
+            "hybrid/ngs/fwhm_mas": {"dtype": "float32", "shape": ("num_ngs",)},
+            "hybrid/ngs/sr": {"dtype": "float32", "shape": ("num_ngs",)},
+            "hybrid/ngs/flux_ph_s": {"dtype": "float32", "shape": ("num_ngs",)},
+            "hybrid/ngs/frequency_hz": {"dtype": "float32", "shape": ("num_ngs",)},
+        }
+        if diagnostics_level == schema.DIAGNOSTICS_LEVEL_DEBUG:
+            specs.update(
+                {
+                    "hybrid/ctot_nm2": {"dtype": "float32", "shape": ("num_sci", 2, 2)},
+                    "hybrid/ctot_mas2": {"dtype": "float32", "shape": ("num_sci", 2, 2)},
+                    "hybrid/runtime_ini_text": {"dtype": "str", "shape": ()},
+                }
+            )
+        extension = dict(self._extend_hybrid_diagnostic_field_specs(diagnostics_level))
+        collisions = sorted(set(specs) & set(extension))
+        if collisions:
+            raise ValueError(f"Hybrid diagnostic extension fields collide with upstream fields: {', '.join(collisions)}")
+        specs.update(extension)
+        return specs
+
+    def _extend_hybrid_diagnostic_field_specs(self, diagnostics_level: str) -> Mapping[str, Mapping[str, Any]]:
+        """Return subclass-specific Hybrid diagnostic field specs.
+
+        Subclasses may declare additional slash-delimited fields persisted
+        under ``/diagnostics`` for the selected level. Returned specs must use
+        the same schema as upstream specs: a ``dtype`` and a shape excluding the
+        leading simulation dimension ``N``. This hook must not mutate instance
+        state and must not return keys owned by upstream Hybrid diagnostics.
+
+        Args:
+            diagnostics_level: Bound diagnostics level for this run family.
+
+        Returns:
+            Additional field specs keyed by slash-delimited diagnostics paths.
+            Keys must not collide with upstream Hybrid diagnostic fields.
+        """
+        del diagnostics_level
+        return {}
+
+    def _extract_diagnostics(self, context: SimulationContext) -> Mapping[str, Any]:
+        """Extract optional Hybrid diagnostics from completed runtime state.
+
+        The base Hybrid implementation returns no diagnostics when
+        ``diagnostics_level`` is ``none``. For ``validation`` and ``debug`` it
+        returns values matching the field specs declared by
+        ``_diagnostic_field_specs()`` and merges subclass extension values after
+        checking that extension keys do not overwrite upstream keys.
+
+        Args:
+            context: Completed simulation context whose runtime contains a
+                Hybrid result.
+
+        Returns:
+            Flat mapping keyed by slash-delimited ``/diagnostics`` paths.
+
+        Raises:
+            ValueError: If runtime state is incomplete or extension diagnostics
+                collide with upstream fields.
+        """
+        if self.diagnostics_level == schema.DIAGNOSTICS_LEVEL_NONE:
+            return {}
+        diagnostics_context = _require_hybrid_result(context).diagnostics_context
+        diagnostics = dict(self._build_hybrid_diagnostics(diagnostics_context))
+        extension = dict(self._extend_hybrid_diagnostics(diagnostics_context))
+        collisions = sorted(set(diagnostics) & set(extension))
+        if collisions:
+            raise ValueError(f"Hybrid diagnostic extension fields collide with upstream fields: {', '.join(collisions)}")
+        diagnostics.update(extension)
+        return diagnostics
+
+    def _extend_hybrid_diagnostics(self, diagnostics_context: HybridDiagnosticsContext) -> Mapping[str, Any]:
+        """Return subclass-specific diagnostics for a completed Hybrid run.
+
+        Subclasses should return only values declared by
+        ``_extend_hybrid_diagnostic_field_specs()`` for the active diagnostics
+        level. Keys are slash-delimited ``/diagnostics`` paths and values must
+        match the declared dtype and per-simulation shape. This hook receives a
+        narrow immutable diagnostics context and must not mutate Hybrid runtime
+        state.
+
+        Args:
+            diagnostics_context: Runtime values already produced by the generic
+                Hybrid execution path.
+
+        Returns:
+            Additional per-run diagnostic values. The default returns no
+            subclass diagnostics.
+        """
+        del diagnostics_context
+        return {}
+
+    def _build_hybrid_diagnostics(self, diagnostics_context: HybridDiagnosticsContext) -> Mapping[str, Any]:
+        """Build upstream Hybrid diagnostics for the configured level.
+
+        ``validation`` diagnostics include compact scalar Ctot summaries, PSD
+        validity summaries, slot-aligned active-NGS mask, and slot-aligned
+        MASTSEL inputs. ``debug`` adds full Ctot cubes and serialized runtime
+        INI text. Returned values are flat and must match the specs from
+        ``_diagnostic_field_specs()`` for the active level.
+
+        Args:
+            diagnostics_context: Runtime values produced by one completed
+                Hybrid simulation.
+
+        Returns:
+            Upstream Hybrid diagnostic values keyed by slash-delimited
+            ``/diagnostics`` paths.
+
+        Raises:
+            ValueError: If required MASTSEL input diagnostics are missing,
+                non-finite, or inconsistent with the active NGS mask.
+        """
+        ctot_mas2 = np.asarray(diagnostics_context.ctot.ctot_mas2, dtype=float)
+        trace = np.trace(ctot_mas2, axis1=-2, axis2=-1)
+        det = np.linalg.det(ctot_mas2)
+        used = np.asarray(diagnostics_context.ngs_used, dtype=bool)
+        ngs_flux = _require_active_vector(diagnostics_context.ctot.ngs_flux, "ngs_flux")
+        ngs_frequency = _require_active_vector(diagnostics_context.ctot.ngs_frequency, "ngs_frequency")
+        diagnostics: dict[str, Any] = {
+            "hybrid/mas2nm": np.float32(diagnostics_context.ctot.mas2nm),
+            "hybrid/psd_valid_count": np.int32(np.count_nonzero(diagnostics_context.psd_mask)),
+            "hybrid/psd_valid_fraction": np.float32(np.count_nonzero(diagnostics_context.psd_mask) / diagnostics_context.psd_mask.size),
+            "hybrid/psd_valid_mask": np.asarray(diagnostics_context.psd_mask, dtype=bool),
+            "hybrid/ctot_trace_mas2_min": np.float32(np.min(trace)),
+            "hybrid/ctot_trace_mas2_max": np.float32(np.max(trace)),
+            "hybrid/ctot_trace_mas2_mean": np.float32(np.mean(trace)),
+            "hybrid/ctot_det_mas4_min": np.float32(np.min(det)),
+            "hybrid/ctot_det_mas4_max": np.float32(np.max(det)),
+            "hybrid/ctot_det_mas4_mean": np.float32(np.mean(det)),
+            "hybrid/ngs_used": used,
+            "hybrid/ngs/ee": _slot_aligned(diagnostics_context.metrics.ee, used),
+            "hybrid/ngs/fwhm_mas": _slot_aligned(diagnostics_context.metrics.fwhm_mas, used),
+            "hybrid/ngs/sr": _slot_aligned(diagnostics_context.metrics.sr, used),
+            "hybrid/ngs/flux_ph_s": _slot_aligned(ngs_flux, used),
+            "hybrid/ngs/frequency_hz": _slot_aligned(ngs_frequency, used),
+        }
+        if self.diagnostics_level == schema.DIAGNOSTICS_LEVEL_DEBUG:
+            diagnostics.update(
+                {
+                    "hybrid/ctot_nm2": np.asarray(diagnostics_context.ctot.ctot_nm2, dtype=np.float32),
+                    "hybrid/ctot_mas2": np.asarray(diagnostics_context.ctot.ctot_mas2, dtype=np.float32),
+                    "hybrid/runtime_ini_text": str(diagnostics_context.ctot.runtime_ini_text or ""),
+                }
+            )
+        return diagnostics
+
     # Provider hooks
 
     def _predict_science_psfs(self, setup: HybridSetup, options: Mapping[str, Any]) -> SciencePsfProviderResult:
@@ -474,7 +724,8 @@ class HybridSimulation(TiptopConfigBackedSimulation):
         MavisLO = _load_mavis_lo()
         with tempfile.TemporaryDirectory(prefix="ao_predict_hybrid_") as tmpdir:
             ini_path = Path(tmpdir) / "sim.ini"
-            ini_path.write_text(_serialize_parser(parser), encoding="utf-8")
+            runtime_ini_text = _serialize_parser(parser)
+            ini_path.write_text(runtime_ini_text, encoding="utf-8")
             mlo = MavisLO(str(ini_path.parent), ini_path.stem, verbose=False)
             if getattr(mlo, "error", False):
                 raise RuntimeError("MASTSEL failed to load generated Hybrid runtime config.")
@@ -507,6 +758,9 @@ class HybridSimulation(TiptopConfigBackedSimulation):
                 ctot_nm2=ctot_nm2,
                 ctot_mas2=ctot_nm2 / mas2nm**2,
                 mas2nm=mas2nm,
+                ngs_flux=np.asarray(ngs_flux, dtype=float),
+                ngs_frequency=np.asarray(ngs_frequency, dtype=float),
+                runtime_ini_text=runtime_ini_text,
             )
 
     def _build_runtime_mastsel_parser(
@@ -743,6 +997,34 @@ def _runtime_r0_m(setup: HybridSetup, options: Mapping[str, Any]) -> float:
     return float(profile[atm.KEY_SETUP_ATM_PROFILE_R0_M])
 
 
+def _ngs_used_mask(options: Mapping[str, Any]) -> np.ndarray:
+    """Return the runtime NGS slot mask."""
+    if schema.KEY_OPTION_NGS_USED not in options:
+        raise ValueError("Hybrid diagnostics require runtime option 'ngs_used'.")
+    return np.asarray(options[schema.KEY_OPTION_NGS_USED], dtype=bool).reshape(-1)
+
+
+def _require_active_vector(value: np.ndarray | None, label: str) -> np.ndarray:
+    """Return a finite active-NGS diagnostic vector."""
+    if value is None:
+        raise ValueError(f"Hybrid diagnostics require {label}.")
+    arr = np.asarray(value, dtype=float).reshape(-1)
+    if not np.all(np.isfinite(arr)):
+        raise ValueError(f"Hybrid diagnostics {label} must contain finite values.")
+    return arr
+
+
+def _slot_aligned(active_values: np.ndarray, used: np.ndarray) -> np.ndarray:
+    """Return NGS slot-aligned values with inactive slots set to ``NaN``."""
+    active = np.asarray(active_values, dtype=float).reshape(-1)
+    used = np.asarray(used, dtype=bool).reshape(-1)
+    if active.shape[0] != int(np.count_nonzero(used)):
+        raise ValueError("Hybrid diagnostics active NGS values do not match ngs_used.")
+    out = np.full(used.shape, np.nan, dtype=np.float32)
+    out[used] = active.astype(np.float32)
+    return out
+
+
 def _require_option_scalar(options: Mapping[str, Any], key: str) -> float:
     if key not in options:
         raise ValueError(f"HybridSimulation options require '{key}'.")
@@ -787,6 +1069,7 @@ def _load_mavis_lo() -> Any:
 
 __all__ = [
     "HybridCtotResult",
+    "HybridDiagnosticsContext",
     "HybridSetup",
     "HybridSimulation",
     "LowOrderMas2NmAdapter",
