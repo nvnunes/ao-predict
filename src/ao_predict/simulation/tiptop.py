@@ -11,8 +11,8 @@ from typing import Any, Mapping
 
 import numpy as np
 
-from . import schema
 from . import atm
+from . import schema
 from .base import BaseSimulationSetup, PsfParameters
 from .helpers import r0_to_seeing_arcsec
 from .interfaces import SimulationContext, SimulationSetup
@@ -44,14 +44,6 @@ class TiptopSimulation(TiptopConfigBackedSimulation):
 
     KEY_RUNTIME_EFFECTIVE_PARSER = "effective_parser"
     KEY_RUNTIME_SIMULATION = "tiptop_simulation"
-    ATM_PROFILE_KEYS_TO_INI_FIELDS = {
-        atm.KEY_SETUP_ATM_PROFILE_R0_M: "r0_Value",
-        atm.KEY_SETUP_ATM_PROFILE_L0_M: "L0",
-        atm.KEY_SETUP_ATM_PROFILE_CN2_HEIGHTS_M: "Cn2Heights",
-        atm.KEY_SETUP_ATM_PROFILE_CN2_WEIGHTS: "Cn2Weights",
-        atm.KEY_SETUP_ATM_PROFILE_WIND_SPEED_MPS: "WindSpeed",
-        atm.KEY_SETUP_ATM_PROFILE_WIND_DIRECTION_DEG: "WindDirection",
-    }
 
     # Setup payload lifecycle
 
@@ -138,14 +130,7 @@ class TiptopSimulation(TiptopConfigBackedSimulation):
         if schema.KEY_OPTION_ATM_PROFILE_ID in options:
             atm_profile_id = int(np.asarray(options.get(schema.KEY_OPTION_ATM_PROFILE_ID, 0)).item())
             atm_profile = atm.select_atm_profile(setup.atm_profiles, atm_profile_id)
-            for src_key, dst_key in self.ATM_PROFILE_KEYS_TO_INI_FIELDS.items():
-                if src_key not in atm_profile:
-                    continue
-                value = atm_profile[src_key]
-                if isinstance(value, np.ndarray):
-                    atmosphere_section[dst_key] = _format_ini_array(value)
-                else:
-                    atmosphere_section[dst_key] = f"{float(value):.6g}"
+            self._write_atmosphere_profile_fields(parser, atm_profile)
 
         if schema.KEY_OPTION_R0_M in options:
             r0_m = float(options[schema.KEY_OPTION_R0_M])
@@ -162,19 +147,13 @@ class TiptopSimulation(TiptopConfigBackedSimulation):
         setup: TiptopSetup,
     ) -> None:
         """Apply science geometry and science-wavelength updates."""
-        if parser.has_section("sources_science"):
-            parser["sources_science"]["Zenith"] = _format_ini_array(setup.sci_r_arcsec)
-            parser["sources_science"]["Azimuth"] = _format_ini_array(setup.sci_theta_deg)
-            if schema.KEY_OPTION_WAVELENGTH_UM in options:
-                parser["sources_science"]["Wavelength"] = f"[{float(options[schema.KEY_OPTION_WAVELENGTH_UM]) * 1e-6:.6e}]"
+        wavelength_um = float(options[schema.KEY_OPTION_WAVELENGTH_UM]) if schema.KEY_OPTION_WAVELENGTH_UM in options else None
+        self._write_science_source_fields(parser, setup.sci_r_arcsec, setup.sci_theta_deg, wavelength_um)
 
     def _update_lgs_in_ini(self, parser: ConfigParser, setup: TiptopSetup) -> None:
         """Apply invariant LGS geometry from setup."""
-        del self
         if setup.lgs_r_arcsec.size > 0 and parser.has_section("sources_HO"):
-            parser["sources_HO"]["Zenith"] = _format_ini_array(setup.lgs_r_arcsec)
-        if setup.lgs_theta_deg.size > 0 and parser.has_section("sources_HO"):
-            parser["sources_HO"]["Azimuth"] = _format_ini_array(setup.lgs_theta_deg)
+            self._write_source_geometry_fields(parser, "sources_HO", setup.lgs_r_arcsec, setup.lgs_theta_deg)
 
     def _update_ngs_in_ini(
         self,
@@ -203,11 +182,11 @@ class TiptopSimulation(TiptopConfigBackedSimulation):
         photometry = self._get_ngs_photometry_config(parser, setup.ngs_mag_zeropoint)
 
         if parser.has_section("sources_LO"):
-            parser["sources_LO"]["Zenith"] = _format_ini_array(
-                as_float_vector(options[schema.KEY_OPTION_NGS_R_ARCSEC], label=schema.KEY_OPTION_NGS_R_ARCSEC)[ngs_used]
-            )
-            parser["sources_LO"]["Azimuth"] = _format_ini_array(
-                as_float_vector(options[schema.KEY_OPTION_NGS_THETA_DEG], label=schema.KEY_OPTION_NGS_THETA_DEG)[ngs_used]
+            self._write_source_geometry_fields(
+                parser,
+                "sources_LO",
+                as_float_vector(options[schema.KEY_OPTION_NGS_R_ARCSEC], label=schema.KEY_OPTION_NGS_R_ARCSEC)[ngs_used],
+                as_float_vector(options[schema.KEY_OPTION_NGS_THETA_DEG], label=schema.KEY_OPTION_NGS_THETA_DEG)[ngs_used],
             )
 
         photons_per_frame = magnitudes_to_photons_per_frame(

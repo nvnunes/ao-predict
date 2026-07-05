@@ -13,6 +13,7 @@ from .analysis import (
 )
 from .simulation import (
     BaseSimulation,
+    HybridSimulation,
     Simulation,
     SimulationContext,
     SimulationResult,
@@ -71,6 +72,7 @@ __all__ = [
     "validate_dataset_matches_request",
     "SetupConfig",
     "BaseSimulation",
+    "HybridSimulation",
     "Simulation",
     "SimulationConfig",
     "SimulationContext",

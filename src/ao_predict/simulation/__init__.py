@@ -4,6 +4,7 @@
 
 from .base import BaseSimulation, BaseSimulationSetup
 from .config_backed import ConfigBackedSimulation
+from .hybrid import HybridSimulation
 from .interfaces import Simulation, SimulationContext, SimulationResult, SimulationSetup, SimulationState
 from .stats import PsfMetadata, clip_and_sum_normalize_psfs, compute_psf_ee, compute_psf_fwhm, compute_psf_sr, compute_psf_stats
 from .tiptop import TiptopSimulation
@@ -13,6 +14,7 @@ __all__ = [
     "BaseSimulation",
     "BaseSimulationSetup",
     "ConfigBackedSimulation",
+    "HybridSimulation",
     "PsfMetadata",
     "clip_and_sum_normalize_psfs",
     "compute_psf_ee",

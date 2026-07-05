@@ -93,6 +93,14 @@ class TiptopConfigBackedSimulation(ConfigBackedSimulation):
             simulation payload.
     """
 
+    ATM_PROFILE_KEYS_TO_INI_FIELDS = {
+        atm.KEY_SETUP_ATM_PROFILE_L0_M: "L0",
+        atm.KEY_SETUP_ATM_PROFILE_CN2_HEIGHTS_M: "Cn2Heights",
+        atm.KEY_SETUP_ATM_PROFILE_CN2_WEIGHTS: "Cn2Weights",
+        atm.KEY_SETUP_ATM_PROFILE_WIND_SPEED_MPS: "WindSpeed",
+        atm.KEY_SETUP_ATM_PROFILE_WIND_DIRECTION_DEG: "WindDirection",
+    }
+
     def __init__(self) -> None:
         """Initialize unbound TIPTOP-config-backed simulation state."""
         super().__init__()
@@ -244,6 +252,57 @@ class TiptopConfigBackedSimulation(ConfigBackedSimulation):
         )
 
     # INI field helpers
+
+    @classmethod
+    def _write_atmosphere_profile_fields(
+        cls,
+        parser: ConfigParser,
+        profile: Mapping[str, Any],
+    ) -> None:
+        """Write shared atmosphere profile fields into a TIPTOP/MASTSEL INI.
+
+        This helper owns only the common INI dialect for profile fields such as
+        ``L0`` and ``Cn2Weights``. Backend-specific strength policy, including
+        whether runtime ``r0_m`` is represented as ``Seeing`` or ``r0_Value``,
+        remains the subclass responsibility.
+        """
+        if not parser.has_section("atmosphere"):
+            return
+        atmosphere_section = parser["atmosphere"]
+        for src_key, dst_key in cls.ATM_PROFILE_KEYS_TO_INI_FIELDS.items():
+            if src_key not in profile:
+                continue
+            value = profile[src_key]
+            if isinstance(value, np.ndarray):
+                atmosphere_section[dst_key] = _format_ini_array(value)
+            else:
+                atmosphere_section[dst_key] = f"{float(value):.6g}"
+
+    @staticmethod
+    def _write_source_geometry_fields(
+        parser: ConfigParser,
+        section: str,
+        r_arcsec: np.ndarray,
+        theta_deg: np.ndarray,
+    ) -> None:
+        """Write polar source geometry fields into a TIPTOP/MASTSEL INI section."""
+        if not parser.has_section(section):
+            return
+        parser[section]["Zenith"] = _format_ini_array(r_arcsec)
+        parser[section]["Azimuth"] = _format_ini_array(theta_deg)
+
+    @classmethod
+    def _write_science_source_fields(
+        cls,
+        parser: ConfigParser,
+        r_arcsec: np.ndarray,
+        theta_deg: np.ndarray,
+        wavelength_um: float | None,
+    ) -> None:
+        """Write science source geometry and optional wavelength into the INI."""
+        cls._write_source_geometry_fields(parser, "sources_science", r_arcsec, theta_deg)
+        if wavelength_um is not None and parser.has_section("sources_science"):
+            parser["sources_science"]["Wavelength"] = f"[{float(wavelength_um) * 1e-6:.6e}]"
 
     @staticmethod
     def _get_required_atm_wavelength_m(parser: ConfigParser, purpose: str) -> float:

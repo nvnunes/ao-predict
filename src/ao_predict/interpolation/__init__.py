@@ -1,10 +1,10 @@
-"""Versioned interpolation artifacts for Direct Hybrid workflows.
+"""Versioned interpolation artifacts for Hybrid workflows.
 
 This public submodule owns the generic AO Predict artifact contract for
 science high-order PSF interpolation and NGS high-order metric interpolation.
 Objects are built, validated, evaluated, replay-tested, saved, and loaded
 through the functions exported here. The package root intentionally does not
-re-export these names while the Direct Hybrid API is still being introduced.
+re-export these names while the Hybrid API is still being introduced.
 """
 
 from ._core import RbfInterpolationConfig, zenith_angle_to_airmass

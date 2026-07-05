@@ -8,6 +8,7 @@ from ao_predict import (
     AnalysisSimulation,
     AnalysisSimulationLoadPayload,
     __version__,
+    HybridSimulation,
     load_analysis_dataset,
 )
 from ao_predict.simulation import ConfigBackedSimulation, TiptopBaseConfig, TiptopConfigBackedSimulation, TiptopSimulation
@@ -48,6 +49,7 @@ def test_simulation_module_config_backed_exports() -> None:
     assert simulation.TiptopConfigBackedSimulation is TiptopConfigBackedSimulation
     assert simulation.TiptopBaseConfig is TiptopBaseConfig
     assert simulation.TiptopSimulation is TiptopSimulation
+    assert simulation.HybridSimulation is HybridSimulation
 
 
 def test_interpolation_submodule_exports_without_root_exports() -> None:
