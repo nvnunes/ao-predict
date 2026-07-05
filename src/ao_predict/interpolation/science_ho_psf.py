@@ -24,7 +24,6 @@ from ._core import (
     interpolation_axis_weights,
     load_payload,
     make_scaled_rbf_model,
-    normalize_psfs,
     require_finite_vector,
     require_positive_scalar,
     require_positive_vector,
@@ -32,7 +31,6 @@ from ._core import (
     save_payload,
     unique_sorted,
     validate_payload_kind,
-    validate_psf_array,
     validate_rbf_config,
     zenith_angle_to_airmass,
 )
@@ -49,14 +47,17 @@ class ScienceHoPsfSamples:
 
     The public plane axes are zenith angle and wavelength. Each plane contains
     one PSF at every field coordinate. Pixel scale is a plane-level value and
-    full ``PsfMetadata`` fields are retained for future PSF-statistic use.
+    full ``PsfMetadata`` fields are retained for future PSF-statistic use. PSFs
+    are fitted and evaluated in the source artifact flux convention; this
+    artifact does not clip or normalize them.
 
     Attributes:
         zenith_angle_deg: Plane zenith angles in degrees, one value per plane.
         wavelength_um: Plane wavelengths in microns, one value per plane.
         x_arcsec: Science field x-coordinates in arcseconds.
         y_arcsec: Science field y-coordinates in arcseconds.
-        psfs: PSF array with shape ``(planes, points, y, x)``.
+        psfs: PSF array with shape ``(planes, points, y, x)``. Each PSF must
+            have finite pixels and strictly positive total flux.
         pixel_scale_mas: Plane pixel scales in milliarcseconds per pixel.
         tel_diameter_m: Telescope diameter in meters.
         tel_pupil: Shared two-dimensional telescope pupil.
@@ -79,8 +80,8 @@ class ScienceHoPsfPrediction:
     """Science high-order PSF prediction returned by an artifact evaluation.
 
     Attributes:
-        psfs: Predicted PSF cube with shape ``(points, y, x)``. Each PSF is
-            clipped to non-negative values and normalized to unit flux.
+        psfs: Predicted PSF cube with shape ``(points, y, x)`` in the source
+            artifact flux convention.
         pixel_scale_mas: Artifact-backed pixel scale in milliarcseconds per
             pixel for the evaluated zenith-angle and wavelength plane.
         metadata: ``PsfMetadata`` carrying the requested wavelength, evaluated
@@ -97,10 +98,10 @@ class ScienceHoPsfReplaySummary:
     """Source-node replay residual summary for a science-HO-PSF artifact.
 
     Attributes:
-        psf_nrms_mean: Mean normalized RMS PSF residual across all replayed
-            source PSFs.
-        psf_nrms_max: Maximum normalized RMS PSF residual across all replayed
-            source PSFs.
+        psf_nrms_mean: Mean normalized RMS residual between flux-preserving
+            replayed PSFs and source PSFs.
+        psf_nrms_max: Maximum normalized RMS residual between flux-preserving
+            replayed PSFs and source PSFs.
         pixel_scale_abs_max_mas: Maximum absolute pixel-scale residual in
             milliarcseconds per pixel.
         metric_rms: RMS residuals for replayed AO Predict metrics. Keys are
@@ -127,7 +128,8 @@ class ScienceHoPsfInterpolator:
     The artifact stores a complete rectangular zenith-angle by wavelength
     plane grid. Each plane has one scaled field RBF model over science
     ``x_arcsec``/``y_arcsec`` coordinates, and plane interpolation is linear in
-    derived airmass and wavelength.
+    derived airmass and wavelength. The stored field models preserve the source
+    PSF flux convention instead of normalizing PSFs to unit flux.
 
     Attributes:
         zenith_angle_deg_axis: Supported zenith-angle axis in degrees.
@@ -178,7 +180,7 @@ def build_science_ho_psf_interpolator(
 
     Args:
         samples: Source science-HO-PSF samples. All arrays are validated before
-            fitting and PSFs are normalized before they enter the field RBFs.
+            fitting; PSFs enter the field RBFs in their source flux convention.
         interpolation_config: Optional field RBF configuration. When omitted,
             the science-HO-PSF default is used.
 
@@ -216,7 +218,7 @@ def build_science_ho_psf_interpolator(
         plane_models.append(
             make_scaled_rbf_model(
                 coordinates,
-                {"psf": normalize_psfs(prepared.psfs[plane_index]).reshape(coordinates.shape[0], -1)},
+                {"psf": np.asarray(prepared.psfs[plane_index], dtype=np.float32).reshape(coordinates.shape[0], -1)},
                 config,
             )
         )
@@ -277,12 +279,12 @@ def evaluate_science_ho_psf_interpolator(
             ``x_arcsec`` length.
 
     Returns:
-        Predicted normalized PSFs and artifact-backed ``PsfMetadata``.
+        Predicted flux-preserving PSFs and artifact-backed ``PsfMetadata``.
 
     Raises:
         ValueError: If the query is outside the supported zenith-angle or
             wavelength axes, field coordinates are malformed, or predicted PSFs
-            cannot be normalized.
+            have non-finite values or non-positive total flux.
     """
 
     weights = _plane_weights(interpolator, zenith_angle_deg=zenith_angle_deg, wavelength_um=wavelength_um)
@@ -296,7 +298,7 @@ def evaluate_science_ho_psf_interpolator(
             *interpolator.psf_shape,
         )
         pixel_scale_mas += float(weight) * float(interpolator.pixel_scale_mas_grid[grid_index])
-    psfs = normalize_psfs(psfs)
+    _validate_psf_flux(psfs, label="predicted psfs")
     pixel_scale_mas = float(pixel_scale_mas)
     return ScienceHoPsfPrediction(
         psfs=psfs,
@@ -355,7 +357,9 @@ def replay_science_ho_psf_interpolator(
 
     Replay evaluates the artifact at every source zenith-angle/wavelength plane
     and every source science field point. The summary reports PSF NRMS,
-    pixel-scale residuals, and AO Predict FWHM/EE residuals.
+    pixel-scale residuals, and AO Predict FWHM/EE residuals. PSF residuals are
+    computed on flux-preserving PSFs; metric residuals use the normal AO Predict
+    stats preprocessing path.
 
     Args:
         interpolator: Science-HO-PSF artifact to validate.
@@ -383,7 +387,7 @@ def replay_science_ho_psf_interpolator(
             x_arcsec=prepared.x_arcsec,
             y_arcsec=prepared.y_arcsec,
         )
-        reference = normalize_psfs(prepared.psfs[index])
+        reference = np.asarray(prepared.psfs[index], dtype=np.float32)
         residuals.append(_psf_nrms(reference, prediction.psfs))
         pixel_scale_errors.append(abs(float(pixel_scale_mas) - prediction.pixel_scale_mas))
         plane_metric_errors = _science_metric_errors(
@@ -465,7 +469,7 @@ def _prepare_samples(samples: ScienceHoPsfSamples) -> ScienceHoPsfSamples:
     wavelength_um = require_positive_vector(samples.wavelength_um, label="wavelength_um", length=zenith_angle_deg.size)
     pixel_scale_mas = require_positive_vector(samples.pixel_scale_mas, label="pixel_scale_mas", length=zenith_angle_deg.size)
     coordinates = field_coordinates(samples.x_arcsec, samples.y_arcsec)
-    psfs = validate_psf_array(samples.psfs, label="psfs", ndim=4)
+    psfs = _validate_source_psfs(samples.psfs, label="psfs")
     if psfs.shape[:2] != (zenith_angle_deg.size, coordinates.shape[0]):
         raise ValueError(
             "psfs shape must be (planes, points, y, x); "
@@ -509,6 +513,24 @@ def _psf_nrms(reference: np.ndarray, measured: np.ndarray) -> np.ndarray:
     numerator = np.sqrt(np.mean((np.asarray(measured) - np.asarray(reference)) ** 2, axis=(-2, -1)))
     denominator = np.sqrt(np.mean(np.asarray(reference) ** 2, axis=(-2, -1)))
     return numerator / denominator
+
+
+def _validate_source_psfs(psfs: Any, *, label: str) -> np.ndarray:
+    array = np.asarray(psfs, dtype=np.float32)
+    if array.ndim != 4:
+        raise ValueError(f"{label} must have ndim=4, got shape {array.shape}.")
+    if not np.all(np.isfinite(array)):
+        raise ValueError(f"{label} must contain only finite values.")
+    _validate_psf_flux(array, label=label)
+    return array
+
+
+def _validate_psf_flux(psfs: np.ndarray, *, label: str) -> None:
+    flux = np.sum(np.asarray(psfs, dtype=np.float64), axis=(-2, -1))
+    if not np.all(np.isfinite(flux)):
+        raise ValueError(f"{label} must have finite per-PSF total flux.")
+    if np.any(flux <= 0.0):
+        raise ValueError(f"{label} must have strictly positive per-PSF total flux.")
 
 
 def _science_metric_errors(

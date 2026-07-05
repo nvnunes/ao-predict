@@ -12,6 +12,25 @@ from typing import Any
 import yaml
 
 from . import __version__
+from .interpolation import (
+    RbfInterpolationConfig,
+    build_ngs_ho_metric_interpolator,
+    build_ngs_ho_metric_interpolator_from_psfs,
+    build_ngs_ho_metric_samples_from_psfs,
+    build_science_ho_psf_interpolator,
+    load_ngs_ho_metric_interpolator,
+    load_science_ho_psf_interpolator,
+    replay_ngs_ho_metric_interpolator,
+    replay_science_ho_psf_interpolator,
+    save_ngs_ho_metric_interpolator,
+    save_science_ho_psf_interpolator,
+)
+from .interpolation._inputs import (
+    _load_ngs_ho_metric_inputs,
+    _load_ngs_ho_psf_inputs,
+    _load_science_ho_psf_inputs,
+)
+from .interpolation.science_ho_psf import SCIENCE_HO_PSF_DEFAULT_RBF_CONFIG
 from .simulation import schema
 from .simulation.config import normalize_table_options_config
 from .simulation import SimulationState
@@ -329,6 +348,134 @@ def _handle_simulate_reset(args: argparse.Namespace) -> int:
     return 0
 
 
+# Interpolation command handlers
+
+def _rbf_config_from_args(args: argparse.Namespace, defaults: RbfInterpolationConfig) -> RbfInterpolationConfig | None:
+    """Return optional CLI RBF config overrides."""
+    if args.kernel is None and args.smoothing is None and args.degree is None:
+        return None
+    return RbfInterpolationConfig(
+        kernel=str(args.kernel) if args.kernel is not None else defaults.kernel,
+        smoothing=float(args.smoothing) if args.smoothing is not None else defaults.smoothing,
+        degree=int(args.degree) if args.degree is not None else defaults.degree,
+    )
+
+
+def _handle_interpolation_build_science_ho_psf(args: argparse.Namespace) -> int:
+    """Handle ``ao-predict interpolation build-science-ho-psf`` command."""
+    samples = _load_science_ho_psf_inputs(args.inputs)
+    interpolator = build_science_ho_psf_interpolator(
+        samples,
+        interpolation_config=_rbf_config_from_args(args, SCIENCE_HO_PSF_DEFAULT_RBF_CONFIG),
+    )
+    save_science_ho_psf_interpolator(interpolator, args.output, overwrite=bool(args.overwrite))
+    print(f"Saved science-HO-PSF interpolator: {args.output}")
+    return 0
+
+
+def _handle_interpolation_build_ngs_ho_metric_from_psfs(args: argparse.Namespace) -> int:
+    """Handle ``ao-predict interpolation build-ngs-ho-metric-from-psfs``."""
+    samples = _load_ngs_ho_psf_inputs(args.inputs)
+    interpolator = build_ngs_ho_metric_interpolator_from_psfs(
+        samples,
+        interpolation_config=_rbf_config_from_args(args, RbfInterpolationConfig()),
+    )
+    save_ngs_ho_metric_interpolator(interpolator, args.output, overwrite=bool(args.overwrite))
+    print(f"Saved NGS-HO-metric interpolator: {args.output}")
+    return 0
+
+
+def _handle_interpolation_build_ngs_ho_metric(args: argparse.Namespace) -> int:
+    """Handle ``ao-predict interpolation build-ngs-ho-metric`` command."""
+    samples = _load_ngs_ho_metric_inputs(args.inputs)
+    interpolator = build_ngs_ho_metric_interpolator(
+        samples,
+        interpolation_config=_rbf_config_from_args(args, RbfInterpolationConfig()),
+    )
+    save_ngs_ho_metric_interpolator(interpolator, args.output, overwrite=bool(args.overwrite))
+    print(f"Saved NGS-HO-metric interpolator: {args.output}")
+    return 0
+
+
+def _handle_interpolation_replay_science_ho_psf(args: argparse.Namespace) -> int:
+    """Handle ``ao-predict interpolation replay-science-ho-psf`` command."""
+    samples = _load_science_ho_psf_inputs(args.inputs)
+    interpolator = load_science_ho_psf_interpolator(args.artifact)
+    summary = replay_science_ho_psf_interpolator(interpolator, samples)
+    _write_csv_rows(
+        args.summary_csv,
+        [
+            {
+                "num_planes": summary.num_planes,
+                "num_points": summary.num_points,
+                "psf_nrms_mean": summary.psf_nrms_mean,
+                "psf_nrms_max": summary.psf_nrms_max,
+                "pixel_scale_abs_max_mas": summary.pixel_scale_abs_max_mas,
+                "fwhm_mas_rms": summary.metric_rms["fwhm_mas"],
+                "fwhm_mas_max_abs": summary.metric_max_abs["fwhm_mas"],
+                "ee_rms": summary.metric_rms["ee"],
+                "ee_max_abs": summary.metric_max_abs["ee"],
+            }
+        ],
+        overwrite=bool(args.overwrite),
+    )
+    print(f"Saved science-HO-PSF replay summary: {args.summary_csv}")
+    return 0
+
+
+def _handle_interpolation_replay_ngs_ho_metric(args: argparse.Namespace) -> int:
+    """Handle ``ao-predict interpolation replay-ngs-ho-metric`` command."""
+    samples = _load_ngs_ho_metric_inputs(args.inputs)
+    interpolator = load_ngs_ho_metric_interpolator(args.artifact)
+    summary = replay_ngs_ho_metric_interpolator(interpolator, samples)
+    _write_ngs_replay_summary_csv(args.summary_csv, summary, overwrite=bool(args.overwrite))
+    print(f"Saved NGS-HO-metric replay summary: {args.summary_csv}")
+    return 0
+
+
+def _handle_interpolation_replay_ngs_ho_metric_from_psfs(args: argparse.Namespace) -> int:
+    """Handle ``ao-predict interpolation replay-ngs-ho-metric-from-psfs``."""
+    samples = build_ngs_ho_metric_samples_from_psfs(_load_ngs_ho_psf_inputs(args.inputs))
+    interpolator = load_ngs_ho_metric_interpolator(args.artifact)
+    summary = replay_ngs_ho_metric_interpolator(interpolator, samples)
+    _write_ngs_replay_summary_csv(args.summary_csv, summary, overwrite=bool(args.overwrite))
+    print(f"Saved NGS-HO-metric replay summary: {args.summary_csv}")
+    return 0
+
+
+def _write_ngs_replay_summary_csv(path: Path, summary: Any, *, overwrite: bool) -> None:
+    """Write an NGS-HO-metric replay summary to CSV."""
+    _write_csv_rows(
+        path,
+        [
+            {
+                "num_planes": summary.num_planes,
+                "num_points": summary.num_points,
+                "ee_rms": summary.metric_rms["ee"],
+                "ee_max_abs": summary.metric_max_abs["ee"],
+                "fwhm_mas_rms": summary.metric_rms["fwhm_mas"],
+                "fwhm_mas_max_abs": summary.metric_max_abs["fwhm_mas"],
+                "sr_rms": summary.metric_rms["sr"],
+                "sr_max_abs": summary.metric_max_abs["sr"],
+            }
+        ],
+        overwrite=overwrite,
+    )
+
+
+def _write_csv_rows(path: Path, rows: list[dict[str, Any]], *, overwrite: bool) -> None:
+    """Write flat CLI summary rows to CSV."""
+    path = Path(path)
+    if path.exists() and not overwrite:
+        raise FileExistsError(f"Refusing to overwrite existing CSV: {path}")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fieldnames = list(rows[0]) if rows else []
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
 # Parser construction
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -342,6 +489,8 @@ def _build_parser() -> argparse.ArgumentParser:
 
     simulate_parser = subparsers.add_parser("simulate", help="simulation mode commands")
     simulate_subparsers = simulate_parser.add_subparsers(dest="mode_command", metavar="command", required=True)
+    interpolation_parser = subparsers.add_parser("interpolation", help="interpolation artifact commands")
+    interpolation_subparsers = interpolation_parser.add_subparsers(dest="mode_command", metavar="command", required=True)
 
     simulate_command_help: dict[str, str] = {}
 
@@ -386,8 +535,77 @@ def _build_parser() -> argparse.ArgumentParser:
     simulate_check_parser.add_argument("dataset", help="dataset HDF5 path")
     simulate_check_parser.add_argument("--config", help="optional initialization config YAML expected to match the dataset")
 
+    interpolation_command_help: dict[str, str] = {}
+
+    def _add_rbf_options(command_parser: argparse.ArgumentParser) -> None:
+        command_parser.add_argument("--kernel", default=None, help="optional SciPy RBF kernel override")
+        command_parser.add_argument("--smoothing", type=float, default=None, help="optional RBF smoothing override")
+        command_parser.add_argument("--degree", type=int, default=None, help="optional RBF degree override")
+
+    interpolation_command_help["build-science-ho-psf"] = "build science-HO-PSF interpolator artifact"
+    build_science_parser = interpolation_subparsers.add_parser(
+        "build-science-ho-psf",
+        help=interpolation_command_help["build-science-ho-psf"],
+    )
+    build_science_parser.add_argument("--inputs", type=Path, required=True, help="science-HO-PSF build input package")
+    build_science_parser.add_argument("--output", type=Path, required=True, help="output interpolator artifact path")
+    build_science_parser.add_argument("--overwrite", action="store_true", help="overwrite output artifact if it exists")
+    _add_rbf_options(build_science_parser)
+
+    interpolation_command_help["build-ngs-ho-metric-from-psfs"] = "build NGS-HO-metric interpolator from NGS-HO PSFs"
+    build_ngs_from_psfs_parser = interpolation_subparsers.add_parser(
+        "build-ngs-ho-metric-from-psfs",
+        help=interpolation_command_help["build-ngs-ho-metric-from-psfs"],
+    )
+    build_ngs_from_psfs_parser.add_argument("--inputs", type=Path, required=True, help="NGS-HO-PSF build input package")
+    build_ngs_from_psfs_parser.add_argument("--output", type=Path, required=True, help="output interpolator artifact path")
+    build_ngs_from_psfs_parser.add_argument("--overwrite", action="store_true", help="overwrite output artifact if it exists")
+    _add_rbf_options(build_ngs_from_psfs_parser)
+
+    interpolation_command_help["build-ngs-ho-metric"] = "build NGS-HO-metric interpolator from measured metrics"
+    build_ngs_parser = interpolation_subparsers.add_parser(
+        "build-ngs-ho-metric",
+        help=interpolation_command_help["build-ngs-ho-metric"],
+    )
+    build_ngs_parser.add_argument("--inputs", type=Path, required=True, help="NGS-HO-metric build input package")
+    build_ngs_parser.add_argument("--output", type=Path, required=True, help="output interpolator artifact path")
+    build_ngs_parser.add_argument("--overwrite", action="store_true", help="overwrite output artifact if it exists")
+    _add_rbf_options(build_ngs_parser)
+
+    interpolation_command_help["replay-science-ho-psf"] = "replay science-HO-PSF artifact against saved inputs"
+    replay_science_parser = interpolation_subparsers.add_parser(
+        "replay-science-ho-psf",
+        help=interpolation_command_help["replay-science-ho-psf"],
+    )
+    replay_science_parser.add_argument("--inputs", type=Path, required=True, help="science-HO-PSF build input package")
+    replay_science_parser.add_argument("--artifact", type=Path, required=True, help="science-HO-PSF interpolator artifact")
+    replay_science_parser.add_argument("--summary-csv", type=Path, required=True, help="output replay summary CSV path")
+    replay_science_parser.add_argument("--overwrite", action="store_true", help="overwrite summary CSV if it exists")
+
+    interpolation_command_help["replay-ngs-ho-metric"] = "replay NGS-HO-metric artifact against saved metric inputs"
+    replay_ngs_parser = interpolation_subparsers.add_parser(
+        "replay-ngs-ho-metric",
+        help=interpolation_command_help["replay-ngs-ho-metric"],
+    )
+    replay_ngs_parser.add_argument("--inputs", type=Path, required=True, help="NGS-HO-metric build input package")
+    replay_ngs_parser.add_argument("--artifact", type=Path, required=True, help="NGS-HO-metric interpolator artifact")
+    replay_ngs_parser.add_argument("--summary-csv", type=Path, required=True, help="output replay summary CSV path")
+    replay_ngs_parser.add_argument("--overwrite", action="store_true", help="overwrite summary CSV if it exists")
+
+    interpolation_command_help["replay-ngs-ho-metric-from-psfs"] = "replay NGS-HO-metric artifact against saved PSF inputs"
+    replay_ngs_from_psfs_parser = interpolation_subparsers.add_parser(
+        "replay-ngs-ho-metric-from-psfs",
+        help=interpolation_command_help["replay-ngs-ho-metric-from-psfs"],
+    )
+    replay_ngs_from_psfs_parser.add_argument("--inputs", type=Path, required=True, help="NGS-HO-PSF build input package")
+    replay_ngs_from_psfs_parser.add_argument("--artifact", type=Path, required=True, help="NGS-HO-metric interpolator artifact")
+    replay_ngs_from_psfs_parser.add_argument("--summary-csv", type=Path, required=True, help="output replay summary CSV path")
+    replay_ngs_from_psfs_parser.add_argument("--overwrite", action="store_true", help="overwrite summary CSV if it exists")
+
     parser.epilog = "simulate commands:\n" + "\n".join(
         f"  {name:<6} {help_text}" for name, help_text in simulate_command_help.items()
+    ) + "\n\ninterpolation commands:\n" + "\n".join(
+        f"  {name:<33} {help_text}" for name, help_text in interpolation_command_help.items()
     )
 
     return parser
@@ -418,6 +636,20 @@ def main() -> int:
             return _handle_simulate_reset(args)
         if args.mode_command == "check":
             return _handle_simulate_check(args)
+
+    if args.mode == "interpolation":
+        if args.mode_command == "build-science-ho-psf":
+            return _handle_interpolation_build_science_ho_psf(args)
+        if args.mode_command == "build-ngs-ho-metric-from-psfs":
+            return _handle_interpolation_build_ngs_ho_metric_from_psfs(args)
+        if args.mode_command == "build-ngs-ho-metric":
+            return _handle_interpolation_build_ngs_ho_metric(args)
+        if args.mode_command == "replay-science-ho-psf":
+            return _handle_interpolation_replay_science_ho_psf(args)
+        if args.mode_command == "replay-ngs-ho-metric":
+            return _handle_interpolation_replay_ngs_ho_metric(args)
+        if args.mode_command == "replay-ngs-ho-metric-from-psfs":
+            return _handle_interpolation_replay_ngs_ho_metric_from_psfs(args)
 
     parser.print_help()
     return 2

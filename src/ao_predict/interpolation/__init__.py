@@ -8,6 +8,11 @@ re-export these names while the Direct Hybrid API is still being introduced.
 """
 
 from ._core import RbfInterpolationConfig, zenith_angle_to_airmass
+from ._inputs import (
+    save_ngs_ho_metric_inputs,
+    save_ngs_ho_psf_inputs,
+    save_science_ho_psf_inputs,
+)
 from .ngs_ho_metric import (
     NgsHoMetricInterpolator,
     NgsHoMetricPrediction,
@@ -55,7 +60,10 @@ __all__ = [
     "RbfInterpolationConfig",
     "replay_ngs_ho_metric_interpolator",
     "replay_science_ho_psf_interpolator",
+    "save_ngs_ho_metric_inputs",
     "save_ngs_ho_metric_interpolator",
+    "save_ngs_ho_psf_inputs",
+    "save_science_ho_psf_inputs",
     "save_science_ho_psf_interpolator",
     "ScienceHoPsfInterpolator",
     "ScienceHoPsfPrediction",

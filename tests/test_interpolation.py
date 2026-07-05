@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+import csv
+import pickle
+import sys
+
 import numpy as np
 import pytest
 
+from ao_predict.cli import main as cli_main
 from ao_predict.interpolation import (
     NgsHoMetricInterpolator,
     NgsHoMetricSamples,
@@ -19,7 +24,10 @@ from ao_predict.interpolation import (
     load_science_ho_psf_interpolator,
     replay_ngs_ho_metric_interpolator,
     replay_science_ho_psf_interpolator,
+    save_ngs_ho_metric_inputs,
     save_ngs_ho_metric_interpolator,
+    save_ngs_ho_psf_inputs,
+    save_science_ho_psf_inputs,
     save_science_ho_psf_interpolator,
     validate_ngs_ho_metric_interpolator,
     validate_ngs_ho_metric_query,
@@ -36,9 +44,19 @@ def test_science_ho_psf_interpolator_round_trips_and_replays_sources(tmp_path) -
     save_science_ho_psf_interpolator(interpolator, path)
     loaded = load_science_ho_psf_interpolator(path)
     replay = replay_science_ho_psf_interpolator(loaded, _science_samples())
+    prediction = evaluate_science_ho_psf_interpolator(
+        loaded,
+        zenith_angle_deg=20.0,
+        wavelength_um=1.0,
+        x_arcsec=_science_samples().x_arcsec,
+        y_arcsec=_science_samples().y_arcsec,
+    )
+    expected_flux = np.sum(_science_samples().psfs[0], axis=(-2, -1))
 
     assert loaded.interpolation_config.smoothing == pytest.approx(0.0)
     assert loaded.interpolation_config.degree == 1
+    np.testing.assert_allclose(np.sum(prediction.psfs, axis=(-2, -1)), expected_flux, rtol=1.0e-6)
+    assert not np.allclose(expected_flux, 1.0)
     assert replay.psf_nrms_max == pytest.approx(0.0, abs=1.0e-5)
     assert replay.pixel_scale_abs_max_mas == pytest.approx(0.0)
     assert replay.metric_max_abs["fwhm_mas"] == pytest.approx(0.0, abs=1.0e-5)
@@ -67,6 +85,7 @@ def test_science_ho_psf_interpolator_interpolates_wavelength_zenith_and_pixel_sc
     )
 
     assert prediction.psfs.shape == (1, 9, 9)
+    assert float(np.sum(prediction.psfs)) > 1.0
     assert prediction.pixel_scale_mas == pytest.approx(6.375)
     assert prediction.metadata.pixel_scale_mas == pytest.approx(6.375)
 
@@ -106,6 +125,22 @@ def test_science_ho_psf_interpolator_rejects_malformed_grids() -> None:
                 y_arcsec=samples.y_arcsec,
                 psfs=samples.psfs,
                 pixel_scale_mas=np.array([4.0, -1.0, 4.5, 9.0]),
+                tel_diameter_m=samples.tel_diameter_m,
+                tel_pupil=samples.tel_pupil,
+            )
+        )
+
+    zero_flux = np.array(samples.psfs, copy=True)
+    zero_flux[0, 0] = 0.0
+    with pytest.raises(ValueError, match="strictly positive per-PSF total flux"):
+        build_science_ho_psf_interpolator(
+            ScienceHoPsfSamples(
+                zenith_angle_deg=samples.zenith_angle_deg,
+                wavelength_um=samples.wavelength_um,
+                x_arcsec=samples.x_arcsec,
+                y_arcsec=samples.y_arcsec,
+                psfs=zero_flux,
+                pixel_scale_mas=samples.pixel_scale_mas,
                 tel_diameter_m=samples.tel_diameter_m,
                 tel_pupil=samples.tel_pupil,
             )
@@ -286,6 +321,174 @@ def test_ngs_ho_psf_samples_require_full_psf_metadata() -> None:
         )
 
 
+def test_interpolation_cli_builds_and_replays_science_inputs(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    inputs = tmp_path / "science-inputs.pkl"
+    artifact = tmp_path / "science-artifact.pkl"
+    summary_csv = tmp_path / "science-summary.csv"
+    save_science_ho_psf_inputs(_science_samples(), inputs)
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "ao-predict",
+            "interpolation",
+            "build-science-ho-psf",
+            "--inputs",
+            str(inputs),
+            "--output",
+            str(artifact),
+            "--smoothing",
+            "0",
+        ],
+    )
+    assert cli_main() == 0
+    assert load_science_ho_psf_interpolator(artifact).interpolation_config.smoothing == pytest.approx(0.0)
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "ao-predict",
+            "interpolation",
+            "replay-science-ho-psf",
+            "--inputs",
+            str(inputs),
+            "--artifact",
+            str(artifact),
+            "--summary-csv",
+            str(summary_csv),
+        ],
+    )
+    assert cli_main() == 0
+    rows = _read_csv_rows(summary_csv)
+    assert rows[0]["num_planes"] == "4"
+    assert float(rows[0]["psf_nrms_max"]) == pytest.approx(0.0, abs=1.0e-5)
+    assert float(rows[0]["fwhm_mas_max_abs"]) == pytest.approx(0.0, abs=1.0e-5)
+
+
+def test_interpolation_cli_partial_rbf_overrides_keep_family_defaults(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    inputs = tmp_path / "science-inputs.pkl"
+    artifact = tmp_path / "science-artifact.pkl"
+    save_science_ho_psf_inputs(_science_samples(), inputs)
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "ao-predict",
+            "interpolation",
+            "build-science-ho-psf",
+            "--inputs",
+            str(inputs),
+            "--output",
+            str(artifact),
+            "--degree",
+            "1",
+        ],
+    )
+    assert cli_main() == 0
+    loaded = load_science_ho_psf_interpolator(artifact)
+    assert loaded.interpolation_config.degree == 1
+    assert loaded.interpolation_config.smoothing == pytest.approx(0.03)
+
+
+def test_interpolation_cli_builds_ngs_metric_from_psf_and_metric_inputs(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    psf_inputs = tmp_path / "ngs-psf-inputs.pkl"
+    metric_inputs = tmp_path / "ngs-metric-inputs.pkl"
+    artifact_from_psfs = tmp_path / "ngs-from-psfs.pkl"
+    artifact_from_metrics = tmp_path / "ngs-from-metrics.pkl"
+    summary_csv = tmp_path / "ngs-summary.csv"
+    psf_samples = _ngs_psf_samples()
+    metric_samples = build_ngs_ho_metric_samples_from_psfs(psf_samples)
+    save_ngs_ho_psf_inputs(psf_samples, psf_inputs)
+    save_ngs_ho_metric_inputs(metric_samples, metric_inputs)
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "ao-predict",
+            "interpolation",
+            "build-ngs-ho-metric-from-psfs",
+            "--inputs",
+            str(psf_inputs),
+            "--output",
+            str(artifact_from_psfs),
+            "--smoothing",
+            "0",
+        ],
+    )
+    assert cli_main() == 0
+    assert set(load_ngs_ho_metric_interpolator(artifact_from_psfs).metric_names) == {"ee", "fwhm_mas", "sr"}
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "ao-predict",
+            "interpolation",
+            "build-ngs-ho-metric",
+            "--inputs",
+            str(metric_inputs),
+            "--output",
+            str(artifact_from_metrics),
+            "--smoothing",
+            "0",
+        ],
+    )
+    assert cli_main() == 0
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "ao-predict",
+            "interpolation",
+            "replay-ngs-ho-metric-from-psfs",
+            "--inputs",
+            str(psf_inputs),
+            "--artifact",
+            str(artifact_from_psfs),
+            "--summary-csv",
+            str(summary_csv),
+        ],
+    )
+    assert cli_main() == 0
+    rows = _read_csv_rows(summary_csv)
+    assert rows[0]["num_planes"] == "2"
+    assert float(rows[0]["ee_max_abs"]) == pytest.approx(0.0, abs=1.0e-8)
+    assert float(rows[0]["sr_max_abs"]) == pytest.approx(0.0, abs=1.0e-8)
+
+
+def test_interpolation_cli_rejects_malformed_input_package(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    inputs = tmp_path / "bad-inputs.pkl"
+    artifact = tmp_path / "artifact.pkl"
+    with inputs.open("wb") as handle:
+        pickle.dump({"kind": "not_an_ao_predict_input", "version": 1}, handle)
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "ao-predict",
+            "interpolation",
+            "build-science-ho-psf",
+            "--inputs",
+            str(inputs),
+            "--output",
+            str(artifact),
+        ],
+    )
+    with pytest.raises(ValueError, match="Unsupported artifact kind"):
+        cli_main()
+
+
+def _read_csv_rows(path) -> list[dict[str, str]]:
+    with path.open("r", encoding="utf-8", newline="") as handle:
+        return list(csv.DictReader(handle))
+
+
 def _science_samples() -> ScienceHoPsfSamples:
     zenith = np.asarray([20.0, 20.0, 30.0, 30.0])
     wavelength = np.asarray([1.0, 2.0, 1.0, 2.0])
@@ -294,7 +497,10 @@ def _science_samples() -> ScienceHoPsfSamples:
     psfs = np.empty((4, 4, 9, 9), dtype=np.float32)
     for plane in range(4):
         for point, (px, py) in enumerate(zip(x, y, strict=True)):
-            psfs[plane, point] = _gaussian_psf(9, sigma=1.0 + 0.05 * plane, dx=0.1 * px, dy=0.1 * py)
+            psfs[plane, point] = (
+                (2.0 + 0.5 * plane + 0.25 * point)
+                * _gaussian_psf(9, sigma=1.0 + 0.05 * plane, dx=0.1 * px, dy=0.1 * py)
+            )
     return ScienceHoPsfSamples(
         zenith_angle_deg=zenith,
         wavelength_um=wavelength,
