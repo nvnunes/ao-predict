@@ -437,7 +437,7 @@ class HybridSimulation(TiptopConfigBackedSimulation):
         ctot = self._compute_mastsel_ctot(parser, setup, active_ngs, metrics)
         psd_mask = psd_valid_mask(ctot.ctot_nm2)
         psfs = np.asarray(science.psfs, dtype=np.float32).copy()
-        apply_direct_ctot_blur(
+        apply_ctot_blur(
             psfs,
             ctot.ctot_nm2,
             pixel_scale_mas=science.pixel_scale_mas,
@@ -926,7 +926,7 @@ class HybridSimulation(TiptopConfigBackedSimulation):
         )
 
 
-def apply_direct_ctot_blur(
+def apply_ctot_blur(
     psfs: np.ndarray,
     ctot_nm2: np.ndarray,
     *,
@@ -1118,7 +1118,7 @@ __all__ = [
     "LowOrderMas2NmAdapter",
     "NgsMetricProviderResult",
     "SciencePsfProviderResult",
-    "apply_direct_ctot_blur",
+    "apply_ctot_blur",
     "jitter_mas_from_ctot",
     "polar_to_cartesian",
     "psd_valid_mask",

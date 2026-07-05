@@ -32,7 +32,7 @@ from ao_predict.simulation.hybrid import (
     HybridSimulation,
     NgsMetricProviderResult,
     SciencePsfProviderResult,
-    apply_direct_ctot_blur,
+    apply_ctot_blur,
     jitter_mas_from_ctot,
 )
 from ao_predict.simulation.runner import _populate_result_stats, create_simulation_from_config
@@ -677,15 +677,15 @@ def test_hybrid_diagnostic_extension_fields_are_appended(tmp_path: Path) -> None
     assert "hybrid/mas2nm" in context.result.diagnostics
 
 
-def test_direct_ctot_blur_preserves_zero_ctot_and_flux() -> None:
+def test_ctot_blur_preserves_zero_ctot_and_flux() -> None:
     psfs = np.zeros((2, 9, 9), dtype=np.float32)
     psfs[:, 4, 4] = np.array([2.0, 5.0], dtype=np.float32)
     original = psfs.copy()
 
-    apply_direct_ctot_blur(psfs, np.zeros((2, 2, 2), dtype=float), pixel_scale_mas=4.0, mas2nm=2.0)
+    apply_ctot_blur(psfs, np.zeros((2, 2, 2), dtype=float), pixel_scale_mas=4.0, mas2nm=2.0)
     np.testing.assert_allclose(psfs, original)
 
-    apply_direct_ctot_blur(psfs, np.stack([np.eye(2), 2.0 * np.eye(2)]), pixel_scale_mas=4.0, mas2nm=2.0)
+    apply_ctot_blur(psfs, np.stack([np.eye(2), 2.0 * np.eye(2)]), pixel_scale_mas=4.0, mas2nm=2.0)
     np.testing.assert_allclose(np.sum(psfs, axis=(-2, -1)), np.array([2.0, 5.0]), rtol=1.0e-6)
     assert np.all(psfs >= 0.0)
 
