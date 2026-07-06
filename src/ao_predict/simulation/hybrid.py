@@ -471,6 +471,32 @@ class HybridSimulation(TiptopConfigBackedSimulation):
         """
         return np.asarray(_require_hybrid_result(context).psfs, dtype=np.float32)
 
+    def prepare_psfs_for_stats(
+        self,
+        psfs: np.ndarray,
+        setup: Mapping[str, Any] | SimulationSetup,
+        meta: Mapping[str, Any],
+    ) -> np.ndarray:
+        """Validate metric-ready Hybrid PSFs without renormalizing them.
+
+        Hybrid science-HO PSFs are prepared in their source flux convention
+        before interpolation, and finite-FOV Ctot blur can move energy outside
+        the retained image support. Core-stat preprocessing must therefore not
+        clip-and-sum-normalize the result after runtime blur.
+        """
+        del setup, meta
+        psfs_array = np.asarray(psfs)
+        if psfs_array.ndim != 3:
+            raise ValueError(f"Hybrid PSFs must have shape (N, y, x); got {psfs_array.shape}.")
+        if not np.all(np.isfinite(psfs_array)):
+            raise ValueError("Hybrid PSFs must contain only finite values.")
+        if np.any(psfs_array < 0.0):
+            raise ValueError("Hybrid PSFs must be non-negative.")
+        flux = np.sum(psfs_array, axis=(-2, -1), dtype=np.float64)
+        if not np.all(np.isfinite(flux)) or np.any(flux <= 0.0):
+            raise ValueError("Hybrid PSFs must have positive finite flux.")
+        return psfs
+
     def _extract_psf_parameters(self, context: SimulationContext) -> PsfParameters:
         """Extract provider-backed PSF metadata from runtime state.
 
@@ -933,11 +959,12 @@ def apply_ctot_blur(
     pixel_scale_mas: float,
     mas2nm: float,
 ) -> None:
-    """Apply Hybrid Ctot blur in place while preserving input flux.
+    """Apply finite-FOV Hybrid Ctot blur in place.
 
-    The image-plane OTF operation uses a temporary unit-flux working copy, then
-    rescales each blurred PSF back to that PSF's original total flux. Ctot unit
-    conversion is tied only to the MASTSEL ``mas2nm`` value.
+    Each PSF is zero-padded before applying the image-plane OTF, cropped back
+    to the retained PSF field of view, and clipped for numerical negative
+    pixels. The cropped result is not renormalized, so Ctot blur can move
+    energy outside the retained PSF support.
     """
     validate_ctot_shape(ctot_nm2, expected_size=np.asarray(psfs).shape[0], label="Ctot")
     psfs_array = np.asarray(psfs)
@@ -957,20 +984,48 @@ def apply_ctot_blur(
     if not np.any(valid):
         return
 
-    normalized = psfs_array.astype(np.float32, copy=True)
-    normalized /= input_flux[:, np.newaxis, np.newaxis]
-
     covariance_pix2 = diff_ctot / adapter.mas2nm**2 / float(pixel_scale_mas) ** 2
     for index, covariance in enumerate(covariance_pix2):
         if not valid[index]:
             continue
-        otf = _image_plane_gaussian_otf(covariance, normalized[index].shape)
-        raw = np.real(np.fft.ifft2(np.fft.fft2(normalized[index]) * otf))
+        original_shape = tuple(psfs_array[index].shape)
+        work_shape = tuple(2 * size for size in original_shape)
+        padded = _centered_pad(psfs_array[index].astype(np.float32, copy=False), work_shape)
+        otf = _image_plane_gaussian_otf(covariance, padded.shape)
+        raw = np.real(np.fft.ifft2(np.fft.fft2(padded) * otf))
+        raw = _center_crop(raw, original_shape)
         raw = np.clip(raw.astype(np.float32, copy=False), 0.0, None)
         raw_sum = float(np.sum(raw, dtype=np.float64))
         if raw_sum <= 0.0:
             raise ValueError(f"Ctot blur produced non-positive flux for PSF {index}.")
-        psfs_array[index] = raw / raw_sum * input_flux[index]
+        psfs_array[index] = raw
+
+
+def _centered_pad(psf: np.ndarray, shape: tuple[int, int]) -> np.ndarray:
+    source_y, source_x = psf.shape
+    target_y, target_x = shape
+    if target_y < source_y or target_x < source_x:
+        raise ValueError(f"Target padded shape {shape} cannot contain PSF shape {psf.shape}.")
+    before_y = (target_y - source_y) // 2
+    before_x = (target_x - source_x) // 2
+    return np.pad(
+        psf,
+        (
+            (before_y, target_y - source_y - before_y),
+            (before_x, target_x - source_x - before_x),
+        ),
+        mode="constant",
+    )
+
+
+def _center_crop(psf: np.ndarray, shape: tuple[int, int]) -> np.ndarray:
+    target_y, target_x = shape
+    source_y, source_x = psf.shape
+    if target_y > source_y or target_x > source_x:
+        raise ValueError(f"Target crop shape {shape} cannot exceed PSF shape {psf.shape}.")
+    start_y = (source_y - target_y) // 2
+    start_x = (source_x - target_x) // 2
+    return psf[start_y : start_y + target_y, start_x : start_x + target_x]
 
 
 def jitter_mas_from_ctot(ctot_mas2: np.ndarray) -> np.ndarray:
