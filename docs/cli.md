@@ -1,21 +1,31 @@
 # CLI Documentation
 
-This document describes the `ao-predict` command-line interface for simulation dataset lifecycle management.
+This document describes the `ao-predict` command-line interface for simulation
+dataset lifecycle management and interpolation artifact build workflows.
 
 ## Command Structure
 ```bash
-ao-predict [--version] simulate <subcommand> [options]
+ao-predict [--version] <command-family> <subcommand> [options]
 ```
 
 `ao-predict --version` prints the package version and exits.
 
-Subcommands:
+Command families:
+- `simulate`: simulation dataset lifecycle management
+- `interpolation`: interpolation artifact build workflows
+
+Simulation subcommands:
 - `init`
 - `run`
 - `retry`
 - `resume`
 - `reset`
 - `check`
+
+Interpolation subcommands:
+- `build-science-ho-psf`
+- `build-ngs-ho-metric-from-psfs`
+- `build-ngs-ho-metric`
 
 ## `simulate init`
 Initialize a dataset file from a YAML configuration.
@@ -143,6 +153,68 @@ Behavior:
 
 Output:
 - `Reset summary: changed=<C>`
+
+## `interpolation build-science-ho-psf`
+Build a science-HO-PSF interpolator artifact from a saved science-HO-PSF input
+package.
+
+```bash
+ao-predict interpolation build-science-ho-psf --inputs <inputs.pkl> --output <artifact.pkl> [--overwrite]
+```
+
+Options:
+- `--inputs`: science-HO-PSF build input package produced by
+  `ao_predict.interpolation.save_science_ho_psf_inputs(...)`.
+- `--output`: output interpolator artifact path.
+- `--overwrite`: overwrite the output artifact if it exists.
+
+Behavior:
+- Validates the input package.
+- Builds the science-HO-PSF artifact using the package's rectangular source
+  grid. This command does not accept RBF options.
+- Saves the artifact to `--output`.
+
+## `interpolation build-ngs-ho-metric-from-psfs`
+Build an NGS-HO-metric interpolator artifact from saved NGS-HO-PSF samples.
+
+```bash
+ao-predict interpolation build-ngs-ho-metric-from-psfs --inputs <inputs.pkl> --output <artifact.pkl> [--kernel <name>] [--smoothing <value>] [--degree <int>] [--overwrite]
+```
+
+Options:
+- `--inputs`: NGS-HO-PSF build input package produced by
+  `ao_predict.interpolation.save_ngs_ho_psf_inputs(...)`.
+- `--output`: output interpolator artifact path.
+- `--kernel`: optional SciPy RBF kernel override.
+- `--smoothing`: optional RBF smoothing override.
+- `--degree`: optional RBF degree override.
+- `--overwrite`: overwrite the output artifact if it exists.
+
+Behavior:
+- Computes AO Predict NGS-HO metrics from the saved PSFs.
+- Builds the NGS-HO-metric artifact using scaled RBF interpolation.
+- Saves the artifact to `--output`.
+
+## `interpolation build-ngs-ho-metric`
+Build an NGS-HO-metric interpolator artifact from saved measured metric samples.
+
+```bash
+ao-predict interpolation build-ngs-ho-metric --inputs <inputs.pkl> --output <artifact.pkl> [--kernel <name>] [--smoothing <value>] [--degree <int>] [--overwrite]
+```
+
+Options:
+- `--inputs`: NGS-HO-metric input package produced by
+  `ao_predict.interpolation.save_ngs_ho_metric_inputs(...)`.
+- `--output`: output interpolator artifact path.
+- `--kernel`: optional SciPy RBF kernel override.
+- `--smoothing`: optional RBF smoothing override.
+- `--degree`: optional RBF degree override.
+- `--overwrite`: overwrite the output artifact if it exists.
+
+Behavior:
+- Validates the metric input package.
+- Builds the NGS-HO-metric artifact using scaled RBF interpolation.
+- Saves the artifact to `--output`.
 
 ## YAML Configuration Reference
 

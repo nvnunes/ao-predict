@@ -356,8 +356,9 @@ class Simulation(ABC):
 
         This optional hook is called after persisted simulation and setup
         payloads have been loaded in a worker process and before that worker
-        executes its assigned simulation indexes. Implementations may use it to
-        initialize process-local simulator state. The default implementation is
-        a no-op.
+        executes its assigned simulation indexes. Implementations may populate
+        process-local module caches or instance-local runtime state. The hook
+        must be idempotent because runners may call it more than once in a
+        reused worker process. The default implementation is a no-op.
         """
         return None

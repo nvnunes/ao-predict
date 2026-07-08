@@ -65,7 +65,7 @@ def _write_hybrid_inputs(tmp_path: Path) -> tuple[Path, Path, Path]:
     science_path = tmp_path / "science.pkl"
     ngs_path = tmp_path / "ngs.pkl"
     save_science_ho_psf_interpolator(
-        build_science_ho_psf_interpolator(_science_samples(), interpolation_config=RbfInterpolationConfig(smoothing=0.0)),
+        build_science_ho_psf_interpolator(_science_samples()),
         science_path,
     )
     save_ngs_ho_metric_interpolator(
@@ -134,6 +134,33 @@ def test_hybrid_payload_lifecycle_resolves_and_loads_interpolators(tmp_path: Pat
 
     assert sim.science_ho_psf_interpolator.psf_shape == (5, 5)
     assert set(sim.ngs_ho_metric_interpolator.metric_names) == {"ee", "fwhm_mas", "sr"}
+
+
+def test_hybrid_load_simulation_payload_defers_interpolator_loading(tmp_path: Path) -> None:
+    sim = HybridSimulation()
+    sim.load_simulation_payload(_simulation_payload(tmp_path))
+
+    assert sim._science_ho_psf_runtime_interpolator is None
+    assert sim._ngs_ho_metric_interpolator is None
+
+    assert sim.science_ho_psf_interpolator.psf_shape == (5, 5)
+    assert sim._science_ho_psf_runtime_interpolator is not None
+    assert sim._science_ho_psf_runtime_interpolator.artifact is sim.science_ho_psf_interpolator
+    assert set(sim.ngs_ho_metric_interpolator.metric_names) == {"ee", "fwhm_mas", "sr"}
+    assert sim._ngs_ho_metric_interpolator is sim.ngs_ho_metric_interpolator
+
+
+def test_hybrid_runtime_getters_reuse_process_cached_interpolators_across_instances(tmp_path: Path) -> None:
+    payload = _simulation_payload(tmp_path)
+    first = HybridSimulation()
+    second = HybridSimulation()
+
+    first.load_simulation_payload(payload)
+    second.load_simulation_payload(payload)
+
+    assert second.science_ho_psf_interpolator is first.science_ho_psf_interpolator
+    assert second._science_ho_psf_runtime_interpolator is first._science_ho_psf_runtime_interpolator
+    assert second.ngs_ho_metric_interpolator is first.ngs_ho_metric_interpolator
 
 
 def test_hybrid_validate_simulation_payload_does_not_rebind_interpolators(tmp_path: Path) -> None:

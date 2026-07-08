@@ -15,13 +15,17 @@ from ao_predict.interpolation import (
     NgsHoMetricInterpolator,
     ScienceHoPsfInterpolator,
     evaluate_ngs_ho_metric_interpolator,
-    evaluate_science_ho_psf_interpolator,
     load_ngs_ho_metric_interpolator,
     load_science_ho_psf_interpolator,
     validate_ngs_ho_metric_interpolator,
     validate_ngs_ho_metric_query,
     validate_science_ho_psf_interpolator,
     validate_science_ho_psf_query,
+)
+from ao_predict.interpolation.science_ho_psf import (
+    _ScienceHoPsfRuntimeInterpolator,
+    _evaluate_science_ho_psf_runtime_interpolator,
+    _prepare_science_ho_psf_runtime_interpolator,
 )
 
 from . import atm
@@ -158,6 +162,17 @@ class _ActiveNgs:
     mag: np.ndarray
 
 
+@dataclass(frozen=True)
+class _ArtifactFileCacheKey:
+    path: str
+    size_bytes: int
+    modified_ns: int
+
+
+_NGS_HO_METRIC_INTERPOLATOR_CACHE: dict[_ArtifactFileCacheKey, NgsHoMetricInterpolator] = {}
+_SCIENCE_HO_PSF_RUNTIME_INTERPOLATOR_CACHE: dict[_ArtifactFileCacheKey, _ScienceHoPsfRuntimeInterpolator] = {}
+
+
 class LowOrderMas2NmAdapter:
     """Minimal low-order model adapter exposing a fixed ``mas2nm`` scale."""
 
@@ -205,21 +220,37 @@ class HybridSimulation(TiptopConfigBackedSimulation):
         super().__init__()
         self._science_ho_psf_interpolator_path: Path | None = None
         self._ngs_ho_metric_interpolator_path: Path | None = None
-        self._science_ho_psf_interpolator: ScienceHoPsfInterpolator | None = None
         self._ngs_ho_metric_interpolator: NgsHoMetricInterpolator | None = None
+        self._science_ho_psf_runtime_interpolator: _ScienceHoPsfRuntimeInterpolator | None = None
 
     @property
     def science_ho_psf_interpolator(self) -> ScienceHoPsfInterpolator:
-        """Return the bound science-HO-PSF interpolator artifact."""
-        if self._science_ho_psf_interpolator is None:
-            raise TypeError("HybridSimulation science-HO-PSF interpolator is not configured.")
-        return self._science_ho_psf_interpolator
+        """Return the configured science-HO-PSF interpolator artifact."""
+        return self._get_science_ho_psf_runtime_interpolator().artifact
 
     @property
     def ngs_ho_metric_interpolator(self) -> NgsHoMetricInterpolator:
-        """Return the bound NGS-HO-metric interpolator artifact."""
+        """Return the configured NGS-HO-metric interpolator artifact."""
+        return self._get_ngs_ho_metric_interpolator()
+
+    def _get_science_ho_psf_runtime_interpolator(self) -> _ScienceHoPsfRuntimeInterpolator:
+        """Return the cached science-HO-PSF runtime interpolator."""
+        if self._science_ho_psf_runtime_interpolator is None:
+            if self._science_ho_psf_interpolator_path is None:
+                raise TypeError("HybridSimulation science-HO-PSF interpolator path is not configured.")
+            self._science_ho_psf_runtime_interpolator = _get_cached_science_ho_psf_runtime_interpolator(
+                self._science_ho_psf_interpolator_path
+            )
+        return self._science_ho_psf_runtime_interpolator
+
+    def _get_ngs_ho_metric_interpolator(self) -> NgsHoMetricInterpolator:
+        """Return the cached NGS-HO-metric interpolator for runtime use."""
         if self._ngs_ho_metric_interpolator is None:
-            raise TypeError("HybridSimulation NGS-HO-metric interpolator is not configured.")
+            if self._ngs_ho_metric_interpolator_path is None:
+                raise TypeError("HybridSimulation NGS-HO-metric interpolator path is not configured.")
+            self._ngs_ho_metric_interpolator = _get_cached_ngs_ho_metric_interpolator(
+                self._ngs_ho_metric_interpolator_path
+            )
         return self._ngs_ho_metric_interpolator
 
     # Simulation payload lifecycle
@@ -282,7 +313,7 @@ class HybridSimulation(TiptopConfigBackedSimulation):
 
         Raises:
             TypeError: If payload fields have invalid types.
-            ValueError: If the base INI or interpolator artifacts are invalid.
+            ValueError: If the base INI or required artifact path fields are invalid.
             FileNotFoundError: If a persisted interpolator artifact path is
                 missing.
         """
@@ -295,11 +326,12 @@ class HybridSimulation(TiptopConfigBackedSimulation):
         validate_ngs_ho_metric_interpolator(load_ngs_ho_metric_interpolator(ngs_path))
 
     def load_simulation_payload(self, simulation_payload: Mapping[str, Any]) -> None:
-        """Bind base INI plus science and NGS interpolator artifacts.
+        """Bind base INI plus science and NGS artifact paths.
 
-        Binding is atomic with respect to validation: the base INI and both
-        interpolator artifacts are loaded and validated before instance state is
-        updated.
+        Binding is atomic with respect to validation of payload-owned state:
+        the base INI and required artifact paths are validated before instance
+        state is updated. Interpolator artifacts are loaded lazily by runtime
+        getters near their use sites.
 
         Args:
             simulation_payload: Persisted ``/simulation`` payload read from
@@ -315,18 +347,13 @@ class HybridSimulation(TiptopConfigBackedSimulation):
         base_config = self._prepare_base_config_binding(base_config_text)
         science_path = self._get_required_payload_path(simulation_payload, self.KEY_SCIENCE_HO_PSF_INTERPOLATOR_PATH)
         ngs_path = self._get_required_payload_path(simulation_payload, self.KEY_NGS_HO_METRIC_INTERPOLATOR_PATH)
-        science = load_science_ho_psf_interpolator(science_path)
-        ngs = load_ngs_ho_metric_interpolator(ngs_path)
-        validate_science_ho_psf_interpolator(science)
-        validate_ngs_ho_metric_interpolator(ngs)
-        _validate_science_meta_fields_match(simulation_payload, science)
         self._load_base_simulation_payload(simulation_payload)
         self._base_config_text = base_config_text
         self._bind_base_config(base_config)
         self._science_ho_psf_interpolator_path = science_path
         self._ngs_ho_metric_interpolator_path = ngs_path
-        self._science_ho_psf_interpolator = science
-        self._ngs_ho_metric_interpolator = ngs
+        self._science_ho_psf_runtime_interpolator = None
+        self._ngs_ho_metric_interpolator = None
 
     def _config_file_description(self) -> str:
         """Return the user-facing description for missing MASTSEL INI errors."""
@@ -399,7 +426,7 @@ class HybridSimulation(TiptopConfigBackedSimulation):
             wavelength_um=wavelength_um,
         )
         validate_ngs_ho_metric_query(
-            self.ngs_ho_metric_interpolator,
+            self._get_ngs_ho_metric_interpolator(),
             zenith_angle_deg=zenith_angle_deg,
             x_arcsec=active_ngs.x_arcsec,
             y_arcsec=active_ngs.y_arcsec,
@@ -735,8 +762,8 @@ class HybridSimulation(TiptopConfigBackedSimulation):
         source PSF flux convention and return finite positive-flux PSFs.
         """
         x, y = polar_to_cartesian(setup.sci_r_arcsec, setup.sci_theta_deg)
-        prediction = evaluate_science_ho_psf_interpolator(
-            self.science_ho_psf_interpolator,
+        prediction = _evaluate_science_ho_psf_runtime_interpolator(
+            self._get_science_ho_psf_runtime_interpolator(),
             zenith_angle_deg=_require_option_scalar(options, schema.KEY_OPTION_ZENITH_ANGLE_DEG),
             wavelength_um=_require_option_scalar(options, schema.KEY_OPTION_WAVELENGTH_UM),
             x_arcsec=x,
@@ -752,7 +779,7 @@ class HybridSimulation(TiptopConfigBackedSimulation):
     def _predict_ngs_metrics(self, active_ngs: _ActiveNgs, options: Mapping[str, Any]) -> NgsMetricProviderResult:
         """Return NGS-HO metrics from the artifact-backed provider."""
         prediction = evaluate_ngs_ho_metric_interpolator(
-            self.ngs_ho_metric_interpolator,
+            self._get_ngs_ho_metric_interpolator(),
             zenith_angle_deg=_require_option_scalar(options, schema.KEY_OPTION_ZENITH_ANGLE_DEG),
             x_arcsec=active_ngs.x_arcsec,
             y_arcsec=active_ngs.y_arcsec,
@@ -1155,6 +1182,37 @@ def _image_plane_gaussian_otf(covariance_pix2: np.ndarray, shape: tuple[int, int
         + 2.0 * float(covariance[0, 1]) * fx_grid * fy_grid
     )
     return np.exp(exponent)
+
+
+def _artifact_file_cache_key(path: Path) -> _ArtifactFileCacheKey:
+    resolved_path = Path(path).expanduser().resolve()
+    stat = resolved_path.stat()
+    return _ArtifactFileCacheKey(
+        path=str(resolved_path),
+        size_bytes=int(stat.st_size),
+        modified_ns=int(stat.st_mtime_ns),
+    )
+
+
+def _get_cached_science_ho_psf_runtime_interpolator(path: Path) -> _ScienceHoPsfRuntimeInterpolator:
+    key = _artifact_file_cache_key(path)
+    runtime_interpolator = _SCIENCE_HO_PSF_RUNTIME_INTERPOLATOR_CACHE.get(key)
+    if runtime_interpolator is None:
+        artifact = load_science_ho_psf_interpolator(path)
+        validate_science_ho_psf_interpolator(artifact)
+        runtime_interpolator = _prepare_science_ho_psf_runtime_interpolator(artifact)
+        _SCIENCE_HO_PSF_RUNTIME_INTERPOLATOR_CACHE[key] = runtime_interpolator
+    return runtime_interpolator
+
+
+def _get_cached_ngs_ho_metric_interpolator(path: Path) -> NgsHoMetricInterpolator:
+    key = _artifact_file_cache_key(path)
+    interpolator = _NGS_HO_METRIC_INTERPOLATOR_CACHE.get(key)
+    if interpolator is None:
+        interpolator = load_ngs_ho_metric_interpolator(path)
+        validate_ngs_ho_metric_interpolator(interpolator)
+        _NGS_HO_METRIC_INTERPOLATOR_CACHE[key] = interpolator
+    return interpolator
 
 
 def _load_mavis_lo() -> Any:
