@@ -265,6 +265,87 @@ See also:
 - `examples/simulate_tiptop_cli.sh`
 - `examples/sample_tiptop.ini`
 
+## Interpolation API
+
+`ao_predict.interpolation` owns the generic interpolation artifact contracts.
+Project code owns conversion from native simulation products into
+`NgsHoPsfSamples`, `NgsHoMetricSamples`, or `ScienceHoPsfSamples`.
+
+The example below builds the two interpolation artifacts consumed by
+`HybridSimulation` and passes their paths into `SimulationConfig`. Replace the
+placeholder arrays with physically valid processed HO simulation products before
+building production artifacts.
+
+Physical axes are optional when fixed. AO Predict stores fixed physical values
+as metadata and makes only multi-value axes active interpolation coordinates.
+Wavelength is PSF-stat metadata for NGS-HO metrics; it is not an NGS
+interpolation coordinate.
+
+### HybridSimulation Interpolator Artifacts
+
+```python
+from pathlib import Path
+import numpy as np
+import ao_predict as aop
+import ao_predict.interpolation as interp
+
+x_arcsec = np.asarray([-30.0, 0.0, 30.0, -30.0, 0.0, 30.0, -30.0, 0.0, 30.0], dtype=float)
+y_arcsec = np.asarray([-30.0, -30.0, -30.0, 0.0, 0.0, 0.0, 30.0, 30.0, 30.0], dtype=float)
+ngs_psfs = np.ones((x_arcsec.size, 100, 100), dtype=np.float32) / 100**2
+science_psfs = np.ones((x_arcsec.size, 100, 100), dtype=np.float32) / 100**2
+tel_diameter_m = 8.0
+tel_pupil = np.ones((64, 64), dtype=np.float32)
+
+ngs_samples = interp.NgsHoPsfSamples(
+    x_arcsec=x_arcsec,
+    y_arcsec=y_arcsec,
+    psfs=ngs_psfs,
+    wavelength_um=0.710,
+    pixel_scale_mas=5.0,
+    tel_diameter_m=tel_diameter_m,
+    tel_pupil=tel_pupil,
+)
+
+ngs_interpolator_path = Path("ngs_ho_metric_interpolator.pkl")
+interp.save_ngs_ho_metric_interpolator(
+    interp.build_ngs_ho_metric_interpolator_from_psfs(ngs_samples),
+    ngs_interpolator_path,
+)
+
+science_samples = interp.ScienceHoPsfSamples(
+    x_arcsec=x_arcsec,
+    y_arcsec=y_arcsec,
+    psfs=science_psfs,
+    wavelength_um=2.179,
+    pixel_scale_mas=5.0,
+    tel_diameter_m=tel_diameter_m,
+    tel_pupil=tel_pupil,
+)
+
+science_interpolator_path = Path("science_ho_psf_interpolator.pkl")
+interp.save_science_ho_psf_interpolator(
+    interp.build_science_ho_psf_interpolator(science_samples),
+    science_interpolator_path,
+)
+
+hybrid_simulation = aop.SimulationConfig(
+    name="Hybrid",
+    base_path=".",
+    specific_fields={
+        "config_path": "mastsel.ini",
+        "science_ho_psf_interpolator_path": str(science_interpolator_path),
+        "ngs_ho_metric_interpolator_path": str(ngs_interpolator_path),
+    },
+)
+```
+
+To make zenith/airmass active, provide `zenith_angle_deg` with one value per
+source plane. For Science-HO wavelength or zenith/airmass interpolation, supply
+per-plane `wavelength_um`, `pixel_scale_mas`, and optionally `zenith_angle_deg`,
+and shape `psfs` as `(planes, field points, psf_y, psf_x)`. For smoothed NGS
+metric fields, pass `RbfInterpolationConfig(...)` to
+`build_ngs_ho_metric_interpolator_from_psfs(...)`.
+
 ## Error Behavior
 - Invalid payload structure and schema mismatches raise `ValueError`/`TypeError`.
 - Existing dataset without `overwrite=True` raises `FileExistsError`.

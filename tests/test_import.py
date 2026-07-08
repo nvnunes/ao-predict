@@ -59,10 +59,11 @@ def test_interpolation_submodule_exports_without_root_exports() -> None:
     assert interpolation.ScienceHoPsfSamples.__name__ == "ScienceHoPsfSamples"
     assert interpolation.NgsHoPsfSamples.__name__ == "NgsHoPsfSamples"
     assert interpolation.NgsHoMetricSamples.__name__ == "NgsHoMetricSamples"
+    assert interpolation.RegularGridInterpolationConfig.__name__ == "RegularGridInterpolationConfig"
     assert interpolation.RbfInterpolationConfig.__name__ == "RbfInterpolationConfig"
-    assert interpolation.save_science_ho_psf_inputs.__name__ == "save_science_ho_psf_inputs"
-    assert interpolation.save_ngs_ho_psf_inputs.__name__ == "save_ngs_ho_psf_inputs"
-    assert interpolation.save_ngs_ho_metric_inputs.__name__ == "save_ngs_ho_metric_inputs"
     assert not hasattr(package, "ScienceHoPsfSamples")
     assert not hasattr(package, "NgsHoMetricSamples")
     assert not hasattr(package, "save_science_ho_psf_inputs")
+    assert not hasattr(interpolation, "save_science_ho_psf_inputs")
+    assert not hasattr(interpolation, "save_ngs_ho_psf_inputs")
+    assert not hasattr(interpolation, "save_ngs_ho_metric_inputs")

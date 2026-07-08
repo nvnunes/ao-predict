@@ -1,16 +1,15 @@
 from __future__ import annotations
 
 import pickle
-import sys
 
 import numpy as np
 import pytest
 
-from ao_predict.cli import main as cli_main
 from ao_predict.interpolation import (
     NgsHoMetricInterpolator,
     NgsHoMetricSamples,
     NgsHoPsfSamples,
+    RegularGridInterpolationConfig,
     RbfInterpolationConfig,
     ScienceHoPsfSamples,
     build_ngs_ho_metric_interpolator,
@@ -23,16 +22,14 @@ from ao_predict.interpolation import (
     load_science_ho_psf_interpolator,
     replay_ngs_ho_metric_interpolator,
     replay_science_ho_psf_interpolator,
-    save_ngs_ho_metric_inputs,
     save_ngs_ho_metric_interpolator,
-    save_ngs_ho_psf_inputs,
-    save_science_ho_psf_inputs,
     save_science_ho_psf_interpolator,
     validate_ngs_ho_metric_interpolator,
     validate_ngs_ho_metric_query,
     validate_science_ho_psf_query,
     zenith_angle_to_airmass,
 )
+from ao_predict.interpolation._core import grid_field_values, rectangular_field_axes
 
 
 def test_science_ho_psf_interpolator_round_trips_and_replays_sources(tmp_path) -> None:
@@ -52,6 +49,7 @@ def test_science_ho_psf_interpolator_round_trips_and_replays_sources(tmp_path) -
     expected_flux = np.sum(_science_samples().psfs[0], axis=(-2, -1))
 
     assert loaded.builder["interpolation_method"] == "regular_grid_linear_airmass_wavelength_y_x"
+    assert loaded.coordinate_order == ("airmass", "wavelength_um", "y_arcsec", "x_arcsec")
     assert loaded.meta["norm_correction"] == pytest.approx(0.75)
     np.testing.assert_allclose(loaded.meta["plane_correction"], np.asarray([[1.0, 2.0], [3.0, 4.0]]))
     assert prediction.meta["norm_correction"] == pytest.approx(0.75)
@@ -70,6 +68,19 @@ def test_science_ho_psf_interpolator_uses_rectangular_grid() -> None:
     assert interpolator.psf_grid.shape == (2, 2, 2, 2, 9, 9)
     np.testing.assert_allclose(interpolator.x_arcsec, np.asarray([-1.0, 1.0]))
     np.testing.assert_allclose(interpolator.y_arcsec, np.asarray([-1.0, 1.0]))
+
+
+def test_rectangular_field_helpers_fill_values_in_y_x_order() -> None:
+    x = np.asarray([1.0, -1.0, 1.0, -1.0])
+    y = np.asarray([1.0, -1.0, -1.0, 1.0])
+    values = np.asarray([4.0, 1.0, 2.0, 3.0])
+
+    x_axis, y_axis = rectangular_field_axes(x, y, label="test samples")
+    grid = grid_field_values(x, y, values, x_axis, y_axis, label="test samples", dtype=float)
+
+    np.testing.assert_allclose(x_axis, np.asarray([-1.0, 1.0]))
+    np.testing.assert_allclose(y_axis, np.asarray([-1.0, 1.0]))
+    np.testing.assert_allclose(grid, np.asarray([[1.0, 2.0], [3.0, 4.0]]))
 
 
 def test_science_ho_psf_interpolator_interpolates_wavelength_zenith_and_pixel_scale() -> None:
@@ -103,6 +114,107 @@ def test_science_ho_psf_interpolator_interpolates_wavelength_zenith_and_pixel_sc
         )
 
 
+def test_science_ho_psf_field_only_artifact_omits_physical_queries(tmp_path) -> None:
+    source = _science_samples()
+    samples = ScienceHoPsfSamples(
+        x_arcsec=source.x_arcsec,
+        y_arcsec=source.y_arcsec,
+        psfs=source.psfs[0],
+        wavelength_um=1.0,
+        pixel_scale_mas=4.0,
+        tel_diameter_m=source.tel_diameter_m,
+        tel_pupil=source.tel_pupil,
+        provenance=("field-only",),
+    )
+
+    interpolator = build_science_ho_psf_interpolator(samples)
+    path = tmp_path / "science-field.pkl"
+    save_science_ho_psf_interpolator(interpolator, path)
+    loaded = load_science_ho_psf_interpolator(path)
+    replay = replay_science_ho_psf_interpolator(loaded, samples)
+    prediction = evaluate_science_ho_psf_interpolator(
+        loaded,
+        x_arcsec=np.asarray([0.0]),
+        y_arcsec=np.asarray([0.0]),
+    )
+
+    assert loaded.coordinate_order == ("y_arcsec", "x_arcsec")
+    assert loaded.psf_grid.shape == (2, 2, 9, 9)
+    assert prediction.metadata.wavelength_um == pytest.approx(1.0)
+    assert prediction.pixel_scale_mas == pytest.approx(4.0)
+    assert replay.psf_nrms_max == pytest.approx(0.0, abs=1.0e-5)
+    with pytest.raises(ValueError, match="wavelength_um"):
+        evaluate_science_ho_psf_interpolator(
+            loaded,
+            wavelength_um=2.0,
+            x_arcsec=np.asarray([0.0]),
+            y_arcsec=np.asarray([0.0]),
+        )
+
+
+def test_science_ho_psf_supports_single_physical_axes() -> None:
+    source = _science_samples()
+    wavelength_samples = ScienceHoPsfSamples(
+        zenith_angle_deg=20.0,
+        wavelength_um=source.wavelength_um[:2],
+        x_arcsec=source.x_arcsec,
+        y_arcsec=source.y_arcsec,
+        psfs=source.psfs[:2],
+        pixel_scale_mas=source.pixel_scale_mas[:2],
+        tel_diameter_m=source.tel_diameter_m,
+        tel_pupil=source.tel_pupil,
+    )
+    wavelength_artifact = build_science_ho_psf_interpolator(wavelength_samples)
+
+    assert wavelength_artifact.coordinate_order == ("wavelength_um", "y_arcsec", "x_arcsec")
+    prediction = evaluate_science_ho_psf_interpolator(
+        wavelength_artifact,
+        wavelength_um=1.5,
+        x_arcsec=np.asarray([0.0]),
+        y_arcsec=np.asarray([0.0]),
+    )
+    assert prediction.pixel_scale_mas == pytest.approx(6.0)
+
+    airmass_samples = ScienceHoPsfSamples(
+        zenith_angle_deg=np.asarray([20.0, 30.0]),
+        wavelength_um=1.0,
+        x_arcsec=source.x_arcsec,
+        y_arcsec=source.y_arcsec,
+        psfs=source.psfs[[0, 2]],
+        pixel_scale_mas=source.pixel_scale_mas[[0, 2]],
+        tel_diameter_m=source.tel_diameter_m,
+        tel_pupil=source.tel_pupil,
+    )
+    airmass_artifact = build_science_ho_psf_interpolator(airmass_samples)
+
+    assert airmass_artifact.coordinate_order == ("airmass", "y_arcsec", "x_arcsec")
+    with pytest.raises(ValueError, match="zenith_angle_deg is required"):
+        evaluate_science_ho_psf_interpolator(
+            airmass_artifact,
+            x_arcsec=np.asarray([0.0]),
+            y_arcsec=np.asarray([0.0]),
+        )
+
+
+def test_science_ho_psf_requires_only_active_physical_queries() -> None:
+    interpolator = build_science_ho_psf_interpolator(_science_samples())
+
+    with pytest.raises(ValueError, match="zenith_angle_deg is required"):
+        evaluate_science_ho_psf_interpolator(
+            interpolator,
+            wavelength_um=1.0,
+            x_arcsec=np.asarray([0.0]),
+            y_arcsec=np.asarray([0.0]),
+        )
+    with pytest.raises(ValueError, match="wavelength_um is required"):
+        evaluate_science_ho_psf_interpolator(
+            interpolator,
+            zenith_angle_deg=20.0,
+            x_arcsec=np.asarray([0.0]),
+            y_arcsec=np.asarray([0.0]),
+        )
+
+
 def test_science_ho_psf_query_validation_rejects_out_of_range_before_runtime() -> None:
     interpolator = build_science_ho_psf_interpolator(_science_samples())
 
@@ -115,7 +227,7 @@ def test_science_ho_psf_query_validation_rejects_out_of_range_before_runtime() -
 def test_science_ho_psf_interpolator_rejects_malformed_grids() -> None:
     samples = _science_samples()
 
-    with pytest.raises(ValueError, match="complete zenith_angle_deg x wavelength_um grid"):
+    with pytest.raises(ValueError, match="complete active physical-coordinate grid"):
         build_science_ho_psf_interpolator(
             ScienceHoPsfSamples(
                 zenith_angle_deg=samples.zenith_angle_deg[:-1],
@@ -226,6 +338,7 @@ def test_science_ho_psf_interpolator_defaults_missing_payload_meta(tmp_path) -> 
         "kind": "ao_predict_science_ho_psf_interpolator",
         "version": 1,
         "builder": dict(interpolator.builder),
+        "interpolation": {"coordinate_order": interpolator.coordinate_order},
         "metadata": {
             "zenith_angle_deg_axis": interpolator.zenith_angle_deg_axis,
             "airmass_axis": interpolator.airmass_axis,
@@ -281,10 +394,109 @@ def test_ngs_ho_metric_interpolator_round_trips_and_replays_sources(tmp_path) ->
     assert prediction.sr is not None
 
 
-def test_ngs_ho_metric_interpolator_uses_shared_default_smoothing() -> None:
+def test_ngs_ho_metric_interpolator_uses_regular_grid_by_default() -> None:
     interpolator = build_ngs_ho_metric_interpolator(_ngs_metric_samples())
 
+    assert isinstance(interpolator.interpolation_config, RegularGridInterpolationConfig)
+    assert interpolator.interpolation_config.method == "linear"
+    assert interpolator.builder["interpolation_strategy"] == "regular_grid"
+    assert set(interpolator.model["metric_grids"]) == {"ee", "fwhm_mas", "sr"}
+
+
+def test_ngs_ho_metric_regular_grid_round_trips_replays_and_interpolates(tmp_path) -> None:
+    samples = _ngs_metric_samples()
+    interpolator = build_ngs_ho_metric_interpolator(samples)
+    path = tmp_path / "ngs-grid.pkl"
+
+    save_ngs_ho_metric_interpolator(interpolator, path)
+    loaded = load_ngs_ho_metric_interpolator(path)
+    replay = replay_ngs_ho_metric_interpolator(loaded, samples)
+    prediction = evaluate_ngs_ho_metric_interpolator(
+        loaded,
+        zenith_angle_deg=20.0,
+        x_arcsec=np.asarray([0.0]),
+        y_arcsec=np.asarray([0.0]),
+    )
+
+    assert isinstance(loaded.interpolation_config, RegularGridInterpolationConfig)
+    assert replay.metric_max_abs["ee"] == pytest.approx(0.0, abs=1.0e-12)
+    assert replay.metric_max_abs["fwhm_mas"] == pytest.approx(0.0, abs=1.0e-12)
+    assert replay.metric_max_abs["sr"] == pytest.approx(0.0, abs=1.0e-12)
+    np.testing.assert_allclose(prediction.ee, np.asarray([0.26]))
+    np.testing.assert_allclose(prediction.fwhm_mas, np.asarray([83.0]))
+    np.testing.assert_allclose(prediction.sr, np.asarray([0.115]))
+
+
+def test_ngs_ho_metric_field_only_regular_grid_and_rbf_omit_zenith() -> None:
+    source = _ngs_metric_samples()
+    samples = NgsHoMetricSamples(
+        zenith_angle_deg=20.0,
+        x_arcsec=source.x_arcsec,
+        y_arcsec=source.y_arcsec,
+        ee=source.ee[0],
+        fwhm_mas=source.fwhm_mas[0],
+        sr=source.sr[0],
+    )
+
+    regular = build_ngs_ho_metric_interpolator(samples)
+    rbf = build_ngs_ho_metric_interpolator(samples, interpolation_config=RbfInterpolationConfig(smoothing=0.0))
+
+    assert regular.coordinate_order == ("y_arcsec", "x_arcsec")
+    assert rbf.coordinate_order == ("x_arcsec", "y_arcsec")
+    assert "wavelength_um" not in regular.coordinate_order
+    assert "wavelength_um" not in rbf.coordinate_order
+    regular_prediction = evaluate_ngs_ho_metric_interpolator(
+        regular,
+        x_arcsec=np.asarray([0.0]),
+        y_arcsec=np.asarray([0.0]),
+    )
+    rbf_prediction = evaluate_ngs_ho_metric_interpolator(
+        rbf,
+        x_arcsec=np.asarray([-1.0]),
+        y_arcsec=np.asarray([-1.0]),
+    )
+    np.testing.assert_allclose(regular_prediction.ee, np.asarray([0.26]))
+    np.testing.assert_allclose(rbf_prediction.ee, np.asarray([0.20]), atol=1.0e-8)
+    with pytest.raises(ValueError, match="fixed artifact value"):
+        evaluate_ngs_ho_metric_interpolator(
+            regular,
+            zenith_angle_deg=30.0,
+            x_arcsec=np.asarray([0.0]),
+            y_arcsec=np.asarray([0.0]),
+        )
+
+
+def test_ngs_ho_metric_active_airmass_requires_zenith() -> None:
+    regular = build_ngs_ho_metric_interpolator(_ngs_metric_samples())
+    rbf = build_ngs_ho_metric_interpolator(
+        _ngs_metric_samples(),
+        interpolation_config=RbfInterpolationConfig(smoothing=0.0),
+    )
+
+    assert regular.coordinate_order == ("airmass", "y_arcsec", "x_arcsec")
+    assert rbf.coordinate_order == ("airmass", "x_arcsec", "y_arcsec")
+    with pytest.raises(ValueError, match="zenith_angle_deg is required"):
+        evaluate_ngs_ho_metric_interpolator(
+            regular,
+            x_arcsec=np.asarray([0.0]),
+            y_arcsec=np.asarray([0.0]),
+        )
+    with pytest.raises(ValueError, match="zenith_angle_deg is required"):
+        evaluate_ngs_ho_metric_interpolator(
+            rbf,
+            x_arcsec=np.asarray([0.0]),
+            y_arcsec=np.asarray([0.0]),
+        )
+
+
+def test_ngs_ho_metric_interpolator_uses_explicit_rbf_default_smoothing() -> None:
+    interpolator = build_ngs_ho_metric_interpolator(
+        _ngs_metric_samples(),
+        interpolation_config=RbfInterpolationConfig(),
+    )
+
     assert interpolator.interpolation_config.smoothing == pytest.approx(0.05)
+    assert interpolator.builder["interpolation_strategy"] == "rbf"
 
 
 def test_ngs_ho_metric_interpolator_broadcasts_scalar_zenith() -> None:
@@ -331,6 +543,31 @@ def test_ngs_ho_metric_query_validation_rejects_unsupported_queries_before_evalu
         )
 
 
+def test_ngs_ho_metric_regular_grid_rejects_unsupported_queries_before_evaluation() -> None:
+    interpolator = build_ngs_ho_metric_interpolator(_ngs_metric_samples())
+
+    validate_ngs_ho_metric_query(
+        interpolator,
+        zenith_angle_deg=20.0,
+        x_arcsec=np.asarray([0.0]),
+        y_arcsec=np.asarray([0.0]),
+    )
+    with pytest.raises(ValueError, match="airmass"):
+        validate_ngs_ho_metric_query(
+            interpolator,
+            zenith_angle_deg=40.0,
+            x_arcsec=np.asarray([0.0]),
+            y_arcsec=np.asarray([0.0]),
+        )
+    with pytest.raises(ValueError, match="x_arcsec"):
+        evaluate_ngs_ho_metric_interpolator(
+            interpolator,
+            zenith_angle_deg=20.0,
+            x_arcsec=np.asarray([2.0]),
+            y_arcsec=np.asarray([0.0]),
+        )
+
+
 def test_ngs_ho_metric_interpolator_rejects_bad_metric_values() -> None:
     samples = _ngs_metric_samples()
 
@@ -369,6 +606,34 @@ def test_ngs_ho_metric_interpolator_rejects_bad_metric_values() -> None:
         )
 
 
+def test_ngs_ho_metric_regular_grid_rejects_malformed_field_grids() -> None:
+    samples = _ngs_metric_samples()
+
+    with pytest.raises(ValueError, match="complete rectangular"):
+        build_ngs_ho_metric_interpolator(
+            NgsHoMetricSamples(
+                zenith_angle_deg=samples.zenith_angle_deg,
+                x_arcsec=samples.x_arcsec[:-1],
+                y_arcsec=samples.y_arcsec[:-1],
+                ee=samples.ee[:, :-1],
+                fwhm_mas=samples.fwhm_mas[:, :-1],
+                sr=samples.sr[:, :-1],
+            )
+        )
+
+    with pytest.raises(ValueError, match="Duplicate NGS HO metric samples field point"):
+        build_ngs_ho_metric_interpolator(
+            NgsHoMetricSamples(
+                zenith_angle_deg=samples.zenith_angle_deg,
+                x_arcsec=np.asarray([-1.0, -1.0, 1.0, 1.0]),
+                y_arcsec=np.asarray([-1.0, -1.0, 1.0, 1.0]),
+                ee=samples.ee,
+                fwhm_mas=samples.fwhm_mas,
+                sr=samples.sr,
+            )
+        )
+
+
 def test_ngs_ho_metric_interpolator_rejects_model_metric_mismatch() -> None:
     interpolator = build_ngs_ho_metric_interpolator(
         _ngs_metric_samples(),
@@ -379,6 +644,7 @@ def test_ngs_ho_metric_interpolator_rejects_model_metric_mismatch() -> None:
     del models["sr"]
     model["models"] = models
     bad = NgsHoMetricInterpolator(
+        coordinate_order=interpolator.coordinate_order,
         zenith_angle_deg_axis=interpolator.zenith_angle_deg_axis,
         airmass_axis=interpolator.airmass_axis,
         x_arcsec=interpolator.x_arcsec,
@@ -430,163 +696,6 @@ def test_ngs_ho_psf_samples_require_full_psf_metadata() -> None:
                 tel_pupil=np.ones(4),
             )
         )
-
-
-def test_interpolation_cli_builds_science_inputs(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
-    inputs = tmp_path / "science-inputs.pkl"
-    artifact = tmp_path / "science-artifact.pkl"
-    save_science_ho_psf_inputs(_science_samples(), inputs)
-
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        [
-            "ao-predict",
-            "interpolation",
-            "build-science-ho-psf",
-            "--inputs",
-            str(inputs),
-            "--output",
-            str(artifact),
-        ],
-    )
-    assert cli_main() == 0
-    assert load_science_ho_psf_interpolator(artifact).psf_grid.shape == (2, 2, 2, 2, 9, 9)
-
-
-def test_interpolation_cli_science_build_rejects_rbf_options(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
-    inputs = tmp_path / "science-inputs.pkl"
-    artifact = tmp_path / "science-artifact.pkl"
-    save_science_ho_psf_inputs(_science_samples(), inputs)
-
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        [
-            "ao-predict",
-            "interpolation",
-            "build-science-ho-psf",
-            "--inputs",
-            str(inputs),
-            "--output",
-            str(artifact),
-            "--smoothing",
-            "1",
-        ],
-    )
-    with pytest.raises(SystemExit):
-        cli_main()
-
-
-def test_interpolation_cli_builds_ngs_metric_from_psf_and_metric_inputs(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
-    psf_inputs = tmp_path / "ngs-psf-inputs.pkl"
-    metric_inputs = tmp_path / "ngs-metric-inputs.pkl"
-    artifact_from_psfs = tmp_path / "ngs-from-psfs.pkl"
-    artifact_from_metrics = tmp_path / "ngs-from-metrics.pkl"
-    psf_samples = _ngs_psf_samples()
-    metric_samples = build_ngs_ho_metric_samples_from_psfs(psf_samples)
-    save_ngs_ho_psf_inputs(psf_samples, psf_inputs)
-    save_ngs_ho_metric_inputs(metric_samples, metric_inputs)
-
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        [
-            "ao-predict",
-            "interpolation",
-            "build-ngs-ho-metric-from-psfs",
-            "--inputs",
-            str(psf_inputs),
-            "--output",
-            str(artifact_from_psfs),
-            "--smoothing",
-            "0",
-        ],
-    )
-    assert cli_main() == 0
-    assert set(load_ngs_ho_metric_interpolator(artifact_from_psfs).metric_names) == {"ee", "fwhm_mas", "sr"}
-
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        [
-            "ao-predict",
-            "interpolation",
-            "build-ngs-ho-metric",
-            "--inputs",
-            str(metric_inputs),
-            "--output",
-            str(artifact_from_metrics),
-            "--smoothing",
-            "0",
-        ],
-    )
-    assert cli_main() == 0
-
-
-def test_interpolation_cli_rejects_malformed_input_package(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
-    inputs = tmp_path / "bad-inputs.pkl"
-    artifact = tmp_path / "artifact.pkl"
-    with inputs.open("wb") as handle:
-        pickle.dump({"kind": "not_an_ao_predict_input", "version": 1}, handle)
-
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        [
-            "ao-predict",
-            "interpolation",
-            "build-science-ho-psf",
-            "--inputs",
-            str(inputs),
-            "--output",
-            str(artifact),
-        ],
-    )
-    with pytest.raises(ValueError, match="Unsupported artifact kind"):
-        cli_main()
-
-
-def test_interpolation_cli_accepts_science_input_missing_meta(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
-    samples = _science_samples()
-    inputs = tmp_path / "missing-meta-inputs.pkl"
-    artifact = tmp_path / "artifact.pkl"
-    with inputs.open("wb") as handle:
-        pickle.dump(
-            {
-                "kind": "ao_predict_science_ho_psf_inputs",
-                "version": 1,
-                "samples": {
-                    "zenith_angle_deg": samples.zenith_angle_deg,
-                    "wavelength_um": samples.wavelength_um,
-                    "x_arcsec": samples.x_arcsec,
-                    "y_arcsec": samples.y_arcsec,
-                    "psfs": samples.psfs,
-                    "pixel_scale_mas": samples.pixel_scale_mas,
-                    "tel_diameter_m": samples.tel_diameter_m,
-                    "tel_pupil": samples.tel_pupil,
-                    "provenance": tuple(samples.provenance),
-                },
-            },
-            handle,
-        )
-
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        [
-            "ao-predict",
-            "interpolation",
-            "build-science-ho-psf",
-            "--inputs",
-            str(inputs),
-            "--output",
-            str(artifact),
-        ],
-    )
-    cli_main()
-    loaded = load_science_ho_psf_interpolator(artifact)
-    assert loaded.meta == {}
 
 
 def _science_samples() -> ScienceHoPsfSamples:

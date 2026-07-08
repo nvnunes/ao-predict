@@ -14,6 +14,8 @@ from scipy.interpolate import RBFInterpolator
 DEFAULT_RBF_KERNEL = "thin_plate_spline"
 DEFAULT_RBF_SMOOTHING = 0.05
 DEFAULT_RBF_DEGREE = 1
+DEFAULT_REGULAR_GRID_METHOD = "linear"
+SUPPORTED_REGULAR_GRID_METHODS = frozenset({"linear", "nearest"})
 _AXIS_ATOL = 1.0e-10
 
 
@@ -36,6 +38,19 @@ class RbfInterpolationConfig:
     degree: int = DEFAULT_RBF_DEGREE
 
 
+@dataclass(frozen=True)
+class RegularGridInterpolationConfig:
+    """Configuration for SciPy regular-grid interpolation.
+
+    Attributes:
+        method: Interpolation method passed to ``RegularGridInterpolator``.
+            AO Predict supports ``"linear"`` and ``"nearest"`` for persisted
+            regular-grid artifacts.
+    """
+
+    method: str = DEFAULT_REGULAR_GRID_METHOD
+
+
 def validate_rbf_config(config: RbfInterpolationConfig) -> RbfInterpolationConfig:
     """Return a validated RBF configuration."""
 
@@ -51,6 +66,18 @@ def validate_rbf_config(config: RbfInterpolationConfig) -> RbfInterpolationConfi
     if degree < -1:
         raise ValueError("interpolation_config.degree must be >= -1.")
     return RbfInterpolationConfig(kernel=kernel, smoothing=smoothing, degree=degree)
+
+
+def validate_regular_grid_config(config: RegularGridInterpolationConfig) -> RegularGridInterpolationConfig:
+    """Return a validated regular-grid interpolation configuration."""
+
+    if not isinstance(config, RegularGridInterpolationConfig):
+        raise TypeError("interpolation_config must be a RegularGridInterpolationConfig instance.")
+    method = str(config.method).strip()
+    if method not in SUPPORTED_REGULAR_GRID_METHODS:
+        supported = ", ".join(sorted(SUPPORTED_REGULAR_GRID_METHODS))
+        raise ValueError(f"interpolation_config.method must be one of: {supported}.")
+    return RegularGridInterpolationConfig(method=method)
 
 
 def zenith_angle_to_airmass(zenith_angle_deg: float | np.ndarray) -> np.ndarray:
@@ -140,6 +167,88 @@ def field_coordinates(x_arcsec: Any, y_arcsec: Any) -> np.ndarray:
     if x.size == 0:
         raise ValueError("At least one field coordinate is required.")
     return np.column_stack([x, y])
+
+
+def rectangular_field_axes(x_arcsec: Any, y_arcsec: Any, *, label: str) -> tuple[np.ndarray, np.ndarray]:
+    """Return sorted rectangular field axes after validating complete support."""
+
+    coordinates = field_coordinates(x_arcsec, y_arcsec)
+    x_axis = unique_sorted(coordinates[:, 0], label="x_arcsec")
+    y_axis = unique_sorted(coordinates[:, 1], label="y_arcsec")
+    if coordinates.shape[0] != x_axis.size * y_axis.size:
+        raise ValueError(
+            f"{label} must form a complete rectangular x_arcsec x y_arcsec field grid; "
+            f"got {coordinates.shape[0]} points for {x_axis.size} x {y_axis.size} axes."
+        )
+    seen: set[tuple[int, int]] = set()
+    for x_value, y_value in coordinates:
+        ix = axis_index(x_axis, float(x_value), label="x_arcsec")
+        iy = axis_index(y_axis, float(y_value), label="y_arcsec")
+        key = (iy, ix)
+        if key in seen:
+            raise ValueError(f"Duplicate {label} field point at x={x_value}, y={y_value}.")
+        seen.add(key)
+    return x_axis, y_axis
+
+
+def grid_field_values(
+    x_arcsec: Any,
+    y_arcsec: Any,
+    values: Any,
+    x_axis: np.ndarray,
+    y_axis: np.ndarray,
+    *,
+    label: str,
+    dtype: Any,
+) -> np.ndarray:
+    """Place point-indexed values into a rectangular ``(y, x, ...)`` grid."""
+
+    coordinates = field_coordinates(x_arcsec, y_arcsec)
+    values = np.asarray(values, dtype=dtype)
+    if values.shape[0] != coordinates.shape[0]:
+        raise ValueError(
+            f"{label} values must have leading dimension {coordinates.shape[0]}; got {values.shape[0]}."
+        )
+    grid = np.full((y_axis.size, x_axis.size, *values.shape[1:]), np.nan, dtype=dtype)
+    for point_index, (x_value, y_value) in enumerate(coordinates):
+        ix = axis_index(x_axis, float(x_value), label="x_arcsec")
+        iy = axis_index(y_axis, float(y_value), label="y_arcsec")
+        grid[iy, ix] = values[point_index]
+    if not np.all(np.isfinite(grid)):
+        raise ValueError(f"{label} field grid is incomplete.")
+    return grid
+
+
+def validate_rectangular_field_query(
+    x_axis: Any,
+    y_axis: Any,
+    coordinates: np.ndarray,
+    *,
+    label: str,
+    atol: float,
+) -> None:
+    """Validate query coordinates against rectangular field-axis bounds."""
+
+    x_axis = require_finite_vector(x_axis, label="x_axis")
+    y_axis = require_finite_vector(y_axis, label="y_axis")
+    coordinates = np.asarray(coordinates, dtype=float)
+    x = np.asarray(coordinates[:, 0], dtype=float)
+    y = np.asarray(coordinates[:, 1], dtype=float)
+    if np.any(x < x_axis[0] - atol) or np.any(x > x_axis[-1] + atol):
+        raise ValueError(f"x_arcsec query is outside {label} field support [{x_axis[0]}, {x_axis[-1]}].")
+    if np.any(y < y_axis[0] - atol) or np.any(y > y_axis[-1] + atol):
+        raise ValueError(f"y_arcsec query is outside {label} field support [{y_axis[0]}, {y_axis[-1]}].")
+
+
+def snap_rectangular_field_query(x_axis: Any, y_axis: Any, coordinates: np.ndarray) -> np.ndarray:
+    """Clip near-boundary rectangular field queries onto their field axes."""
+
+    snapped = np.asarray(coordinates, dtype=float).copy()
+    x_axis = require_finite_vector(x_axis, label="x_axis")
+    y_axis = require_finite_vector(y_axis, label="y_axis")
+    snapped[:, 0] = np.clip(snapped[:, 0], x_axis[0], x_axis[-1])
+    snapped[:, 1] = np.clip(snapped[:, 1], y_axis[0], y_axis[-1])
+    return snapped
 
 
 def make_scaled_rbf_model(

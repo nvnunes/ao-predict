@@ -7,12 +7,7 @@ through the functions exported here. The package root intentionally does not
 re-export these names while the Hybrid API is still being introduced.
 """
 
-from ._core import RbfInterpolationConfig, zenith_angle_to_airmass
-from ._inputs import (
-    save_ngs_ho_metric_inputs,
-    save_ngs_ho_psf_inputs,
-    save_science_ho_psf_inputs,
-)
+from ._core import RegularGridInterpolationConfig, RbfInterpolationConfig, zenith_angle_to_airmass
 from .ngs_ho_metric import (
     NgsHoMetricInterpolator,
     NgsHoMetricPrediction,
@@ -57,13 +52,11 @@ __all__ = [
     "NgsHoMetricReplaySummary",
     "NgsHoMetricSamples",
     "NgsHoPsfSamples",
+    "RegularGridInterpolationConfig",
     "RbfInterpolationConfig",
     "replay_ngs_ho_metric_interpolator",
     "replay_science_ho_psf_interpolator",
-    "save_ngs_ho_metric_inputs",
     "save_ngs_ho_metric_interpolator",
-    "save_ngs_ho_psf_inputs",
-    "save_science_ho_psf_inputs",
     "save_science_ho_psf_interpolator",
     "ScienceHoPsfInterpolator",
     "ScienceHoPsfPrediction",
