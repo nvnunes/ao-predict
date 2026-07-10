@@ -423,6 +423,7 @@ def test_load_analysis_dataset_loads_eager_non_psf_payloads(tmp_path: Path) -> N
             "name": "ao_predict.simulation.tiptop:TiptopSimulation",
             "version": "x.y",
             "extra_stat_names": np.array(["halo_mas"], dtype=str),
+            "ngs_mag_standard": "R",
             "base_config": "[section]\nvalue=1\n",
         },
         {
@@ -527,6 +528,7 @@ def test_load_analysis_dataset_preserves_analysis_visible_store_slice(tmp_path: 
             "name": "ao_predict.simulation.tiptop:TiptopSimulation",
             "version": "x.y",
             "extra_stat_names": np.array(["halo_mas"], dtype=str),
+            "ngs_mag_standard": "R",
             "base_config": "[section]\nvalue=1\n",
         },
         {
@@ -915,6 +917,7 @@ def test_analysis_simulation_views_are_read_only_to_callers(tmp_path: Path) -> N
             "name": "ao_predict.simulation.tiptop:TiptopSimulation",
             "version": "x.y",
             "extra_stat_names": np.array(["halo_mas"], dtype=str),
+            "ngs_mag_standard": "R",
             "base_config": "[section]\nvalue=1\n",
         },
         {
@@ -995,6 +998,7 @@ def test_analysis_dataset_psfs_remain_lazy_until_simulation_access(tmp_path: Pat
             "name": "ao_predict.simulation.tiptop:TiptopSimulation",
             "version": "x.y",
             "extra_stat_names": np.array([], dtype=str),
+            "ngs_mag_standard": "R",
             "base_config": "[section]\nvalue=1\n",
         },
         {
@@ -1081,6 +1085,7 @@ def test_analysis_simulation_psfs_raises_clear_error_when_dataset_has_no_psfs(tm
             "name": "ao_predict.simulation.tiptop:TiptopSimulation",
             "version": "x.y",
             "extra_stat_names": np.array([], dtype=str),
+            "ngs_mag_standard": "R",
             "base_config": "[section]\nvalue=1\n",
         },
         {
@@ -1148,6 +1153,7 @@ def test_analysis_dataset_loads_via_supported_loader_entrypoint(tmp_path: Path) 
             "name": "ao_predict.simulation.tiptop:TiptopSimulation",
             "version": "x.y",
             "extra_stat_names": np.array([], dtype=str),
+            "ngs_mag_standard": "R",
             "base_config": "[section]\nvalue=1\n",
         },
         {
@@ -1215,6 +1221,7 @@ def test_analysis_dataset_exposes_supported_scientific_view_contract(tmp_path: P
             "name": "ao_predict.simulation.tiptop:TiptopSimulation",
             "version": "x.y",
             "extra_stat_names": np.array(["halo_mas"], dtype=str),
+            "ngs_mag_standard": "R",
             "base_config": "[section]\nvalue=1\n",
         },
         {
@@ -1343,6 +1350,7 @@ def _write_single_analysis_result(store: SimulationStore, *, save_psfs: bool) ->
             "name": "ao_predict.simulation.tiptop:TiptopSimulation",
             "version": "x.y",
             "extra_stat_names": np.array([], dtype=str),
+            "ngs_mag_standard": "R",
             "base_config": "[section]\nvalue=1\n",
         },
         {

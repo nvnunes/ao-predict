@@ -33,6 +33,7 @@ nav:
       - Analysis API: reference/analysis/api.md
       - Plotting API: reference/plotting.md
       - Simulation Interfaces: reference/simulation/interfaces.md
+      - Simulation Base: reference/simulation/base.md
       - Simulation API: reference/simulation/api.md
       - Simulation Options: reference/simulation/options.md
       - Simulation Runner: reference/simulation/runner.md

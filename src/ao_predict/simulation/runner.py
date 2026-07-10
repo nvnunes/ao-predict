@@ -14,6 +14,7 @@ from ..persistence import SimulationStore
 from . import schema
 from .config import add_runtime_derived_options
 from .validation import (
+    resolve_simulation_payload_for_load,
     validate_psf_cube,
     validate_simulation_payload_core,
     validate_setup_payload_core,
@@ -60,9 +61,10 @@ def _check_simulation_payload(simulation: Simulation, simulation_payload: Mappin
     """
     validate_simulation_payload_core(
         simulation_payload,
-        simulation.name,
-        simulation.version,
-        simulation.extra_stat_names,
+        expected_name=simulation.name,
+        expected_version=simulation.version,
+        expected_extra_stat_names=simulation.extra_stat_names,
+        expected_ngs_mag_standard=simulation.ngs_mag_standard,
     )
     simulation.validate_simulation_payload(simulation_payload)
 
@@ -76,6 +78,7 @@ def _prepare_base_simulation_payload(simulation: Simulation) -> dict[str, Any]:
             simulation.extra_stat_names,
             dtype=str,
         ),
+        schema.KEY_SIMULATION_NGS_MAG_STANDARD: simulation.ngs_mag_standard,
     }
 
 
@@ -156,9 +159,9 @@ def create_simulation_from_config(simulation_cfg: Mapping[str, Any]) -> tuple[Si
 
     Notes:
         ao-predict assembles the core persisted ``/simulation`` fields
-        (`name`, `version`, and `extra_stat_names`) before delegating to
-        ``simulation.prepare_simulation_payload(...)`` for simulation-specific
-        completion.
+        (`name`, `version`, `extra_stat_names`, and `ngs_mag_standard`) before
+        delegating to ``simulation.prepare_simulation_payload(...)`` for
+        simulation-specific completion.
 
     Raises:
         ValueError: If required config fields are missing/invalid.
@@ -197,7 +200,14 @@ def create_simulation_from_payload(simulation_payload: Mapping[str, Any]) -> Sim
         raise ValueError("Dataset /simulation must include non-empty string field 'name'.")
 
     simulation = _create_simulation(simulation_name)
-    _check_simulation_payload(simulation, simulation_payload)
+    simulation_payload = resolve_simulation_payload_for_load(
+        simulation_payload,
+        expected_name=simulation.name,
+        expected_version=simulation.version,
+        expected_extra_stat_names=simulation.extra_stat_names,
+        expected_ngs_mag_standard=simulation.ngs_mag_standard,
+    )
+    simulation.validate_simulation_payload(simulation_payload)
     simulation.load_simulation_payload(simulation_payload)
     return simulation
 

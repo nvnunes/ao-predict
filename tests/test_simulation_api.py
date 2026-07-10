@@ -8,6 +8,7 @@ import numpy as np
 import pytest
 
 import ao_predict.simulation.api as sim_api
+from ao_predict.analysis import load_analysis_dataset
 from ao_predict.simulation.helpers import normalize_psf_pixel_sum
 from ao_predict.simulation import (
     Simulation,
@@ -83,6 +84,7 @@ def _success_result(m: int = 3, *, with_stats: bool = True, with_psfs: bool = Tr
 class FakeSimulation(Simulation):
     _NAME = "ao_predict.simulation.tiptop:TiptopSimulation"
     _VERSION = "0.0.1"
+    ngs_mag_standard = "R"
 
     def __init__(self, fail_idx: int | None = None):
         self.fail_idx = fail_idx
@@ -276,6 +278,49 @@ def test_api_init_persists_explicit_setup_stats_selectors(tmp_path: Path):
             f[f"{schema.KEY_SETUP_SECTION}/{schema.KEY_SETUP_EE_GEOMETRY}"][()].decode("utf-8")
             == schema.STATS_EE_GEOMETRY_ENCIRCLED
         )
+
+
+def test_api_init_persists_ngs_mag_standard_and_exposes_it_to_analysis(tmp_path: Path):
+    request = _base_request(tmp_path)
+
+    sim_api.init_dataset(request)
+
+    store = sim_api.SimulationStore(request.dataset_path)
+    assert store.read_simulation()[schema.KEY_SIMULATION_NGS_MAG_STANDARD] == "R"
+    assert (
+        load_analysis_dataset(request.dataset_path).simulation_payload[
+            schema.KEY_SIMULATION_NGS_MAG_STANDARD
+        ]
+        == "R"
+    )
+
+
+def test_analysis_load_accepts_legacy_dataset_without_ngs_mag_standard(tmp_path: Path):
+    request = _base_request(tmp_path)
+    sim_api.init_dataset(request)
+    with h5py.File(request.dataset_path, "r+") as f:
+        del f[f"{schema.KEY_SIMULATION_SECTION}/{schema.KEY_SIMULATION_NGS_MAG_STANDARD}"]
+
+    dataset = load_analysis_dataset(request.dataset_path)
+
+    assert (
+        dataset.simulation_payload[schema.KEY_SIMULATION_NGS_MAG_STANDARD]
+        == schema.DEFAULT_NGS_MAG_STANDARD
+    )
+    with h5py.File(request.dataset_path, "r") as f:
+        assert (
+            f"{schema.KEY_SIMULATION_SECTION}/{schema.KEY_SIMULATION_NGS_MAG_STANDARD}"
+            not in f
+        )
+
+
+def test_legacy_dataset_matches_equivalent_current_request(tmp_path: Path):
+    request = _base_request(tmp_path)
+    sim_api.init_dataset(request)
+    with h5py.File(request.dataset_path, "r+") as f:
+        del f[f"{schema.KEY_SIMULATION_SECTION}/{schema.KEY_SIMULATION_NGS_MAG_STANDARD}"]
+
+    sim_api.validate_dataset_matches_request(request.dataset_path, request)
 
 
 def test_api_init_rejects_invalid_setup_stats_selector(tmp_path: Path):

@@ -32,8 +32,14 @@ def validate_simulation_payload_core(
     expected_name: str | None = None,
     expected_version: str | None = None,
     expected_extra_stat_names: tuple[str, ...] | None = None,
+    *,
+    expected_ngs_mag_standard: str | None = None,
 ) -> None:
-    """Validate core persisted ``/simulation`` payload constraints.
+    """Validate the complete current ``/simulation`` payload contract.
+
+    This strict validator requires every current core field and does not apply
+    legacy upgrades. Load paths that accept recognized legacy payloads should
+    use :func:`resolve_simulation_payload_for_load`.
 
     Args:
         simulation: Candidate ``/simulation`` payload mapping.
@@ -41,9 +47,12 @@ def validate_simulation_payload_core(
         expected_version: Optional simulation class ``version`` expected by the caller.
         expected_extra_stat_names: Optional declared simulation-owned extra stat
             names expected by the caller.
+        expected_ngs_mag_standard: Optional NGS magnitude standard declared by
+            the simulation implementation.
 
     Raises:
         ValueError: If required keys are missing or values are invalid.
+        TypeError: If a field has an invalid type.
     """
     require_keys(simulation, schema.REQUIRED_SIMULATION_KEYS, label="simulation")
 
@@ -71,6 +80,22 @@ def validate_simulation_payload_core(
                 f"Simulation payload version mismatch: payload has '{simulation_version}', "
                 f"but instantiated simulation expects '{expected_version}'."
             )
+
+    ngs_mag_standard = simulation[schema.KEY_SIMULATION_NGS_MAG_STANDARD]
+    if not isinstance(ngs_mag_standard, str):
+        raise TypeError(
+            f"simulation['{schema.KEY_SIMULATION_NGS_MAG_STANDARD}'] must be a string."
+        )
+    if not ngs_mag_standard or ngs_mag_standard != ngs_mag_standard.strip():
+        raise ValueError(
+            f"simulation['{schema.KEY_SIMULATION_NGS_MAG_STANDARD}'] must be a non-empty stable string."
+        )
+    if expected_ngs_mag_standard is not None and ngs_mag_standard != expected_ngs_mag_standard:
+        raise ValueError(
+            "Simulation payload NGS magnitude standard mismatch: "
+            f"payload has {ngs_mag_standard!r}, but instantiated simulation "
+            f"declares {expected_ngs_mag_standard!r}."
+        )
 
     extra_stat_names = as_array(simulation.get(schema.KEY_SIMULATION_EXTRA_STAT_NAMES, ()))
     if extra_stat_names.ndim > 1:
@@ -103,6 +128,78 @@ def validate_simulation_payload_core(
         )
 
     normalize_meta_field_names(simulation.get(schema.KEY_SIMULATION_META_FIELDS, ()))
+
+
+def _upgrade_legacy_simulation_payload(
+    simulation: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    """Return an upgraded legacy payload copy or ``None`` when no upgrade applies.
+
+    The only recognized legacy shape currently lacks
+    ``/simulation/ngs_mag_standard``. The upgrade supplies the historical ``R``
+    default without mutating the caller's mapping or persisted dataset. The
+    returned payload still requires current-contract validation.
+    """
+    if schema.KEY_SIMULATION_NGS_MAG_STANDARD in simulation:
+        return None
+    upgraded = dict(simulation)
+    upgraded[schema.KEY_SIMULATION_NGS_MAG_STANDARD] = schema.DEFAULT_NGS_MAG_STANDARD
+    return upgraded
+
+
+def resolve_simulation_payload_for_load(
+    simulation: Mapping[str, Any],
+    *,
+    expected_name: str | None = None,
+    expected_version: str | None = None,
+    expected_extra_stat_names: tuple[str, ...] | None = None,
+    expected_ngs_mag_standard: str | None = None,
+) -> dict[str, Any]:
+    """Return a current, validated payload, upgrading recognized legacy input.
+
+    Validation always targets the current persisted contract first. If that
+    fails and the payload predates ``ngs_mag_standard``, an in-memory copy is
+    completed with the historical ``R`` default and validated again. The
+    supplied mapping and persisted dataset are never mutated.
+
+    Args:
+        simulation: Candidate current or legacy ``/simulation`` payload.
+        expected_name: Optional simulation class name expected by the caller.
+        expected_version: Optional simulation class version expected by the caller.
+        expected_extra_stat_names: Optional simulation-owned extra-stat names
+            expected by the caller.
+        expected_ngs_mag_standard: Optional NGS magnitude standard expected by
+            the caller.
+
+    Returns:
+        A validated current-contract copy of ``simulation``.
+
+    Raises:
+        ValueError: If neither the current nor recognized legacy payload is valid.
+        TypeError: If a field has an invalid type.
+    """
+    try:
+        validate_simulation_payload_core(
+            simulation,
+            expected_name=expected_name,
+            expected_version=expected_version,
+            expected_extra_stat_names=expected_extra_stat_names,
+            expected_ngs_mag_standard=expected_ngs_mag_standard,
+        )
+        return dict(simulation)
+    except (TypeError, ValueError):
+        upgraded = _upgrade_legacy_simulation_payload(simulation)
+        if upgraded is None:
+            raise
+
+    validate_simulation_payload_core(
+        upgraded,
+        expected_name=expected_name,
+        expected_version=expected_version,
+        expected_extra_stat_names=expected_extra_stat_names,
+        expected_ngs_mag_standard=expected_ngs_mag_standard,
+    )
+    return upgraded
 
 
 def validate_meta_field_name(name: Any, *, label: str = "meta field") -> str:

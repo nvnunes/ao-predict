@@ -166,6 +166,18 @@ class Simulation(ABC):
         """
         return ()
 
+    @property
+    @abstractmethod
+    def ngs_mag_standard(self) -> str:
+        """Return the photometric standard of persisted ``/options/ngs_mag``.
+
+        The value is persisted as ``/simulation/ngs_mag_standard`` for newly
+        prepared datasets. Direct implementations must return a stable,
+        non-empty string; ``BaseSimulation`` supplies the default ``R`` value
+        for its subclasses. The vocabulary is intentionally open to additional
+        standards.
+        """
+
     @abstractmethod
     def prepare_simulation_payload(
         self,

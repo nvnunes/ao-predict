@@ -25,9 +25,11 @@ Responsibilities:
 - allocate status/meta/stats (and optional psfs) datasets
 
 Simulation payload note:
-- ao-predict assembles the core `/simulation` fields: `name`, `version`, and `extra_stat_names`.
+- ao-predict assembles the core `/simulation` fields: `name`, `version`, `extra_stat_names`, and `ngs_mag_standard`.
 - Simulations expose the extra-stat registry through the `Simulation.extra_stat_names` property.
+- `Simulation.ngs_mag_standard` declares the photometric standard of `/options/ngs_mag`; `BaseSimulation` supplies `R` as the default and subclasses override it when needed.
 - The simulation implementation completes that base payload with simulation-specific persisted fields.
+- New datasets require the complete current payload. Older datasets without `ngs_mag_standard` load with the historical `R` default and are not rewritten; see the [persisted-contract compatibility lifecycle](architecture.md#persisted-contract-compatibility).
 - This mirrors the existing core-plus-completion pattern used for `/setup` and `/options`.
 
 Stats note:

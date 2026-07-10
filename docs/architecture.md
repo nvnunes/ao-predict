@@ -65,6 +65,20 @@ Keep one clear owner per rule:
 Avoid split ownership where builders, validators, and subclasses all partially
 enforce the same persisted rule.
 
+## Persisted Contract Compatibility
+
+Newly prepared payloads must satisfy the current persisted contract. Dataset
+creation validates that contract directly and does not apply compatibility
+upgrades.
+
+Payload loading first validates the current contract. When validation fails,
+AO Predict may apply a recognized legacy upgrade to an in-memory copy and then
+validates the current contract again. An upgrade never rewrites the persisted
+dataset, and consumers receive only the validated current-contract payload.
+
+Keep each legacy upgrade explicit, narrow, and idempotent. Do not use an
+upgrade to bypass unrelated validation failures.
+
 ## Simulation Lifecycle
 
 Keep preparation, validation, and binding clearly separated:

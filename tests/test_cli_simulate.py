@@ -129,6 +129,7 @@ def _success_result(m: int = 3, *, with_stats: bool = True, with_psfs: bool = Tr
 class TiptopSimulation(Simulation):
     _NAME = "ao_predict.simulation.tiptop:TiptopSimulation"
     _VERSION = "0.0.1"
+    ngs_mag_standard = "R"
 
     def __init__(self, fail_idx: int | None = None):
         self.fail_idx = fail_idx

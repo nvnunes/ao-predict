@@ -25,6 +25,7 @@ from ao_predict.simulation.runner import _populate_result_stats
 from ao_predict.simulation.runner import (
     RunSummary,
     create_simulation_from_config,
+    create_simulation_from_payload,
     run_pending_simulations,
     run_simulations_by_state,
 )
@@ -48,6 +49,7 @@ def _simulation(*, extra_stat_names: tuple[str, ...] = (), meta_field_names: tup
         "name": "ao_predict.simulation.tiptop:TiptopSimulation",
         "version": "x.y",
         "extra_stat_names": np.asarray(extra_stat_names, dtype=str),
+        schema.KEY_SIMULATION_NGS_MAG_STANDARD: schema.DEFAULT_NGS_MAG_STANDARD,
         **(
             {schema.KEY_SIMULATION_META_FIELDS: np.asarray(meta_field_names, dtype=str)}
             if meta_field_names
@@ -67,6 +69,7 @@ def _mock_simulation(
         "name": f"{simulation_cls.__module__}:{simulation_cls.__name__}",
         "version": simulation_cls._VERSION,
         "extra_stat_names": np.asarray(extra_stat_names, dtype=str),
+        schema.KEY_SIMULATION_NGS_MAG_STANDARD: simulation_cls().ngs_mag_standard,
     }
     payload.update(dict(specific_fields or {}))
     return payload
@@ -296,6 +299,8 @@ def _gaussian_psf(
 
 
 class _ExtraStatsSimulation(Simulation):
+    ngs_mag_standard = "R"
+
     _NAME = "ao_predict.simulation.tiptop:TiptopSimulation"
     _VERSION = "x.y"
 
@@ -1462,6 +1467,11 @@ def test_store_write_success_rejects_bad_meta_fields(tmp_path):
             np.asarray(["broken_stat"], dtype=str),
             "Simulation payload extra stat registry mismatch",
         ),
+        (
+            schema.KEY_SIMULATION_NGS_MAG_STANDARD,
+            "G_RP",
+            "Simulation payload NGS magnitude standard mismatch",
+        ),
     ],
 )
 def test_create_simulation_from_config_rejects_simulation_payload_core_field_overrides(
@@ -1481,6 +1491,83 @@ def test_create_simulation_from_config_rejects_simulation_payload_core_field_ove
 
     with pytest.raises(ValueError, match=match):
         create_simulation_from_config({"name": "mock_simulation:MockSimulation"})
+
+
+def test_create_simulation_from_config_rejects_removed_ngs_mag_standard(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    original_prepare = MockSimulation.prepare_simulation_payload
+
+    def _remove_standard(self, base_simulation_payload, simulation_cfg):
+        payload = dict(original_prepare(self, base_simulation_payload, simulation_cfg))
+        del payload[schema.KEY_SIMULATION_NGS_MAG_STANDARD]
+        return payload
+
+    monkeypatch.setattr(MockSimulation, "prepare_simulation_payload", _remove_standard)
+
+    with pytest.raises(ValueError, match="Missing required simulation keys: ngs_mag_standard"):
+        create_simulation_from_config({"name": "mock_simulation:MockSimulation"})
+
+
+def test_store_create_rejects_payload_without_ngs_mag_standard(tmp_path):
+    payload = _simulation()
+    del payload[schema.KEY_SIMULATION_NGS_MAG_STANDARD]
+
+    with pytest.raises(ValueError, match="Missing required simulation keys: ngs_mag_standard"):
+        SimulationStore(tmp_path / "missing_standard.h5").create(
+            payload,
+            _setup(),
+            _options(),
+        )
+
+
+@pytest.mark.parametrize("standard", ["R", "G_RP", "future_standard"])
+def test_create_simulation_from_config_accepts_stable_ngs_mag_standard(
+    monkeypatch: pytest.MonkeyPatch,
+    standard: str,
+):
+    monkeypatch.setattr(MockSimulation, "ngs_mag_standard", standard)
+
+    _, payload = create_simulation_from_config({"name": "mock_simulation:MockSimulation"})
+
+    assert payload[schema.KEY_SIMULATION_NGS_MAG_STANDARD] == standard
+
+
+@pytest.mark.parametrize("standard", ["", "   ", " R ", 3, None])
+def test_create_simulation_from_config_rejects_invalid_ngs_mag_standard(
+    monkeypatch: pytest.MonkeyPatch,
+    standard: object,
+):
+    monkeypatch.setattr(MockSimulation, "ngs_mag_standard", standard)
+
+    with pytest.raises((TypeError, ValueError), match="ngs_mag_standard"):
+        create_simulation_from_config({"name": "mock_simulation:MockSimulation"})
+
+
+def test_create_simulation_from_payload_accepts_legacy_payload_without_ngs_mag_standard():
+    payload = _mock_simulation()
+    del payload[schema.KEY_SIMULATION_NGS_MAG_STANDARD]
+
+    simulation = create_simulation_from_payload(payload)
+
+    assert isinstance(simulation, MockSimulation)
+
+
+def test_create_simulation_from_payload_rejects_other_invalid_legacy_fields():
+    payload = _mock_simulation()
+    del payload[schema.KEY_SIMULATION_NGS_MAG_STANDARD]
+    payload[schema.KEY_SIMULATION_VERSION] = "broken.version"
+
+    with pytest.raises(ValueError, match="Simulation payload version mismatch"):
+        create_simulation_from_payload(payload)
+
+
+def test_upstream_simulations_inherit_default_ngs_mag_standard():
+    from ao_predict.simulation import HybridSimulation, TiptopSimulation
+
+    assert TiptopSimulation().ngs_mag_standard == "R"
+    assert HybridSimulation().ngs_mag_standard == "R"
+    assert MockSimulation().ngs_mag_standard == "R"
 
 
 def test_runner_resume_behavior(tmp_path):
@@ -1526,6 +1613,7 @@ def test_runner_with_simulation_interface(tmp_path):
     class TiptopSimulation(Simulation):
         _NAME = "ao_predict.simulation.tiptop:TiptopSimulation"
         _VERSION = "x.y"
+        ngs_mag_standard = "R"
 
         def prepare_simulation_payload(self, base_simulation_payload, simulation_cfg):
             del simulation_cfg
@@ -1851,6 +1939,7 @@ def test_runner_with_simulation_interface_filtered_indexes(tmp_path):
     class TiptopSimulation(Simulation):
         _NAME = "ao_predict.simulation.tiptop:TiptopSimulation"
         _VERSION = "x.y"
+        ngs_mag_standard = "R"
 
         def prepare_simulation_payload(self, base_simulation_payload, simulation_cfg):
             del simulation_cfg
@@ -1936,6 +2025,7 @@ def test_runner_persists_declared_extra_stats(tmp_path):
     class TiptopSimulation(Simulation):
         _NAME = "ao_predict.simulation.tiptop:TiptopSimulation"
         _VERSION = "x.y"
+        ngs_mag_standard = "R"
 
         @property
         def extra_stat_names(self) -> tuple[str, ...]:

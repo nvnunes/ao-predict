@@ -14,6 +14,7 @@ ao-predict provides:
 - Development setup: [Development Setup](development.md)
 - Reference pages:
   - [Simulation Interfaces](reference/simulation/interfaces.md)
+  - [Simulation Base](reference/simulation/base.md)
   - [Simulation API](reference/simulation/api.md)
   - [Simulation Runner](reference/simulation/runner.md)
   - [TIPTOP Simulation](reference/simulation/tiptop.md)

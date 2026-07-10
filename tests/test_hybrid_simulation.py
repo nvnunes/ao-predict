@@ -56,6 +56,7 @@ def _base_payload(sim: HybridSimulation) -> dict[str, object]:
         "name": sim.name,
         "version": sim.version,
         "extra_stat_names": np.asarray(sim.extra_stat_names, dtype=str),
+        "ngs_mag_standard": sim.ngs_mag_standard,
     }
 
 

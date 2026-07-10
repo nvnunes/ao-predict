@@ -11,6 +11,7 @@ import numpy as np
 from ..simulation import schema
 from ..simulation.validation import (
     normalize_meta_field_names,
+    resolve_simulation_payload_for_load,
     validate_atm_profile_ids,
     validate_options_payload_core,
     validate_successful_result,
@@ -708,14 +709,18 @@ class SimulationStore:
             return _read_node(f[schema.KEY_SETUP_SECTION])
 
     def read_simulation(self) -> dict[str, Any]:
-        """Read the persisted ``/simulation`` group.
+        """Read ``/simulation`` as a validated current-contract payload.
+
+        Recognized legacy payloads are upgraded in memory and the dataset is
+        not rewritten.
 
         Returns:
-            Nested Python mapping decoded from ``/simulation``.
+            Current-contract mapping decoded from ``/simulation``.
         """
 
         with h5py.File(self.path, "r") as f:
-            return _read_node(f[schema.KEY_SIMULATION_SECTION])
+            simulation = _read_node(f[schema.KEY_SIMULATION_SECTION])
+        return resolve_simulation_payload_for_load(simulation)
 
     def read_extra_stat_names(self) -> tuple[str, ...]:
         """Read declared extra stat names from ``/simulation``."""
@@ -1060,7 +1065,7 @@ class SimulationStore:
 
             try:
                 simulation_data = _read_node(f[schema.KEY_SIMULATION_SECTION])
-                validate_simulation_payload_core(simulation_data)
+                simulation_data = resolve_simulation_payload_for_load(simulation_data)
                 extra_stat_names = _read_extra_stat_names(simulation_data)
                 meta_field_names = normalize_meta_field_names(
                     simulation_data.get(schema.KEY_SIMULATION_META_FIELDS, ())

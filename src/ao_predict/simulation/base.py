@@ -132,6 +132,15 @@ class BaseSimulation(Simulation, ABC):
         return self._diagnostics_level
 
     @property
+    def ngs_mag_standard(self) -> str:
+        """Return the default ``R`` standard for persisted NGS magnitudes.
+
+        Subclasses whose ``options/ngs_mag`` values use another photometric
+        standard must override this property.
+        """
+        return schema.DEFAULT_NGS_MAG_STANDARD
+
+    @property
     def supported_extra_diagnostics_levels(self) -> tuple[str, ...]:
         """Return non-``none`` diagnostics levels implemented by this simulation.
 
