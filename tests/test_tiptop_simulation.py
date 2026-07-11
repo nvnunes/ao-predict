@@ -398,6 +398,18 @@ def test_tiptop_run_finalize_with_stubbed_tiptop(tmp_path: Path, monkeypatch: py
     assert runtime_sim.kwargs["eeRadiusInMas"] == 25.0
 
 
+def test_tiptop_run_delegates_execution_to_hook():
+    calls = []
+
+    class FakeSimulation:
+        def doOverallSimulation(self, **kwargs):
+            calls.append(kwargs)
+
+    TiptopSimulation()._run_tiptop(FakeSimulation())
+
+    assert calls == [{}]
+
+
 def test_tiptop_derives_r0_from_seeing_when_missing(tmp_path: Path):
     sim = TiptopSimulation()
     ini_path = tmp_path / "tiptop_seeing.ini"

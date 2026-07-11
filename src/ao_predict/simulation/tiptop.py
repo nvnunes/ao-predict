@@ -202,6 +202,19 @@ class TiptopSimulation(TiptopConfigBackedSimulation):
 
     # Runtime lifecycle
 
+    def _run_tiptop(self, simulation: Any) -> None:
+        """Execute one constructed TIPTOP simulation.
+
+        Subclasses may override this hook to select supported TIPTOP execution
+        options without duplicating the surrounding temporary-INI lifecycle.
+
+        Args:
+            simulation: Constructed ``tiptop.baseSimulation`` instance. The
+                hook must execute it in place and return only after the
+                runtime results needed by extraction hooks are available.
+        """
+        simulation.doOverallSimulation()
+
     def run(self, context: SimulationContext) -> None:
         """Execute TIPTOP simulation and cache raw output object in runtime.
 
@@ -262,7 +275,7 @@ class TiptopSimulation(TiptopConfigBackedSimulation):
                 doPlot=False,
                 verbose=False,
             )
-            simulation.doOverallSimulation()
+            self._run_tiptop(simulation)
             context.runtime[self.KEY_RUNTIME_SIMULATION] = simulation
 
     def _extract_psfs(self, context: SimulationContext) -> np.ndarray | None:
