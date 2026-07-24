@@ -99,6 +99,31 @@ restoring it.
 If a module has a strong lifecycle or execution flow, prefer method order that
 follows that lifecycle.
 
+## Per-Simulation Science Coordinates
+
+The persisted `/setup/sci_r_arcsec` and `/setup/sci_theta_deg` vectors define
+the invariant base science grid. Code-driven initialization may additionally
+provide `/options/sci_dx_arcsec` and `/options/sci_dy_arcsec` matrices with
+shape `[N, M]`, where `N` is the simulation count and `M` is the base-grid
+point count.
+
+- Each Cartesian offset axis is independently optional and defaults to zero
+  when absent.
+- Persisted offset matrices use finite `float32` values. An all-zero axis is
+  normalized away instead of being stored or loaded.
+- Execution resolves one options row against the base grid and records the
+  effective polar coordinates in
+  `SimulationContext.resolved_sci_r_arcsec` and
+  `SimulationContext.resolved_sci_theta_deg`.
+- `SimulationContext.setup`, the bound setup, and persisted `/setup` remain
+  invariant.
+- TIPTOP and Hybrid execution consume the effective runtime coordinates.
+- Analysis and plotting continue to expose the invariant setup grid; adopting
+  effective coordinates in those surfaces is a separate change.
+
+The offset matrices are an `OptionsConfig` API capability. The CLI does not
+provide a dedicated input surface for them.
+
 ## Extension Points And Hooks
 
 Subclass hooks should prepare simulation-specific inputs and runtime state.

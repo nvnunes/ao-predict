@@ -43,6 +43,7 @@ def test_package_and_analysis_module_exports() -> None:
 
 
 def test_simulation_module_config_backed_exports() -> None:
+    package = importlib.import_module("ao_predict")
     simulation = importlib.import_module("ao_predict.simulation")
 
     assert simulation.ConfigBackedSimulation is ConfigBackedSimulation
@@ -50,6 +51,10 @@ def test_simulation_module_config_backed_exports() -> None:
     assert simulation.TiptopBaseConfig is TiptopBaseConfig
     assert simulation.TiptopSimulation is TiptopSimulation
     assert simulation.HybridSimulation is HybridSimulation
+    assert not hasattr(package, "ScienceCoordinates")
+    assert not hasattr(package, "resolve_science_coordinates")
+    assert not hasattr(simulation, "ScienceCoordinates")
+    assert not hasattr(simulation, "resolve_science_coordinates")
 
 
 def test_interpolation_submodule_exports_without_root_exports() -> None:

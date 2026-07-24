@@ -141,6 +141,14 @@ These setup fields control how persisted `/stats/sr`, `/stats/ee`, and
 
 Columnar per-option arrays keyed by option names.
 
+Code-driven initialization may include independently optional
+`sci_dx_arcsec` and `sci_dy_arcsec` matrices with shape `[N, M]`, where `M`
+is the invariant science-point count in `/setup`. Retained matrices are finite
+`float32`; an absent or all-zero axis means zero offset and is not persisted.
+During execution, `SimulationContext.setup` remains invariant and the
+effective polar field is available through `resolved_sci_r_arcsec` and
+`resolved_sci_theta_deg`.
+
 ### `TableOptionsConfig`
 - `broadcast: dict[str, object] = {}`
 - `columns: list[str] | None = None`

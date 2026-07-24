@@ -621,13 +621,13 @@ class SimulationStore:
 
         validate_simulation_payload_core(simulation)
         validate_setup_payload_core(setup)
-        num_sims = validate_options_payload_core(options)
+        m_sci = get_num_sci(setup)
+        num_sims = validate_options_payload_core(options, expected_num_sci=m_sci)
         validate_atm_profile_ids(setup, options)
         extra_stat_names = _read_extra_stat_names(simulation)
         meta_field_names = normalize_meta_field_names(simulation.get(schema.KEY_SIMULATION_META_FIELDS, ()))
         diagnostic_field_specs = _read_diagnostic_field_specs(simulation)
 
-        m_sci = get_num_sci(setup)
         ee = get_ee_apertures(setup)
 
         if self.path.exists() and overwrite:
@@ -1086,7 +1086,11 @@ class SimulationStore:
 
             try:
                 options_data = _read_node(f[schema.KEY_OPTION_SECTION])
-                validate_options_payload_core(options_data, expected_num_sims=n)
+                validate_options_payload_core(
+                    options_data,
+                    expected_num_sims=n,
+                    expected_num_sci=get_num_sci(setup_data) if setup_data is not None else None,
+                )
                 if setup_data is not None:
                     validate_atm_profile_ids(setup_data, options_data)
             except Exception as exc:

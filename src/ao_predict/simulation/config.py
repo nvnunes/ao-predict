@@ -16,8 +16,9 @@ from typing import Any, Mapping
 
 import numpy as np
 
-from .interfaces import Simulation
 from . import schema
+from .helpers import get_num_sci
+from .interfaces import Simulation
 from ..utils import (
     as_array_dict,
     as_float_scalar,
@@ -434,8 +435,47 @@ def _validate_completed_options_payload(
     """Validate one completed persisted ``/options`` payload."""
     if not isinstance(options_payload, Mapping) or len(options_payload) == 0:
         raise ValueError("options payload must be a non-empty mapping.")
-    validate_options_payload_core(options_payload)
+    validate_options_payload_core(
+        options_payload,
+        expected_num_sci=get_num_sci(setup_payload),
+    )
     validate_atm_profile_ids(setup_payload, options_payload)
+
+
+def _normalize_science_offset_options(
+    options_payload: Mapping[str, object],
+    *,
+    num_sims: int,
+    num_sci: int,
+) -> dict[str, np.ndarray]:
+    """Normalize optional science-offset matrices for sparse persistence.
+
+    Present matrices must match ``[N, M]`` and contain finite values. Retained
+    values use ``float32``; an all-zero axis is omitted so the zero-offset
+    default consumes no persisted or loaded memory.
+    """
+    normalized = as_array_dict(options_payload, copy_arrays=False)
+    expected_shape = (int(num_sims), int(num_sci))
+    for key in schema.OPTION_KEYS_SCI_OFFSETS:
+        if key not in normalized:
+            continue
+        try:
+            values = np.asarray(normalized[key], dtype=np.float64)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"options['{key}'] must contain real numeric values.") from exc
+        if values.ndim != 2 or values.shape != expected_shape:
+            raise ValueError(f"options['{key}'] must have shape [N, M]={expected_shape}, got {values.shape}.")
+        if not np.all(np.isfinite(values)):
+            raise ValueError(f"options['{key}'] must be finite.")
+        if np.all(values == 0.0):
+            normalized.pop(key)
+        else:
+            with np.errstate(over="ignore", invalid="ignore"):
+                stored_values = values.astype(np.float32)
+            if not np.all(np.isfinite(stored_values)):
+                raise ValueError(f"options['{key}'] must be representable as finite float32 values.")
+            normalized[key] = stored_values
+    return normalized
 
 
 # Public normalization helpers
@@ -675,6 +715,11 @@ def prepare_options_payload_from_table(
         broadcast_ngs=broadcast_ngs,
     )
     options_payload = simulation.prepare_options_payload(num_sims, setup_payload, base_options_payload)
+    options_payload = _normalize_science_offset_options(
+        options_payload,
+        num_sims=num_sims,
+        num_sci=get_num_sci(setup_payload),
+    )
     _validate_completed_options_payload(setup_payload, options_payload)
     return options_payload
 
@@ -726,6 +771,11 @@ def prepare_options_payload_from_arrays(
         atm_wavelength_um=atm_wavelength_um,
         num_sims=int(num_sims),
         has_explicit_r0=has_explicit_r0,
+    )
+    completed_payload = _normalize_science_offset_options(
+        completed_payload,
+        num_sims=int(num_sims),
+        num_sci=get_num_sci(setup_payload),
     )
 
     _validate_completed_options_payload(setup_payload, completed_payload)

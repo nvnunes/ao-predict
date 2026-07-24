@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Mapping, TypeVar
 
 import numpy as np
 
 from . import schema
 from . import atm
+from .coordinates import resolve_science_coordinates
 from .helpers import _MISSING, get_num_sci, select_mapping_value
 from .interfaces import Simulation, SimulationContext, SimulationResult, SimulationSetup, SimulationState
 from .stats import clip_and_sum_normalize_psfs
@@ -614,15 +615,17 @@ class BaseSimulation(Simulation, ABC):
     def _create_runtime_context(self, index: int, options: dict[str, Any], setup: SimulationSetup) -> dict[str, Any]:
         """Create runtime scratch state for one simulation.
 
-        This hook receives the bound typed setup plus one copied options row
-        and should return any transient runtime data needed by ``run()`` and
-        ``finalize()``. It may derive simulator-specific state, but it should
-        not mutate persisted dataset content.
+        This hook receives one copied options row and a typed runtime setup.
+        The runtime setup is the bound setup when science offsets are absent.
+        When offsets are present, it is a transient copy whose science
+        coordinate fields contain the resolved execution positions. The hook
+        should return transient runtime data needed by ``run()`` and
+        ``finalize()`` without mutating persisted dataset content.
 
         Args:
             index: Zero-based simulation index.
             options: Copied per-simulation options mapping.
-            setup: Bound typed setup object for this simulation instance.
+            setup: Typed runtime setup with resolved science coordinates.
 
         Returns:
             Runtime scratch mapping stored in ``SimulationContext.runtime``.
@@ -636,9 +639,11 @@ class BaseSimulation(Simulation, ABC):
         """Create one execution context from bound setup and one options row.
 
         This shared implementation copies the per-simulation options row,
-        creates runtime scratch state via ``_create_runtime_context()``, and
-        returns the ``SimulationContext`` consumed by ``run()`` and
-        ``finalize()``.
+        resolves effective science coordinates, creates runtime scratch state
+        via ``_create_runtime_context()``, and returns the ``SimulationContext``
+        consumed by ``run()`` and ``finalize()``. ``context.setup`` remains the
+        bound invariant setup; effective coordinates are stored in the
+        ``resolved_sci_*`` context fields.
 
         Args:
             index: Zero-based simulation index.
@@ -647,14 +652,48 @@ class BaseSimulation(Simulation, ABC):
         Returns:
             Bound simulation context for one simulation.
         """
-        setup = self.setup
         options_row = dict(options)
-        runtime = self._create_runtime_context(index=int(index), options=options_row, setup=setup)
+        setup = self.setup
+        resolved_sci_r_arcsec = setup.sci_r_arcsec
+        resolved_sci_theta_deg = setup.sci_theta_deg
+        runtime_setup = setup
+        if any(key in options_row for key in schema.OPTION_KEYS_SCI_OFFSETS):
+            science = resolve_science_coordinates(setup, options_row)
+            resolved_sci_r_arcsec = science.r_arcsec
+            resolved_sci_theta_deg = science.theta_deg
+            runtime_setup = replace(
+                setup,
+                sci_r_arcsec=resolved_sci_r_arcsec,
+                sci_theta_deg=resolved_sci_theta_deg,
+            )
+        runtime = self._create_runtime_context(index=int(index), options=options_row, setup=runtime_setup)
         return SimulationContext(
             index=int(index),
             setup=setup,
             options=options_row,
+            resolved_sci_r_arcsec=resolved_sci_r_arcsec,
+            resolved_sci_theta_deg=resolved_sci_theta_deg,
             runtime=runtime,
+        )
+
+    @staticmethod
+    def _resolved_science_setup(context: SimulationContext) -> SimulationSetup:
+        """Return a transient setup carrying one context's resolved science field.
+
+        ``SimulationContext.setup`` remains the bound persisted setup. Runtime
+        implementations that need the effective science field can use this
+        helper without changing the context's setup contract.
+        """
+        resolved_r = context.resolved_sci_r_arcsec
+        resolved_theta = context.resolved_sci_theta_deg
+        if resolved_r is None and resolved_theta is None:
+            return context.setup
+        if resolved_r is None or resolved_theta is None:
+            raise ValueError("SimulationContext resolved science coordinates must be provided together.")
+        return replace(
+            context.setup,
+            sci_r_arcsec=resolved_r,
+            sci_theta_deg=resolved_theta,
         )
 
     @abstractmethod

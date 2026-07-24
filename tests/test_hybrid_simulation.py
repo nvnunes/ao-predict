@@ -208,10 +208,49 @@ def test_hybrid_provider_uses_artifact_pixel_scale_and_preserves_flux(tmp_path: 
     )
 
 
+def test_hybrid_create_applies_science_offsets_to_runtime_setup(tmp_path: Path) -> None:
+    sim = HybridSimulation()
+    sim.load_simulation_payload(_simulation_payload(tmp_path))
+    sim.load_setup_payload(_setup_payload())
+    options = {
+        **_options(),
+        schema.KEY_OPTION_SCI_DX_ARCSEC: np.array([0.25, -0.25], dtype=np.float32),
+        schema.KEY_OPTION_SCI_DY_ARCSEC: np.array([0.5, 0.5], dtype=np.float32),
+    }
+
+    context = sim.create(0, options)
+
+    assert context.setup is sim.setup
+    np.testing.assert_allclose(context.setup.sci_r_arcsec, np.array([0.0, 1.0]))
+    np.testing.assert_allclose(context.setup.sci_theta_deg, np.array([0.0, 0.0]))
+    np.testing.assert_allclose(context.resolved_sci_r_arcsec, np.hypot([0.25, 0.75], [0.5, 0.5]))
+    np.testing.assert_allclose(
+        context.resolved_sci_theta_deg,
+        np.mod(np.rad2deg(np.arctan2([0.5, 0.5], [0.25, 0.75])), 360.0),
+    )
+    parser = context.runtime["effective_parser"]
+    np.testing.assert_allclose(
+        np.fromstring(parser["sources_science"]["Zenith"].strip("[]"), sep=","),
+        context.resolved_sci_r_arcsec,
+        rtol=1.0e-5,
+    )
+    np.testing.assert_allclose(
+        np.fromstring(parser["sources_science"]["Azimuth"].strip("[]"), sep=","),
+        context.resolved_sci_theta_deg,
+        rtol=1.0e-5,
+    )
+
+
 def test_hybrid_subclass_can_override_science_provider(tmp_path: Path) -> None:
+    resolved_fields: dict[str, tuple[np.ndarray, np.ndarray]] = {}
+
     class CustomHybrid(HybridSimulation):
         def _predict_science_psfs(self, setup, options):
-            del setup, options
+            del options
+            resolved_fields["science"] = (
+                np.asarray(setup.sci_r_arcsec),
+                np.asarray(setup.sci_theta_deg),
+            )
             return SciencePsfProviderResult(
                 psfs=np.full((2, 5, 5), 2.0, dtype=np.float32),
                 metadata=PsfMetadata(
@@ -231,7 +270,11 @@ def test_hybrid_subclass_can_override_science_provider(tmp_path: Path) -> None:
             )
 
         def _compute_mastsel_ctot(self, parser, setup, active_ngs, metrics):
-            del parser, setup, active_ngs, metrics
+            del parser, active_ngs, metrics
+            resolved_fields["mastsel"] = (
+                np.asarray(setup.sci_r_arcsec),
+                np.asarray(setup.sci_theta_deg),
+            )
             return HybridCtotResult(
                 ctot_nm2=np.zeros((2, 2, 2), dtype=float),
                 ctot_mas2=np.zeros((2, 2, 2), dtype=float),
@@ -241,11 +284,22 @@ def test_hybrid_subclass_can_override_science_provider(tmp_path: Path) -> None:
     sim = CustomHybrid()
     sim.load_simulation_payload(_simulation_payload(tmp_path))
     sim.load_setup_payload(_setup_payload())
-    context = sim.create(0, _options())
+    options = {
+        **_options(),
+        schema.KEY_OPTION_SCI_DX_ARCSEC: np.array([0.25, -0.25], dtype=np.float32),
+        schema.KEY_OPTION_SCI_DY_ARCSEC: np.array([0.5, 0.5], dtype=np.float32),
+    }
+    context = sim.create(0, options)
     assert context.runtime["effective_parser"] is not sim.base_config.parser
     sim.run(context)
     sim.finalize(context)
 
+    expected_r = np.hypot([0.25, 0.75], [0.5, 0.5])
+    expected_theta = np.mod(np.rad2deg(np.arctan2([0.5, 0.5], [0.25, 0.75])), 360.0)
+    assert set(resolved_fields) == {"science", "mastsel"}
+    for resolved_r, resolved_theta in resolved_fields.values():
+        np.testing.assert_allclose(resolved_r, expected_r)
+        np.testing.assert_allclose(resolved_theta, expected_theta)
     assert context.result is not None
     assert context.result.meta["pixel_scale_mas"] == np.float32(7.0)
     assert context.result.meta["tel_diameter_m"] == np.float32(9.0)

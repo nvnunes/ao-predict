@@ -77,6 +77,12 @@ class SetupConfig:
 class OptionsConfig:
     """Typed columnar per-simulation options.
 
+    The optional ``sci_dx_arcsec`` and ``sci_dy_arcsec`` arrays have shape
+    ``[N, M]``, where ``N`` is the simulation count and ``M`` is the invariant
+    science-point count in setup. Each axis may be supplied independently.
+    Missing or explicitly all-zero axes are omitted from persistence and mean
+    zero offset.
+
     Attributes:
         option_arrays: Mapping from option name to per-simulation arrays.
     """

@@ -367,12 +367,18 @@ def validate_ngs_options(options: Mapping[str, Any], expected_num_sims: int | No
         )
 
 
-def validate_options_payload_core(options: Mapping[str, Any], expected_num_sims: int | None = None) -> int:
+def validate_options_payload_core(
+    options: Mapping[str, Any],
+    expected_num_sims: int | None = None,
+    expected_num_sci: int | None = None,
+) -> int:
     """Validate core ``/options`` payload and return simulation count ``N``.
 
     Args:
         options: Candidate options mapping.
         expected_num_sims: Optional expected first-dimension size.
+        expected_num_sci: Optional expected science-point count ``M`` for
+            science-offset matrices.
 
     Returns:
         Number of simulations ``N`` inferred from options arrays.
@@ -380,7 +386,7 @@ def validate_options_payload_core(options: Mapping[str, Any], expected_num_sims:
     Raises:
         ValueError: If option keys, dtypes, or shapes violate the core contract.
     """
-    allowed_keys = set(schema.OPTION_KEYS_1D + schema.OPTION_KEYS_NGS)
+    allowed_keys = set(schema.OPTION_KEYS_1D + schema.OPTION_KEYS_NGS + schema.OPTION_KEYS_SCI_OFFSETS)
     unknown_keys = sorted(set(options.keys()) - allowed_keys)
     if unknown_keys:
         raise ValueError(f"Unsupported options keys: {', '.join(unknown_keys)}")
@@ -420,6 +426,28 @@ def validate_options_payload_core(options: Mapping[str, Any], expected_num_sims:
                     raise ValueError(f"options['{schema.KEY_OPTION_ATM_PROFILE_ID}'] must be finite.")
                 if not np.all(np.equal(arrf, np.round(arrf))):
                     raise ValueError(f"options['{schema.KEY_OPTION_ATM_PROFILE_ID}'] must be integer-valued.")
+
+    for key in schema.OPTION_KEYS_SCI_OFFSETS:
+        if key not in options:
+            continue
+        arr = np.asarray(options[key])
+        if arr.ndim != 2:
+            raise ValueError(f"options['{key}'] must be 2D [N, M].")
+        if int(arr.shape[0]) != num_sims:
+            raise ValueError(f"options['{key}'] first dimension must match N={num_sims}.")
+        if arr.shape[1] == 0:
+            raise ValueError(f"options['{key}'] science-point dimension M must be nonzero.")
+        if expected_num_sci is not None and int(arr.shape[1]) != int(expected_num_sci):
+            raise ValueError(
+                f"options['{key}'] science-point dimension must match M={int(expected_num_sci)}, "
+                f"got {arr.shape[1]}."
+            )
+        if arr.dtype != np.dtype(np.float32):
+            raise ValueError(f"options['{key}'] must use float32 storage.")
+        if not np.all(np.isfinite(arr)):
+            raise ValueError(f"options['{key}'] must be finite.")
+        if np.all(arr == 0.0):
+            raise ValueError(f"options['{key}'] must be omitted when all offsets are zero.")
 
     validate_ngs_options(options, num_sims)
 

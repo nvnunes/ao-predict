@@ -100,11 +100,18 @@ class SimulationContext:
 
     Attributes:
         index: Index of this simulation in the dataset.
-        setup: Bound typed setup payload for this simulation class.
+        setup: Bound typed setup payload containing the invariant persisted
+            science coordinates.
         options: Resolved per-simulation options. May include runtime-derived
             non-persisted fields such as ``ngs_used``.
         result: Populated in ``finalize``.
         runtime: Scratch space shared across lifecycle steps.
+        resolved_sci_r_arcsec: Effective per-simulation science radial
+            coordinates. ``BaseSimulation`` populates this without changing
+            ``setup``.
+        resolved_sci_theta_deg: Effective per-simulation science angular
+            coordinates. ``BaseSimulation`` populates this without changing
+            ``setup``.
     """
 
     index: int
@@ -112,6 +119,8 @@ class SimulationContext:
     options: dict[str, Any]
     result: SimulationResult | None = None
     runtime: dict[str, Any] = field(default_factory=dict)
+    resolved_sci_r_arcsec: np.ndarray | None = None
+    resolved_sci_theta_deg: np.ndarray | None = None
 
 
 # Simulation contract

@@ -174,6 +174,8 @@ def test_tiptop_create_context(tmp_path: Path):
         "ngs_mag": np.array([14.0, np.nan, 15.0]),
         "ngs_used": np.array([True, False, True]),
         "atm_profile_id": 1,
+        "sci_dx_arcsec": np.array([1.0, 2.0], dtype=np.float32),
+        "sci_dy_arcsec": np.array([0.0, 3.0], dtype=np.float32),
     }
     sim.load_simulation_payload(simulation_payload)
     setup_payload = sim.prepare_setup_payload({"ee_apertures_mas": setup["ee_apertures_mas"]}, setup)
@@ -187,7 +189,25 @@ def test_tiptop_create_context(tmp_path: Path):
     assert ctx.runtime["effective_parser"] is not sim._base_config.parser
     assert float(ctx.setup.ngs_mag_zeropoint) > 0.0
     assert float(ctx.setup.atm_wavelength_um) == pytest.approx(0.5)
+    assert ctx.setup is sim.setup
+    np.testing.assert_allclose(ctx.setup.sci_r_arcsec, np.array([0.0, 1.0]))
+    np.testing.assert_allclose(ctx.setup.sci_theta_deg, np.array([0.0, 90.0]))
+    np.testing.assert_allclose(ctx.resolved_sci_r_arcsec, np.array([1.0, np.sqrt(20.0)]))
+    np.testing.assert_allclose(
+        ctx.resolved_sci_theta_deg,
+        np.array([0.0, np.rad2deg(np.arctan2(4.0, 2.0))]),
+    )
     assert ctx.runtime["effective_parser"]["sources_science"]["Wavelength"] == "[1.650000e-06]"
+    np.testing.assert_allclose(
+        np.fromstring(ctx.runtime["effective_parser"]["sources_science"]["Zenith"].strip("[]"), sep=","),
+        ctx.resolved_sci_r_arcsec,
+        rtol=1.0e-5,
+    )
+    np.testing.assert_allclose(
+        np.fromstring(ctx.runtime["effective_parser"]["sources_science"]["Azimuth"].strip("[]"), sep=","),
+        ctx.resolved_sci_theta_deg,
+        rtol=1.0e-5,
+    )
     # Pixel scale remains whatever is defined in the base INI for generic TIPTOP behavior.
     assert float(ctx.runtime["effective_parser"]["sensor_science"]["PixelScale"]) == pytest.approx(8.8, abs=1e-4)
     # NGS overrides keep only active stars and compute LO photons from ngs_mag.

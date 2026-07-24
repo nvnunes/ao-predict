@@ -31,6 +31,7 @@ from ao_predict.interpolation.science_ho_psf import (
 from . import atm
 from . import schema
 from .base import BaseSimulationSetup, PsfParameters
+from .coordinates import polar_to_cartesian
 from .interfaces import SimulationContext, SimulationSetup
 from .photometry import magnitudes_to_photons_per_frame
 from .stats import PsfMetadata
@@ -448,7 +449,7 @@ class HybridSimulation(TiptopConfigBackedSimulation):
                 unit conversion values are invalid.
             RuntimeError: If MASTSEL cannot load the generated runtime INI.
         """
-        setup = context.setup
+        setup = self._resolved_science_setup(context)
         if not isinstance(setup, HybridSetup):
             raise TypeError("context.setup must be HybridSetup.")
         options = context.options
@@ -1078,16 +1079,6 @@ def validate_ctot_shape(ctot: np.ndarray, *, label: str, expected_size: int | No
         raise ValueError(f"{label} field length {ctot.shape[0]} does not match expected {expected_size}.")
     if not np.all(np.isfinite(ctot)):
         raise ValueError(f"{label} contains non-finite values.")
-
-
-def polar_to_cartesian(r_arcsec: np.ndarray, theta_deg: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """Convert polar field coordinates to Cartesian arcsecond coordinates."""
-    r_arcsec = np.asarray(r_arcsec, dtype=float).reshape(-1)
-    theta_deg = np.asarray(theta_deg, dtype=float).reshape(-1)
-    if r_arcsec.shape != theta_deg.shape:
-        raise ValueError(f"Coordinate shapes differ: {r_arcsec.shape} != {theta_deg.shape}.")
-    theta_rad = np.deg2rad(theta_deg)
-    return r_arcsec * np.cos(theta_rad), r_arcsec * np.sin(theta_rad)
 
 
 def _require_hybrid_result(context: SimulationContext) -> _HybridRuntimeResult:

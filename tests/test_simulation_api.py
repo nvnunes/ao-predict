@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import math
 from pathlib import Path
 
@@ -174,6 +175,76 @@ def test_api_init_and_check(tmp_path: Path):
     assert status.ok is False
     with pytest.raises(sim_api.DatasetValidationError):
         sim_api.validate_dataset(dataset_path)
+
+
+def test_api_science_offsets_persist_sparsely_as_float32(tmp_path: Path):
+    request = _base_request(tmp_path)
+    assert isinstance(request.options, OptionsConfig)
+    option_arrays = {
+        **request.options.option_arrays,
+        schema.KEY_OPTION_SCI_DX_ARCSEC: np.array(
+            [[0.0, 1.0, 2.0], [3.0, 4.0, 5.0], [6.0, 7.0, 8.0]],
+            dtype=np.float64,
+        ),
+        schema.KEY_OPTION_SCI_DY_ARCSEC: np.zeros((3, 3), dtype=np.float64),
+    }
+    request = replace(request, options=OptionsConfig(option_arrays=option_arrays))
+
+    sim_api.init_dataset(request)
+
+    store = sim_api.SimulationStore(request.dataset_path)
+    options = store.read_options()
+    assert options[schema.KEY_OPTION_SCI_DX_ARCSEC].dtype == np.dtype(np.float32)
+    np.testing.assert_allclose(
+        options[schema.KEY_OPTION_SCI_DX_ARCSEC],
+        option_arrays[schema.KEY_OPTION_SCI_DX_ARCSEC],
+    )
+    assert schema.KEY_OPTION_SCI_DY_ARCSEC not in options
+    row = store.read_sim_options(1)
+    np.testing.assert_allclose(row[schema.KEY_OPTION_SCI_DX_ARCSEC], np.array([3.0, 4.0, 5.0]))
+    assert schema.KEY_OPTION_SCI_DY_ARCSEC not in row
+    sim_api.validate_dataset_matches_request(request.dataset_path, request)
+
+
+def test_api_science_offsets_require_matching_science_dimension(tmp_path: Path):
+    request = _base_request(tmp_path)
+    assert isinstance(request.options, OptionsConfig)
+    option_arrays = {
+        **request.options.option_arrays,
+        schema.KEY_OPTION_SCI_DX_ARCSEC: np.ones((3, 2), dtype=np.float32),
+    }
+    request = replace(request, options=OptionsConfig(option_arrays=option_arrays))
+
+    with pytest.raises(ValueError, match=r"shape \[N, M\]=\(3, 3\)"):
+        sim_api.init_dataset(request)
+
+
+def test_api_science_offsets_must_be_finite(tmp_path: Path):
+    request = _base_request(tmp_path)
+    assert isinstance(request.options, OptionsConfig)
+    offsets = np.ones((3, 3), dtype=np.float32)
+    offsets[1, 2] = np.nan
+    option_arrays = {
+        **request.options.option_arrays,
+        schema.KEY_OPTION_SCI_DY_ARCSEC: offsets,
+    }
+    request = replace(request, options=OptionsConfig(option_arrays=option_arrays))
+
+    with pytest.raises(ValueError, match="must be finite"):
+        sim_api.init_dataset(request)
+
+
+def test_api_science_offsets_reject_non_numeric_values(tmp_path: Path):
+    request = _base_request(tmp_path)
+    assert isinstance(request.options, OptionsConfig)
+    option_arrays = {
+        **request.options.option_arrays,
+        schema.KEY_OPTION_SCI_DX_ARCSEC: np.full((3, 3), "invalid"),
+    }
+    request = replace(request, options=OptionsConfig(option_arrays=option_arrays))
+
+    with pytest.raises(ValueError, match="must contain real numeric values"):
+        sim_api.init_dataset(request)
 
 
 def test_api_validate_dataset_matches_request_accepts_matching_payloads(tmp_path: Path):

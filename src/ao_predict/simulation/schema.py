@@ -89,6 +89,8 @@ KEY_OPTION_ZENITH_ANGLE_DEG = "zenith_angle_deg"
 KEY_OPTION_ATM_PROFILE_ID = "atm_profile_id"
 KEY_OPTION_R0_M = "r0_m"
 KEY_OPTION_SEEING = "seeing_arcsec"
+KEY_OPTION_SCI_DX_ARCSEC = "sci_dx_arcsec"
+KEY_OPTION_SCI_DY_ARCSEC = "sci_dy_arcsec"
 KEY_OPTION_NGS_R_ARCSEC = "ngs_r_arcsec"
 KEY_OPTION_NGS_THETA_DEG = "ngs_theta_deg"
 KEY_OPTION_NGS_MAG = "ngs_mag"
@@ -151,6 +153,11 @@ OPTION_KEYS_NGS = (
     KEY_OPTION_NGS_R_ARCSEC,
     KEY_OPTION_NGS_THETA_DEG,
     KEY_OPTION_NGS_MAG,
+)
+
+OPTION_KEYS_SCI_OFFSETS = (
+    KEY_OPTION_SCI_DX_ARCSEC,
+    KEY_OPTION_SCI_DY_ARCSEC,
 )
 
 # Contract key collections
