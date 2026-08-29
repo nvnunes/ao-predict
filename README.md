@@ -1,7 +1,9 @@
 # ao-predict
 AO Predict: a framework for fast AO performance prediction
 
-Current simulation support focuses on batched TIPTOP-style runs with resumable HDF5 persistence.
+AO Predict provides batched TIPTOP-style simulation with resumable HDF5
+persistence and an instrument-independent PyTorch lifecycle for training dense
+surrogate models from prepared NumPy features and targets.
 
 ## Installation
 
@@ -92,6 +94,17 @@ Full API documentation: [`docs/api.md`](docs/api.md)
 
 API key casing:
 - Mapping keys are case-sensitive and must be lowercase.
+
+## Model Training
+
+The Python API can train a supported dense-regression model with explicit
+validation data or an automatic whole-simulation split. Training publishes a
+validated `.model.zip` package, writes an append-only `.training.log`, and
+automatically continues compatible `.recovery.pt` state after interruption.
+
+See the [model-training guide](docs/api.md#model-training) and
+[training API reference](docs/reference/training.md) for the public data,
+request, result, and file-lifecycle contracts.
 
 ## Documentation
 

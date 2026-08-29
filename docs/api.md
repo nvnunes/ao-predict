@@ -1,7 +1,7 @@
 # Python API Documentation
 
-This document describes the primary code-first simulation API exposed at
-`ao_predict` and implemented in `ao_predict.simulation.api`.
+This document describes the primary code-first simulation and model-training
+APIs exposed at `ao_predict`.
 
 For analysis reads from an existing dataset, use
 `ao_predict.load_analysis_dataset(...)` or
@@ -12,6 +12,85 @@ upstream analysis read path; callers should not need to construct
 For Matplotlib PSF, PSF-core, and metric-field plots from loaded analysis
 simulations, use `ao_predict.plotting`. Plotting helpers live in that submodule
 rather than the package root.
+
+## Model Training
+
+Use `train_model(TrainModelRequest(...))` to fit the AO Predict dense-regression
+family. Training owns data validation, whole-simulation partitioning,
+standardization, deterministic model construction, optimization, exact
+continuation, and publication of a validated model package.
+
+```python
+import numpy as np
+
+from ao_predict import (
+    TrainModelRequest,
+    model_training_data_from_rows,
+    train_model,
+)
+
+features = np.asarray(
+    [[0.5, 1.0], [1.0, 1.5], [1.5, 2.0], [2.0, 2.5]],
+    dtype=np.float32,
+)
+targets = np.asarray([[0.8], [1.2], [1.7], [2.1]], dtype=np.float32)
+data = model_training_data_from_rows(
+    features,
+    targets,
+    feature_names=("seeing", "airmass"),
+    target_names=("fwhm",),
+)
+
+result = train_model(
+    TrainModelRequest(
+        model_path="models/example",
+        training_data=data,
+        validation_count=1,
+        split_seed=17,
+        hidden_widths=(32, 32),
+        batch_size=64,
+        training_seed=23,
+    )
+)
+```
+
+Exactly one validation source is required: `validation_data`,
+`validation_count`, or `validation_fraction`. Automatic partitioning withholds
+complete simulations. For explicit partitions, AO Predict checks the ordered
+feature and target schema but trusts the caller to prevent scientific leakage
+between the partitions.
+
+The public data configuration holds one NumPy array per feature and target.
+Targets have shape `(simulations,)` or
+`(simulations, examples_per_simulation)` and must all share a shape. A feature
+may have that complete shape or the compact `(simulations,)` shape; compact
+features are expanded only while assembling a batch. Caller arrays are borrowed
+without mutation until AO Predict has made its owned standardized `float32`
+state, so callers must not mutate them while `train_model()` is active.
+
+`model_path` is a path stem, not a directory. For `models/example`, training
+owns these companions:
+
+- `models/example.model.zip`: independently loadable prediction-model package
+- `models/example.training.log`: output-only, append-only human record
+- `models/example.recovery.pt`: transient exact-continuation state, removed
+  after successful package publication and log finalization
+
+A compatible recovery checkpoint is continued automatically. Set
+`overwrite=True` to remove the complete derived output set and start again.
+Incompatible recovery raises `TrainingRecoveryMismatchError`; invalid coupled
+inputs raise `ModelTrainingValidationError` with all collected messages in
+`issues`.
+
+Training defaults to CPU. `device` accepts an explicit available `cpu`, `cuda`,
+or `mps` device and never silently falls back. `cpu_threads` is optional and,
+when set for CPU training, changes PyTorch's process-wide thread count. The
+validation execution batch defaults to `2 * batch_size` and affects memory and
+throughput, not metric semantics.
+
+See the [Training API reference](reference/training.md) for the complete request,
+result, and data contracts. Predictor loading, prediction, and evaluation are
+not yet part of the public training API.
 
 ## Lifecycle Functions
 

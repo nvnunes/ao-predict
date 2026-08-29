@@ -7,11 +7,27 @@ from ao_predict import (
     AnalysisLoadContribution,
     AnalysisSimulation,
     AnalysisSimulationLoadPayload,
-    __version__,
+    FeatureConfig,
     HybridSimulation,
+    ModelTrainingDataConfig,
+    ModelTrainingValidationError,
+    TargetConfig,
+    TrainingRecoveryMismatchError,
+    TrainingTerminationReason,
+    TrainingValidationRecord,
+    TrainModelRequest,
+    TrainModelResult,
+    __version__,
     load_analysis_dataset,
+    model_training_data_from_rows,
+    train_model,
 )
-from ao_predict.simulation import ConfigBackedSimulation, TiptopBaseConfig, TiptopConfigBackedSimulation, TiptopSimulation
+from ao_predict.simulation import (
+    ConfigBackedSimulation,
+    TiptopBaseConfig,
+    TiptopConfigBackedSimulation,
+    TiptopSimulation,
+)
 
 
 def test_version_present():
@@ -64,7 +80,10 @@ def test_interpolation_submodule_exports_without_root_exports() -> None:
     assert interpolation.ScienceHoPsfSamples.__name__ == "ScienceHoPsfSamples"
     assert interpolation.NgsHoPsfSamples.__name__ == "NgsHoPsfSamples"
     assert interpolation.NgsHoMetricSamples.__name__ == "NgsHoMetricSamples"
-    assert interpolation.RegularGridInterpolationConfig.__name__ == "RegularGridInterpolationConfig"
+    assert (
+        interpolation.RegularGridInterpolationConfig.__name__
+        == "RegularGridInterpolationConfig"
+    )
     assert interpolation.RbfInterpolationConfig.__name__ == "RbfInterpolationConfig"
     assert not hasattr(package, "ScienceHoPsfSamples")
     assert not hasattr(package, "NgsHoMetricSamples")
@@ -72,3 +91,25 @@ def test_interpolation_submodule_exports_without_root_exports() -> None:
     assert not hasattr(interpolation, "save_science_ho_psf_inputs")
     assert not hasattr(interpolation, "save_ngs_ho_psf_inputs")
     assert not hasattr(interpolation, "save_ngs_ho_metric_inputs")
+
+
+def test_training_root_and_submodule_exports() -> None:
+    package = importlib.import_module("ao_predict")
+    training = importlib.import_module("ao_predict.training")
+    expected = {
+        "FeatureConfig": FeatureConfig,
+        "ModelTrainingDataConfig": ModelTrainingDataConfig,
+        "ModelTrainingValidationError": ModelTrainingValidationError,
+        "TargetConfig": TargetConfig,
+        "TrainingRecoveryMismatchError": TrainingRecoveryMismatchError,
+        "TrainingTerminationReason": TrainingTerminationReason,
+        "TrainingValidationRecord": TrainingValidationRecord,
+        "TrainModelRequest": TrainModelRequest,
+        "TrainModelResult": TrainModelResult,
+        "model_training_data_from_rows": model_training_data_from_rows,
+        "train_model": train_model,
+    }
+
+    for name, value in expected.items():
+        assert getattr(package, name) is value
+        assert getattr(training, name) is value
