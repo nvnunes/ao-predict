@@ -1,4 +1,4 @@
-"""Private dense-regression model ownership for AO Predict training."""
+"""Private ownership of AO Predict's single dense-regression model family."""
 
 from __future__ import annotations
 

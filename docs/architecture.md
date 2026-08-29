@@ -38,6 +38,10 @@ Keep one obvious owner for each major concern:
   science coordinates.
 - Model-training data, lifecycle, and package publication belong under
   `training/*` rather than growing out of simulation or persistence modules.
+- Deployable model loading, prediction, and aggregate evaluation belong under
+  `prediction/*`.
+- Dense-model construction, device selection, and model-package validation
+  shared by training and prediction have one private package-level owner.
 
 Core concerns stay in core modules. Simulation-specific behavior stays in
 subclasses or feature modules.
@@ -57,9 +61,10 @@ same project vocabulary and ownership pattern:
 - choose names and field order that follow the lifecycle and match established
   AO Predict terms
 
-New training behavior should reuse these patterns unless its semantics require
-a deliberate difference. It should not introduce a second naming system or a
-parallel abstraction for a problem already solved by the simulation API.
+New model-lifecycle behavior should reuse these patterns unless its semantics
+require a deliberate difference. It should not introduce a second naming
+system or a parallel abstraction for a problem already solved by another AO
+Predict API.
 
 ## Model Training Lifecycle
 
@@ -224,6 +229,70 @@ Publication uses temporary siblings and atomic replacement. A private
 exclusive lock covers inspection, fitting, logging, recovery replacement, and
 publication for one `model_path`. `overwrite=True` authorizes replacement of
 the stable derived output set but never bypasses an active lock.
+
+## Model Prediction And Evaluation Lifecycle
+
+`ao_predict.prediction` owns the deployed dense-model runtime. Its public
+boundary consists of `load_model_predictor()`, `ModelPredictor`, and
+`ModelEvaluationResult`. The loader validates one versioned model package,
+reconstructs the concrete model family, moves the model and fitted
+standardization state to the selected device, and returns a runtime whose
+public state is read-only. Raw model state, weights, metadata mappings, and
+scaler tensors remain private.
+
+Prediction follows this sequence:
+
+1. Resolve a model stem or exact `.model.zip` path syntactically.
+2. Validate the package manifest, member integrity, metadata, weights, and
+   reconstructed dense-model state.
+3. Resolve the explicit runtime device and optional process-wide CPU thread
+   setting without automatic fallback.
+4. Validate and bind caller feature values to the package's ordered feature
+   contract.
+5. Gather, convert, standardize, execute, and reconstruct physical values in
+   bounded batches under model evaluation and inference modes.
+6. Restore the caller-visible example shape and return a plain `float32` NumPy
+   array.
+
+Training and prediction deliberately have different public data forms.
+Training defines and persists a feature and target schema, so its public data
+configuration pairs each array with a definition. Prediction consumes values
+against that already-fixed package schema, so callers may provide either one
+positional matrix or an exact-name mapping without repeating definitions or
+units. Internally, both lifecycles preserve simulation-major order, treat the
+last partial batch normally, and gather simulation-level features without
+permanently repeating them.
+
+Named prediction features may be rank one at simulation scope or rank two over
+a common related-example axis. The runtime creates only the current dense
+feature batch: it does not build a complete combined input matrix or repeat a
+complete simulation-level feature. Direct inputs and complete outputs remain
+caller-shaped. Prediction accepts an empty example population and returns the
+corresponding empty output; evaluation requires at least one example.
+
+Evaluation uses the same prediction pipeline but accumulates squared physical
+relative residuals instead of retaining predictions. Targets must match the
+resolved example shape exactly, are never broadcast, and must be strictly
+positive. The runtime sums batch contributions and divides once over the
+complete population. Overall relative MSE pools all examples and targets;
+overall relative RMSE is its square root; per-target relative RMSE uses each
+target's complete example population. These values are dimensionless ratios,
+while the training lifecycle's validation Error expresses the same pooled RMSE
+as a percentage.
+
+Model packages are device-independent. CPU and accelerator execution must
+agree within the public API guide's documented floating-point tolerance, not
+bitwise identity. Runtime device and batch selection do not alter package
+identity.
+
+The `.model.zip` package is the only deployed-model input. Prediction does not
+read the training log or recovery checkpoint and does not support legacy
+packages, caller-provided model factories, alternate model families, custom
+statistics, study orchestration, or execution benchmarking.
+
+The [Python API guide](api.md#model-prediction-and-evaluation) owns executable
+usage, and the [prediction API reference](reference/prediction.md) owns the
+exact public signatures and result fields.
 
 ## Persisted Contract Ownership
 

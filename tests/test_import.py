@@ -9,6 +9,8 @@ from ao_predict import (
     AnalysisSimulationLoadPayload,
     FeatureConfig,
     HybridSimulation,
+    ModelEvaluationResult,
+    ModelPredictor,
     ModelTrainingDataConfig,
     ModelTrainingValidationError,
     TargetConfig,
@@ -19,6 +21,7 @@ from ao_predict import (
     TrainModelResult,
     __version__,
     load_analysis_dataset,
+    load_model_predictor,
     model_training_data_from_rows,
     train_model,
 )
@@ -113,3 +116,17 @@ def test_training_root_and_submodule_exports() -> None:
     for name, value in expected.items():
         assert getattr(package, name) is value
         assert getattr(training, name) is value
+
+
+def test_prediction_root_and_submodule_exports() -> None:
+    package = importlib.import_module("ao_predict")
+    prediction = importlib.import_module("ao_predict.prediction")
+    expected = {
+        "ModelEvaluationResult": ModelEvaluationResult,
+        "ModelPredictor": ModelPredictor,
+        "load_model_predictor": load_model_predictor,
+    }
+
+    for name, value in expected.items():
+        assert getattr(package, name) is value
+        assert getattr(prediction, name) is value

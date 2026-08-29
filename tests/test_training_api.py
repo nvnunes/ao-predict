@@ -22,12 +22,12 @@ from ao_predict import (
     model_training_data_from_rows,
     train_model,
 )
+from ao_predict._model import build_dense_model, derived_seed
 from ao_predict.training.artifacts import (
     load_model_package,
     load_recovery,
     resolve_training_paths,
 )
-from ao_predict.training.model import build_dense_model, derived_seed
 
 training_api = importlib.import_module("ao_predict.training.api")
 

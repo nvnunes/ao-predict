@@ -1,7 +1,7 @@
 # Python API Documentation
 
-This document describes the primary code-first simulation and model-training
-APIs exposed at `ao_predict`.
+This document describes the primary code-first simulation, model-training,
+prediction, and evaluation APIs exposed at `ao_predict`.
 
 For analysis reads from an existing dataset, use
 `ao_predict.load_analysis_dataset(...)` or
@@ -89,8 +89,97 @@ validation execution batch defaults to `2 * batch_size` and affects memory and
 throughput, not metric semantics.
 
 See the [Training API reference](reference/training.md) for the complete request,
-result, and data contracts. Predictor loading, prediction, and evaluation are
-not yet part of the public training API.
+result, and data contracts.
+
+## Model Prediction And Evaluation
+
+Use `load_model_predictor()` to load the validated `.model.zip` package
+published by `train_model()`. The loader accepts either the model stem or the
+exact package path; it resolves the path from the suffix alone and never picks
+between candidates according to what exists.
+
+```python
+import numpy as np
+
+from ao_predict import load_model_predictor
+
+predictor = load_model_predictor(
+    "models/example",
+    device="cpu",
+    batch_size=16_384,
+)
+
+features = np.asarray(
+    [[0.75, 1.1], [1.25, 1.8]],
+    dtype=np.float32,
+)
+predictions = predictor.predict(features)
+
+targets = np.asarray([[0.95], [1.45]], dtype=np.float32)
+evaluation = predictor.evaluate(features, targets)
+print(evaluation.relative_rmse)
+```
+
+Direct feature input has shape `(examples, features)` and direct predictions
+have shape `(examples, targets)`. Model metadata fixes the input and output
+order, exposed through `feature_names` and `target_names`. Prediction always
+returns a physical-unit `float32` NumPy array.
+
+Named input avoids assembling a complete feature matrix and can keep values
+shared at simulation scope:
+
+```python
+predictions = predictor.predict(
+    {
+        "seeing": np.asarray([0.6, 0.8], dtype=np.float32),
+        "airmass": np.asarray(
+            [[1.0, 1.2, 1.4], [1.1, 1.3, 1.5]],
+            dtype=np.float32,
+        ),
+    }
+)
+assert predictions.shape == (2, 3, 1)
+```
+
+Each named feature is either `(simulations,)` or
+`(simulations, related_examples)`. Rank-one values are shared over the related
+axis while AO Predict gathers each bounded batch; they do not need to be
+repeated by the caller. When every feature is rank one, prediction returns
+`(simulations, targets)`. Mapping insertion order is irrelevant, but names must
+match the package exactly.
+
+`predict_one()` accepts one positional feature vector or an exact-name mapping
+of real scalars and returns `(targets,)`. `predict()` and `evaluate()` accept a
+positive per-call `batch_size`; `None` uses the predictor default. A loaded
+predictor also exposes its normalized `model_path`, exact `model_package_path`,
+resolved `device`, names, and units as read-only properties.
+
+Evaluation accepts direct arrays or exact-name mappings independently for
+features and targets. Targets must provide every resolved example value, must
+be finite and strictly positive, and are never broadcast. The immutable result
+reports dimensionless ratios:
+
+- `relative_mse`: mean squared relative residual pooled over all examples and
+  targets
+- `relative_rmse`: square root of that pooled value
+- `target_relative_rmse`: complete-population relative RMSE by target name
+
+These values are not percentages. Training's percent-valued validation Error
+is `100 * relative_rmse` for the same model and population, within normal
+floating-point tolerance.
+
+Prediction defaults to CPU and supports explicit available PyTorch `cpu`,
+`cuda`, `cuda:<index>`, and `mps` device names without automatic fallback.
+Optional `cpu_threads` applies only to CPU and changes PyTorch's process-wide
+thread count. Batch size bounds conversion, standardization, device transfer,
+model execution, and physical reconstruction; AO Predict allocates the complete
+output but does not assemble or repeat a complete named input matrix.
+Numerically equivalent CPU and accelerator predictions are expected to agree
+within `rtol=1e-5` and `atol=1e-6`; they are not required to be bitwise
+identical.
+
+See the [Prediction API reference](reference/prediction.md) for the exact
+public signatures and result fields.
 
 ## Lifecycle Functions
 

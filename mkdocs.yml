@@ -30,6 +30,7 @@ nav:
       - Development Setup: development.md
   - Reference:
       - Training API: reference/training.md
+      - Prediction API: reference/prediction.md
       - Interpolation API: reference/interpolation.md
       - Analysis API: reference/analysis/api.md
       - Plotting API: reference/plotting.md

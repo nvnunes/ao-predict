@@ -4,6 +4,7 @@ ao-predict provides:
 - batched simulation dataset workflows with TIPTOP-backed execution
 - schema-aware HDF5 persistence with resume/retry semantics
 - restart-safe PyTorch training for dense AO surrogate models
+- bounded physical prediction and aggregate evaluation from validated model packages
 - code-first and CLI-driven execution interfaces
 
 ## Start Here
@@ -11,6 +12,7 @@ ao-predict provides:
 - CLI guide: [CLI](cli.md)
 - Python API guide: [API](api.md)
 - Training API reference: [Training](reference/training.md)
+- Prediction API reference: [Prediction](reference/prediction.md)
 - Architecture: [Architecture](architecture.md)
 - Testing and verification: [Testing](testing.md)
 - Development setup: [Development Setup](development.md)

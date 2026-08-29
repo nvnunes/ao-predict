@@ -11,6 +11,7 @@ from .analysis import (
     AnalysisSimulationLoadPayload,
     load_analysis_dataset,
 )
+from .prediction import ModelEvaluationResult, ModelPredictor, load_model_predictor
 from .simulation import (
     BaseSimulation,
     HybridSimulation,
@@ -75,6 +76,8 @@ __all__ = [
     "FeatureConfig",
     "HybridSimulation",
     "InitDatasetRequest",
+    "ModelEvaluationResult",
+    "ModelPredictor",
     "ModelTrainingDataConfig",
     "ModelTrainingValidationError",
     "OptionsConfig",
@@ -104,6 +107,7 @@ __all__ = [
     "compute_psf_stats",
     "init_dataset",
     "load_analysis_dataset",
+    "load_model_predictor",
     "model_training_data_from_rows",
     "reset_simulations",
     "resume_simulations",

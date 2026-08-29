@@ -19,9 +19,10 @@ from typing import TextIO
 import numpy as np
 import torch
 
+from .._model import build_dense_model, cpu_state_dict, derived_seed
+from .._model_package import MODEL_METADATA_KIND, MODEL_METADATA_VERSION
+from .._runtime import select_device
 from .artifacts import (
-    MODEL_METADATA_KIND,
-    MODEL_METADATA_VERSION,
     RECOVERY_KIND,
     RECOVERY_VERSION,
     _TrainingPaths,
@@ -51,7 +52,6 @@ from .data import (
     validate_explicit_schema,
     validation_mask_checksum,
 )
-from .model import build_dense_model, cpu_state_dict, derived_seed
 from .types import (
     ModelTrainingValidationError,
     TrainingRecoveryMismatchError,
@@ -249,39 +249,9 @@ def _validate_request(request: TrainModelRequest) -> list[str]:
 
 def _select_device(name: str, cpu_threads: int | None) -> torch.device:
     try:
-        device = torch.device(name)
-    except (RuntimeError, ValueError) as exc:
-        raise ModelTrainingValidationError([f"device is invalid: {exc}"]) from exc
-    if device.type not in {"cpu", "cuda", "mps"}:
-        raise ModelTrainingValidationError(["device type must be cpu, cuda, or mps."])
-    if device.type == "cpu":
-        if device.index is not None:
-            raise ModelTrainingValidationError(
-                ["CPU devices must not include an index."]
-            )
-    elif cpu_threads is not None:
-        raise ModelTrainingValidationError(
-            ["cpu_threads is accepted only with a CPU device."]
-        )
-    if device.type == "cuda":
-        if not torch.cuda.is_available():
-            raise ModelTrainingValidationError(
-                [f"CUDA device {name!r} is unavailable."]
-            )
-        index = torch.cuda.current_device() if device.index is None else device.index
-        if index < 0 or index >= torch.cuda.device_count():
-            raise ModelTrainingValidationError(
-                [f"CUDA device index {index} is unavailable."]
-            )
-        device = torch.device("cuda", index)
-    if device.type == "mps":
-        if device.index is not None:
-            raise ModelTrainingValidationError(
-                ["MPS devices must not include an index."]
-            )
-        if not torch.backends.mps.is_available():
-            raise ModelTrainingValidationError(["MPS device is unavailable."])
-    return device
+        return select_device(name, cpu_threads)
+    except ValueError as exc:
+        raise ModelTrainingValidationError([str(exc)]) from exc
 
 
 @contextmanager
