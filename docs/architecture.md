@@ -31,17 +31,19 @@ truth for this repo.
 Keep one obvious owner for each major concern:
 
 - Simulation execution belongs under `simulation/*`.
+- Generic simulation-product interpolation contracts belong under
+  `interpolation/*`.
 - Persistence and storage concerns belong under `persistence/*`.
-- Analysis read models and load composition belong under `analysis/*`.
-- Generic analysis plotting belongs in `plotting`, including PSF views,
-  centered PSF-core views, and interpolated metric-field views over persisted
-  science coordinates.
 - Model-training data, lifecycle, and package publication belong under
   `training/*` rather than growing out of simulation or persistence modules.
 - Deployable model loading, prediction, and aggregate evaluation belong under
   `prediction/*`.
 - Dense-model construction, device selection, and model-package validation
   shared by training and prediction have one private package-level owner.
+- Analysis read models and load composition belong under `analysis/*`.
+- Generic analysis plotting belongs in `plotting`, including PSF views,
+  centered PSF-core views, and interpolated metric-field views over persisted
+  science coordinates.
 
 Core concerns stay in core modules. Simulation-specific behavior stays in
 subclasses or feature modules.
@@ -81,13 +83,21 @@ Training follows this ownership sequence:
 1. Validate the complete request and borrow caller NumPy arrays without
    mutation or full-matrix duplication.
 2. Resolve explicit validation or split complete simulations from one pool.
-3. Fit population standardizers on training observations and create owned
-   standardized `float32` arrays.
+3. Fit population standardizers on training observations in `float64`,
+   standardize physical values in `float64`, and then create owned standardized
+   `float32` arrays.
 4. Construct and initialize the supported dense model from a private random
    stream, then fit and validate in bounded batches.
 5. Save exact recovery after each completed validation boundary.
 6. Publish and independently validate the best model package, finalize the
    human log, and only then remove recovery state.
+
+Training and prediction use the same private numerical operation: subtract and
+divide in `float64`, then convert the standardized values to `float32` for the
+model. Before a fresh run opens its stable training log, training verifies that
+the fitted scalers satisfy the model-package representation contract and that
+standardized targets reconstruct as finite, strictly positive `float32`
+physical values.
 
 The first axis of every training values array is the simulation axis. Targets
 have either one value per simulation or one common second example axis. Each
@@ -189,9 +199,10 @@ A validation check applies lifecycle actions in this order:
 ### Model Selection And Exact Continuation
 
 The published model is the state from the lowest validation objective, not
-necessarily the final training state. Its validation Error is retained
-separately because the lowest objective need not imply a separately selected
-lowest Error.
+necessarily the final training state. Validation Error is
+`100 * sqrt(validation objective)`, so both measurements select the same
+validation check. AO Predict retains both to expose the squared training
+objective and its percentage-error form.
 
 Recovery state serves a different purpose from best-model selection. It
 retains the current and best model states, optimizer and scheduler state,
@@ -235,10 +246,12 @@ the stable derived output set but never bypasses an active lock.
 `ao_predict.prediction` owns the deployed dense-model runtime. Its public
 boundary consists of `load_model_predictor()`, `ModelPredictor`, and
 `ModelEvaluationResult`. The loader validates one versioned model package,
-reconstructs the concrete model family, moves the model and fitted
-standardization state to the selected device, and returns a runtime whose
-public state is read-only. Raw model state, weights, metadata mappings, and
-scaler tensors remain private.
+reconstructs the concrete model family, moves the model and target
+reconstruction state to the selected device, and returns a runtime whose public
+state is read-only. Feature standardization remains private and host-side so
+bounded physical-value batches can be standardized in `float64` before their
+`float32` model inputs are transferred to the selected device. Raw model state,
+weights, metadata mappings, and standardization state remain private.
 
 Prediction follows this sequence:
 
@@ -249,8 +262,10 @@ Prediction follows this sequence:
    setting without automatic fallback.
 4. Validate and bind caller feature values to the package's ordered feature
    contract.
-5. Gather, convert, standardize, execute, and reconstruct physical values in
-   bounded batches under model evaluation and inference modes.
+5. Gather a bounded physical-value batch, standardize it in `float64` with the
+   persisted population parameters, convert the standardized batch to
+   `float32`, execute it, and reconstruct physical values under model
+   evaluation and inference modes.
 6. Restore the caller-visible example shape and return a plain `float32` NumPy
    array.
 

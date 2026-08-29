@@ -54,6 +54,34 @@ result = train_model(
 )
 ```
 
+### Inspecting Training Results
+
+The returned result identifies the published model and records every validation
+boundary from the complete logical run:
+
+```python
+print(result.termination_reason.value)
+print(result.model_path)
+print(result.best_validation_check)
+print(result.best_model_validation_error_percent)
+
+history = result.validation_history
+training_epochs = np.asarray([record.training_epochs for record in history])
+training_error_percent = 100.0 * np.sqrt(
+    np.asarray([record.training_objective for record in history])
+)
+validation_error_percent = np.asarray(
+    [record.validation_error_percent for record in history]
+)
+learning_rate = np.asarray([record.learning_rate_after for record in history])
+```
+
+These arrays can be passed directly to a plotting tool, with
+`training_epochs` as the horizontal axis. Each training measurement summarizes
+the examples fitted since the preceding validation check, while each validation
+measurement covers the complete validation partition. `learning_rate` is the
+rate retained after scheduler processing at each boundary.
+
 Exactly one validation source is required: `validation_data`,
 `validation_count`, or `validation_fraction`. Automatic partitioning withholds
 complete simulations. For explicit partitions, AO Predict checks the ordered

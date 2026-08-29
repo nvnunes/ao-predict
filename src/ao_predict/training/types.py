@@ -87,12 +87,15 @@ class TrainModelRequest:
         validation_check_epochs: Training-set exposures between validation checks.
         learning_rate_reduction_factor: Plateau learning-rate multiplier.
         minimum_learning_rate: Plateau learning-rate floor.
-        scheduler_patience_checks: Consecutive unsuccessful check on which the
-            scheduler reduces the rate.
-        scheduler_minimum_improvement_fraction: Relative objective improvement.
-        early_stopping_patience_checks: Consecutive unsuccessful check on which
-            early stopping terminates training.
-        early_stopping_minimum_improvement_percent: Absolute Error improvement.
+        scheduler_patience_checks: Number of consecutive unsuccessful eligible
+            checks that triggers a learning-rate reduction.
+        scheduler_minimum_improvement_fraction: Relative validation-objective
+            decrease required from the best eligible scheduler objective.
+        early_stopping_patience_checks: Number of consecutive unsuccessful
+            eligible checks that triggers early-stopping termination.
+        early_stopping_minimum_improvement_percent: Absolute validation-Error
+            decrease, in percentage points, required from the current
+            early-stopping reference.
         maximum_validation_checks: Final scheduled validation-check bound.
     """
 
@@ -138,6 +141,23 @@ class TrainingValidationRecord:
     The training objective covers examples fitted since the preceding check,
     or since the run began for the first record. Validation measurements cover
     the complete validation partition. Learning rates bracket scheduler action.
+
+    Attributes:
+        validation_check: One-based completed validation-check number.
+        training_epochs: Cumulative training examples seen divided by the
+            resolved number of training examples.
+        optimizer_updates: Cumulative number of parameter updates.
+        training_examples_seen: Cumulative number of examples consumed by
+            training batches.
+        training_objective: Mean physical relative MSE for training examples
+            consumed since the preceding validation check.
+        validation_objective: Physical relative MSE over the complete
+            validation partition.
+        validation_error_percent: Square root of ``validation_objective``
+            expressed as a percentage.
+        learning_rate_before: Learning rate used before scheduler processing at
+            this validation boundary.
+        learning_rate_after: Learning rate retained after scheduler processing.
     """
 
     validation_check: int
@@ -159,6 +179,26 @@ class TrainModelResult:
     published, the training log is finalized, and recovery is removed.
     ``validation_mask`` is a read-only AO Predict-owned copy for automatic
     splits and is ``None`` for caller-supplied explicit partitions.
+
+    Attributes:
+        model_path: Normalized caller-selected model path stem.
+        termination_reason: Successful lifecycle termination condition.
+        training_seed: Effective model-initialization and batch-order seed.
+        split_seed: Effective automatic-partition seed, or ``None`` for an
+            explicit validation partition.
+        validation_mask: Read-only automatic validation membership over the
+            original simulation pool, or ``None`` for explicit validation.
+        optimizer_updates: Total number of completed parameter updates.
+        training_examples_seen: Total number of examples consumed by training
+            batches.
+        validation_checks: Total number of completed validation boundaries.
+        best_validation_check: One-based validation check whose model state was
+            published.
+        best_validation_objective: Complete-partition physical relative MSE for
+            the published model state.
+        best_model_validation_error_percent: Square root of the best validation
+            objective expressed as a percentage.
+        validation_history: Ordered measurements for every validation boundary.
     """
 
     model_path: Path

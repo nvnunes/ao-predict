@@ -17,6 +17,7 @@ from torch import nn
 
 from .._model_package import load_model_package
 from .._runtime import select_device
+from .._standardization import standardize_to_float32
 from .types import ModelEvaluationResult
 
 _PACKAGE_SUFFIX = ".model.zip"
@@ -65,7 +66,9 @@ def _as_float32_batch(
     with np.errstate(over="ignore", invalid="ignore"):
         output = np.ascontiguousarray(value, dtype=np.float32)
     if not bool(np.all(np.isfinite(output))):
-        raise ValueError(f"{label} values must be representable as finite float32 values.")
+        raise ValueError(
+            f"{label} values must be representable as finite float32 values."
+        )
     if positive and not bool(np.all(output > 0)):
         raise ValueError(
             f"{label} values must be representable as strictly positive float32 values."
@@ -103,8 +106,8 @@ class _PreparedFeatures:
 
     def batch(self, start: int, stop: int) -> np.ndarray:
         if self.direct is not None:
-            return _as_float32_batch(self.direct[start:stop], "feature")
-        output = np.empty((stop - start, len(self.names)), dtype=np.float32)
+            return self.direct[start:stop]
+        output = np.empty((stop - start, len(self.names)), dtype=np.float64)
         structured = len(self.example_shape) == 2
         if structured:
             related_examples = self.example_shape[1]
@@ -123,9 +126,7 @@ class _PreparedFeatures:
                 else:
                     output[:, column] = values[simulation_indices]
         if not bool(np.all(np.isfinite(output))):
-            raise ValueError(
-                "feature values must be representable as finite float32 values."
-            )
+            raise ValueError("feature values must be representable as finite float64.")
         return output
 
 
@@ -196,7 +197,9 @@ def _prepare_features(
             fields=(),
         )
     if not isinstance(values, Mapping):
-        raise TypeError("features must be a NumPy array or a mapping of feature arrays.")
+        raise TypeError(
+            "features must be a NumPy array or a mapping of feature arrays."
+        )
     _validate_names(values, names, "feature")
     fields: list[np.ndarray] = []
     rank_two_shape: tuple[int, int] | None = None
@@ -210,7 +213,9 @@ def _prepare_features(
             if rank_two_shape is None:
                 rank_two_shape = shape
             elif shape != rank_two_shape:
-                raise ValueError("All rank-two feature arrays must have the same shape.")
+                raise ValueError(
+                    "All rank-two feature arrays must have the same shape."
+                )
         if simulation_count is None:
             simulation_count = field.shape[0]
         elif field.shape[0] != simulation_count:
@@ -241,7 +246,9 @@ def _prepare_targets(
         direct = _validate_real_array(values, label="targets", positive=True)
         expected_shape = (*example_shape, len(names))
         if direct.shape != expected_shape:
-            raise ValueError(f"targets must have shape {expected_shape}, not {direct.shape}.")
+            raise ValueError(
+                f"targets must have shape {expected_shape}, not {direct.shape}."
+            )
         return _PreparedTargets(names, example_shape, direct, ())
     if not isinstance(values, Mapping):
         raise TypeError("targets must be a NumPy array or a mapping of target arrays.")
@@ -288,7 +295,9 @@ class ModelPredictor:
     def __init__(self) -> None:
         """Reject direct construction; load a validated package instead."""
 
-        raise TypeError("ModelPredictor instances are created by load_model_predictor().")
+        raise TypeError(
+            "ModelPredictor instances are created by load_model_predictor()."
+        )
 
     @classmethod
     def _from_loaded_package(
@@ -315,15 +324,13 @@ class ModelPredictor:
         self._target_units = tuple(
             cast(str | None, item["unit"]) for item in target_definitions
         )
-        self._feature_mean = torch.tensor(
+        self._feature_mean = np.asarray(
             [float(item["mean"]) for item in feature_definitions],
-            dtype=torch.float32,
-            device=device,
+            dtype=np.float64,
         )
-        self._feature_scale = torch.tensor(
+        self._feature_scale = np.asarray(
             [float(item["scale"]) for item in feature_definitions],
-            dtype=torch.float32,
-            device=device,
+            dtype=np.float64,
         )
         self._target_mean = torch.tensor(
             [float(item["mean"]) for item in target_definitions],
@@ -393,9 +400,14 @@ class ModelPredictor:
         return _positive_integer(batch_size, "batch_size")
 
     def _predict_batch(self, values: np.ndarray) -> torch.Tensor:
-        tensor = torch.from_numpy(values).to(self._device)
-        standardized = (tensor - self._feature_mean) / self._feature_scale
-        return self._model(standardized) * self._target_scale + self._target_mean
+        standardized = standardize_to_float32(
+            values,
+            self._feature_mean,
+            self._feature_scale,
+            label="feature values",
+        )
+        tensor = torch.from_numpy(standardized).to(self._device)
+        return self._model(tensor) * self._target_scale + self._target_mean
 
     def predict(
         self,
@@ -481,7 +493,7 @@ class ModelPredictor:
         else:
             raise TypeError("features must be a NumPy vector or a mapping of scalars.")
         with torch.inference_mode():
-            prediction = self._predict_batch(_as_float32_batch(matrix, "feature"))
+            prediction = self._predict_batch(matrix)
         return prediction.detach().cpu().numpy()[0]
 
     def evaluate(
@@ -531,12 +543,10 @@ class ModelPredictor:
                     start + resolved_batch_size,
                     prepared_features.example_count,
                 )
-                prediction = self._predict_batch(
-                    prepared_features.batch(start, stop)
+                prediction = self._predict_batch(prepared_features.batch(start, stop))
+                expected = torch.from_numpy(prepared_targets.batch(start, stop)).to(
+                    self._device
                 )
-                expected = torch.from_numpy(
-                    prepared_targets.batch(start, stop)
-                ).to(self._device)
                 squared = torch.square((prediction - expected) / expected)
                 squared_total += float(torch.sum(squared).item())
                 per_target = torch.sum(squared, dim=0).detach().cpu().tolist()
@@ -602,8 +612,9 @@ def load_model_predictor(
         batch_size: Positive default maximum execution batch size.
 
     Returns:
-        A loaded predictor retaining its model and preprocessing state on the
-        resolved device.
+        A loaded predictor retaining its model on the resolved device and its
+        private preprocessing state in the representations used during bounded
+        prediction.
 
     Raises:
         TypeError: If ``model_path`` has an unsupported object type.

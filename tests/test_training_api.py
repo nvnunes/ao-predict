@@ -95,6 +95,79 @@ def test_coupled_request_validation_reports_all_relevant_issues(tmp_path: Path) 
     assert any("finite" in issue for issue in issues)
 
 
+def test_derived_float32_incompatibility_fails_before_stable_outputs(
+    tmp_path: Path,
+) -> None:
+    model_path = tmp_path / "underflow"
+    data = ModelTrainingDataConfig(
+        features=(FeatureConfig("feature", np.asarray([1.0, 2.0, 3.0, 4.0])),),
+        targets=(
+            TargetConfig(
+                "target",
+                np.asarray([1.0, 2.0, 3.0, 4.0], dtype=np.float64) * 1.0e-50,
+            ),
+        ),
+    )
+    request = TrainModelRequest(
+        model_path=model_path,
+        training_data=data,
+        hidden_widths=(),
+        batch_size=2,
+        validation_count=1,
+        split_seed=1,
+        training_seed=1,
+        warmup_epochs=0,
+        minimum_training_epochs=0,
+        maximum_validation_checks=1,
+    )
+
+    with pytest.raises(ModelTrainingValidationError, match="positive as float32"):
+        train_model(request)
+
+    assert not Path(f"{model_path}.model.zip").exists()
+    assert not Path(f"{model_path}.training.log").exists()
+    assert not Path(f"{model_path}.recovery.pt").exists()
+
+
+def test_invalid_overwrite_request_preserves_existing_stable_outputs(
+    tmp_path: Path,
+) -> None:
+    model_path = tmp_path / "existing"
+    log_path = Path(f"{model_path}.training.log")
+    package_path = Path(f"{model_path}.model.zip")
+    log_path.write_text("existing log\n", encoding="utf-8")
+    package_path.write_bytes(b"existing package")
+    data = ModelTrainingDataConfig(
+        features=(FeatureConfig("feature", np.asarray([1.0, 2.0, 3.0])),),
+        targets=(
+            TargetConfig(
+                "target",
+                np.asarray([1.0, 2.0, 3.0], dtype=np.float64) * 1.0e-50,
+            ),
+        ),
+    )
+
+    with pytest.raises(ModelTrainingValidationError):
+        train_model(
+            TrainModelRequest(
+                model_path=model_path,
+                training_data=data,
+                hidden_widths=(),
+                batch_size=2,
+                validation_count=1,
+                overwrite=True,
+                split_seed=1,
+                training_seed=1,
+                warmup_epochs=0,
+                minimum_training_epochs=0,
+                maximum_validation_checks=1,
+            )
+        )
+
+    assert log_path.read_text(encoding="utf-8") == "existing log\n"
+    assert package_path.read_bytes() == b"existing package"
+
+
 def test_automatic_partition_reports_generated_seed_and_owned_mask(
     tmp_path: Path,
 ) -> None:

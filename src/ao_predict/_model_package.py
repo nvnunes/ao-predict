@@ -16,6 +16,7 @@ import torch
 from torch import nn
 
 from ._model import build_dense_model
+from ._standardization import validate_float32_scaler
 
 MODEL_PACKAGE_KIND = "ao_predict_dense_regression_model_package"
 MODEL_PACKAGE_VERSION = 1
@@ -91,23 +92,6 @@ def _finite_float(value: float, *, label: str) -> float:
     if not math.isfinite(converted):
         raise ValueError(f"{label} must be finite.")
     return converted
-
-
-def _validate_float32_scaler(mean: float, scale: float, *, label: str) -> None:
-    try:
-        converted = torch.tensor([mean, scale], dtype=torch.float32)
-    except (RuntimeError, TypeError, ValueError, OverflowError) as exc:
-        raise ValueError(
-            f"Model metadata {label} scaler values must be representable as float32."
-        ) from exc
-    if not bool(torch.all(torch.isfinite(converted))):
-        raise ValueError(
-            f"Model metadata {label} scaler values must be representable as finite float32."
-        )
-    if float(converted[1].item()) <= 0.0:
-        raise ValueError(
-            f"Model metadata {label} scale must remain positive as float32."
-        )
 
 
 def _validate_model_metadata(value: object) -> dict[str, object]:
@@ -197,7 +181,11 @@ def _validate_model_metadata(value: object) -> dict[str, object]:
             )
             if scale_value <= 0.0:
                 raise ValueError(f"Model metadata {key} scales must be positive.")
-            _validate_float32_scaler(mean_value, scale_value, label=key)
+            validate_float32_scaler(
+                mean_value,
+                scale_value,
+                label=f"Model metadata {key}",
+            )
         names = [definition["name"] for definition in definitions]
         if len(names) != len(set(names)):
             raise ValueError(f"Model metadata {key} names must be unique.")

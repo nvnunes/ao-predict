@@ -29,11 +29,6 @@ nav:
       - Testing: testing.md
       - Development Setup: development.md
   - Reference:
-      - Training API: reference/training.md
-      - Prediction API: reference/prediction.md
-      - Interpolation API: reference/interpolation.md
-      - Analysis API: reference/analysis/api.md
-      - Plotting API: reference/plotting.md
       - Simulation Interfaces: reference/simulation/interfaces.md
       - Simulation Base: reference/simulation/base.md
       - Simulation API: reference/simulation/api.md
@@ -42,4 +37,9 @@ nav:
       - Simulation Stats: reference/simulation/stats.md
       - TIPTOP Simulation: reference/simulation/tiptop.md
       - Validation: reference/simulation/validation.md
+      - Interpolation API: reference/interpolation.md
       - Persistence Store: reference/persistence/store.md
+      - Training API: reference/training.md
+      - Prediction API: reference/prediction.md
+      - Analysis API: reference/analysis/api.md
+      - Plotting API: reference/plotting.md

@@ -11,6 +11,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from .._standardization import standardize_to_float32, validate_float32_scaler
 from .types import FeatureConfig, ModelTrainingDataConfig, TargetConfig
 
 _CHECKSUM_ROW_CHUNK = 4_096
@@ -476,9 +477,12 @@ def _standardize_array(values: np.ndarray, mean: float, scale: float) -> np.ndar
     result = np.empty(values.shape, dtype=np.float32)
     for start in range(0, values.shape[0], _MOMENT_ROW_CHUNK):
         stop = start + _MOMENT_ROW_CHUNK
-        result[start:stop] = (
-            (np.asarray(values[start:stop], dtype=np.float64) - mean) / scale
-        ).astype(np.float32)
+        result[start:stop] = standardize_to_float32(
+            values[start:stop],
+            mean,
+            scale,
+            label="training values",
+        )
     return result
 
 
@@ -513,6 +517,58 @@ def standardize_data(
             )
         ),
     )
+
+
+def model_numerical_compatibility_issues(
+    datasets: Sequence[_StandardizedModelTrainingData],
+    state: _StandardizationState,
+) -> list[str]:
+    """Validate derived preprocessing against the float32 model contract."""
+
+    issues: list[str] = []
+    for family, means, scales in (
+        ("feature", state.feature_means, state.feature_scales),
+        ("target", state.target_means, state.target_scales),
+    ):
+        for index, (mean, scale) in enumerate(zip(means, scales, strict=True)):
+            try:
+                validate_float32_scaler(
+                    mean,
+                    scale,
+                    label=f"Fitted {family}[{index}]",
+                )
+            except ValueError as exc:
+                issues.append(str(exc))
+
+    if issues or not datasets:
+        return issues
+    target_means = np.asarray(state.target_means, dtype=np.float32)
+    target_scales = np.asarray(state.target_scales, dtype=np.float32)
+    for dataset_label, dataset in zip(
+        ("training_data", "validation_data"),
+        datasets,
+        strict=True,
+    ):
+        for index, values in enumerate(dataset.target_values):
+            mean = target_means[index]
+            scale = target_scales[index]
+            for start in range(0, values.shape[0], _MOMENT_ROW_CHUNK):
+                stop = start + _MOMENT_ROW_CHUNK
+                with np.errstate(over="ignore", under="ignore", invalid="ignore"):
+                    physical = values[start:stop] * scale + mean
+                if not bool(np.all(np.isfinite(physical))):
+                    issues.append(
+                        f"{dataset_label}.targets[{index}] cannot be reconstructed "
+                        "as finite float32 physical values."
+                    )
+                    break
+                if not bool(np.all(physical > 0)):
+                    issues.append(
+                        f"{dataset_label}.targets[{index}] cannot be reconstructed "
+                        "as strictly positive float32 physical values."
+                    )
+                    break
+    return issues
 
 
 def data_identity(prepared: _PreparedModelTrainingData) -> dict[str, object]:

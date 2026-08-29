@@ -123,6 +123,30 @@ def test_constant_columns_use_scale_one_and_owned_float32_state() -> None:
     np.testing.assert_array_equal(standardized.target_values[0], 0.0)
 
 
+def test_float64_standardization_preserves_variation_before_float32_conversion() -> (
+    None
+):
+    features = np.asarray(
+        [100_000_000.0, 100_000_001.0, 100_000_002.0],
+        dtype=np.float64,
+    )
+    prepared = _prepare(
+        ModelTrainingDataConfig(
+            features=(FeatureConfig("offset", features),),
+            targets=(TargetConfig("target", np.asarray([1.0, 2.0, 3.0])),),
+        )
+    )
+
+    state = fit_standardization(prepared, np.arange(3))
+    standardized = standardize_data(prepared, state)
+
+    np.testing.assert_allclose(
+        standardized.feature_values[0],
+        np.asarray([-1.2247449, 0.0, 1.2247449], dtype=np.float32),
+        rtol=1.0e-6,
+    )
+
+
 def test_checksum_ignores_layout_but_includes_dtype_shape_and_values() -> None:
     rows = np.arange(24, dtype=np.float64).reshape(6, 4)
     view = rows[:, 2]

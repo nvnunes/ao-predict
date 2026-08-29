@@ -79,8 +79,7 @@ def _publish_known_model(model_path: Path) -> Path:
 def _replace_package_member(package_path: Path, name: str, content: bytes) -> None:
     with zipfile.ZipFile(package_path) as archive:
         members = {
-            member_name: archive.read(member_name)
-            for member_name in archive.namelist()
+            member_name: archive.read(member_name) for member_name in archive.namelist()
         }
     members[name] = content
     if name != "manifest.json":
@@ -195,7 +194,9 @@ def test_named_prediction_shares_simulation_features_without_repetition(
 
     actual = predictor.predict(features, batch_size=4)
 
-    np.testing.assert_allclose(actual, _expected(expanded.reshape(-1, 2)).reshape(2, 3, 2))
+    np.testing.assert_allclose(
+        actual, _expected(expanded.reshape(-1, 2)).reshape(2, 3, 2)
+    )
     assert actual.shape == (2, 3, 2)
     assert actual.dtype == np.float32
 
@@ -205,9 +206,7 @@ def test_noncontiguous_named_features_preserve_simulation_major_order(
 ) -> None:
     shared_storage = np.asarray([10.0, -1.0, 14.0, -1.0])
     shared = shared_storage[::2]
-    related = np.asarray(
-        [[20.0, 28.0], [24.0, 20.0], [16.0, 12.0]]
-    ).T
+    related = np.asarray([[20.0, 28.0], [24.0, 20.0], [16.0, 12.0]]).T
     assert not shared.flags.c_contiguous
     assert not related.flags.c_contiguous
     expanded = np.stack(
@@ -418,6 +417,53 @@ def test_evaluation_matches_trainer_validation_error_semantics(tmp_path: Path) -
     )
 
 
+def test_float64_preprocessing_matches_training_for_large_offset_features(
+    tmp_path: Path,
+) -> None:
+    training_features = np.asarray(
+        [[100_000_000.0], [100_000_001.0], [100_000_002.0], [100_000_003.0]],
+        dtype=np.float64,
+    )
+    training_targets = np.asarray([[1.0], [2.0], [3.0], [4.0]], dtype=np.float64)
+    validation_features = training_features[:2].copy()
+    validation_targets = training_targets[:2].copy()
+    model_path = tmp_path / "large-offset"
+    trained = train_model(
+        TrainModelRequest(
+            model_path=model_path,
+            training_data=model_training_data_from_rows(
+                training_features,
+                training_targets,
+                ("offset",),
+                ("target",),
+            ),
+            validation_data=model_training_data_from_rows(
+                validation_features,
+                validation_targets,
+                ("offset",),
+                ("target",),
+            ),
+            hidden_widths=(),
+            batch_size=2,
+            validation_batch_size=1,
+            training_seed=37,
+            warmup_epochs=0,
+            minimum_training_epochs=0,
+            maximum_validation_checks=1,
+        )
+    )
+
+    evaluated = load_model_predictor(model_path).evaluate(
+        validation_features,
+        validation_targets,
+    )
+
+    assert evaluated.relative_rmse == pytest.approx(
+        trained.best_model_validation_error_percent / 100.0,
+        rel=1.0e-6,
+    )
+
+
 @pytest.mark.parametrize(
     ("features", "error", "match"),
     [
@@ -546,7 +592,9 @@ def test_loading_enforces_package_version_and_member_integrity(tmp_path: Path) -
         load_model_predictor(changed)
 
 
-def test_runtime_controls_validate_device_threads_and_batch_size(tmp_path: Path) -> None:
+def test_runtime_controls_validate_device_threads_and_batch_size(
+    tmp_path: Path,
+) -> None:
     model_path = tmp_path / "known"
     _publish_known_model(model_path)
     previous_threads = torch.get_num_threads()

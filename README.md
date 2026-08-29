@@ -91,7 +91,7 @@ print(num_sims, summary, status.ok, status.issues)
 To rerun simulations after a successful pass, call `reset_simulations(dataset_path)`
 explicitly and then run pending simulations again.
 
-Full API documentation: [`docs/api.md`](docs/api.md)
+Python API guide: [`docs/api.md`](docs/api.md)
 
 API key casing:
 - Mapping keys are case-sensitive and must be lowercase.
@@ -114,7 +114,7 @@ contracts.
 ## Documentation
 
 - CLI reference: [`docs/cli.md`](docs/cli.md)
-- API reference: [`docs/api.md`](docs/api.md)
+- Python API guide: [`docs/api.md`](docs/api.md)
 - Architecture: [`docs/architecture.md`](docs/architecture.md)
 - Testing: [`docs/testing.md`](docs/testing.md)
 - Development setup: [`docs/development.md`](docs/development.md)

@@ -14,6 +14,14 @@ class ModelEvaluationResult:
     All error values are dimensionless ratios, not percentages. The overall
     values pool every example and target; ``target_relative_rmse`` reports one
     complete-population value for each target name.
+
+    Attributes:
+        example_count: Number of examples in the evaluated population.
+        relative_mse: Mean squared relative residual pooled over every example
+            and target.
+        relative_rmse: Square root of ``relative_mse``.
+        target_relative_rmse: Complete-population relative RMSE keyed by target
+            name.
     """
 
     example_count: int
