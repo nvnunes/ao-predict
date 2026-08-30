@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 import numpy as np
+from astropy import units as u
 
 from ao_predict.simulation import schema
 from ao_predict.simulation import atm
@@ -60,12 +61,12 @@ class MockSimulation(BaseSimulation):
         """Return deterministic fallback atmosphere profile for mock tests."""
         return {
             atm.KEY_SETUP_ATM_PROFILE_NAME: "default",
-            atm.KEY_SETUP_ATM_PROFILE_R0_M: 0.16,
-            atm.KEY_SETUP_ATM_PROFILE_L0_M: 25.0,
-            atm.KEY_SETUP_ATM_PROFILE_CN2_HEIGHTS_M: np.asarray([0.0, 5000.0], dtype=float),
-            atm.KEY_SETUP_ATM_PROFILE_CN2_WEIGHTS: np.asarray([0.6, 0.4], dtype=float),
-            atm.KEY_SETUP_ATM_PROFILE_WIND_SPEED_MPS: np.asarray([5.0, 10.0], dtype=float),
-            atm.KEY_SETUP_ATM_PROFILE_WIND_DIRECTION_DEG: np.asarray([0.0, 90.0], dtype=float),
+            atm.KEY_SETUP_ATM_PROFILE_R0: 0.16 * u.m,
+            atm.KEY_SETUP_ATM_PROFILE_L0: 25.0 * u.m,
+            atm.KEY_SETUP_ATM_PROFILE_CN2_HEIGHTS: np.asarray([0.0, 5000.0], dtype=float) * u.m,
+            atm.KEY_SETUP_ATM_PROFILE_CN2_WEIGHTS: np.asarray([0.6, 0.4], dtype=float) * u.dimensionless_unscaled,
+            atm.KEY_SETUP_ATM_PROFILE_WIND_SPEED: np.asarray([5.0, 10.0], dtype=float) * u.m / u.s,
+            atm.KEY_SETUP_ATM_PROFILE_WIND_DIRECTION: np.asarray([0.0, 90.0], dtype=float) * u.deg,
         }
 
     def prepare_setup_payload(
@@ -81,13 +82,13 @@ class MockSimulation(BaseSimulation):
         return self._build_setup_payload(
             base_setup_payload,
             setup_cfg,
-            default_atm_wavelength_um=0.5,
+            default_atm_wavelength=0.5 * u.um,
             default_atm_profile=self._default_atm_profile(),
-            default_lgs_r_arcsec=[],
-            default_lgs_theta_deg=[],
-            default_sci_r_arcsec=[0.0],
-            default_sci_theta_deg=[0.0],
-            default_ngs_mag_zeropoint=1.0e10,
+            default_lgs_r=[] * u.arcsec,
+            default_lgs_theta=[] * u.deg,
+            default_sci_r=[0.0] * u.arcsec,
+            default_sci_theta=[0.0] * u.deg,
+            default_ngs_mag_zeropoint=1.0e10 * u.photon / u.s,
         )
 
     def load_setup_payload(self, setup_payload: Mapping[str, Any]) -> None:
@@ -129,16 +130,16 @@ class MockSimulation(BaseSimulation):
         """Prepare persisted ``/options`` payload with deterministic defaults."""
         del setup_payload
         default_options = {
-            schema.KEY_OPTION_WAVELENGTH_UM: 1.65,
-            schema.KEY_OPTION_ZENITH_ANGLE_DEG: 20.0,
+            schema.KEY_OPTION_WAVELENGTH: 1.65 * u.um,
+            schema.KEY_OPTION_ZENITH_ANGLE: 20.0 * u.deg,
             schema.KEY_OPTION_ATM_PROFILE_ID: np.int32(0),
-            schema.KEY_OPTION_R0_M: 0.16,
+            schema.KEY_OPTION_R0: 0.16 * u.m,
         }
-        options_payload = {str(key): np.asarray(value).copy() for key, value in base_options_payload.items()}
+        options_payload = {str(key): value.copy() for key, value in base_options_payload.items()}
         if not any(key in options_payload for key in schema.OPTION_KEYS_NGS):
-            options_payload[schema.KEY_OPTION_NGS_R_ARCSEC] = np.full((int(num_sims), 1), 1.0, dtype=float)
-            options_payload[schema.KEY_OPTION_NGS_THETA_DEG] = np.full((int(num_sims), 1), 0.0, dtype=float)
-            options_payload[schema.KEY_OPTION_NGS_MAG] = np.full((int(num_sims), 1), 15.0, dtype=float)
+            options_payload[schema.KEY_OPTION_NGS_R] = np.full((int(num_sims), 1), 1.0, dtype=float) * u.arcsec
+            options_payload[schema.KEY_OPTION_NGS_THETA] = np.full((int(num_sims), 1), 0.0, dtype=float) * u.deg
+            options_payload[schema.KEY_OPTION_NGS_MAGNITUDE] = np.full((int(num_sims), 1), 15.0, dtype=float) * u.mag
         return self._build_options_payload(
             int(num_sims),
             options_payload,
@@ -172,7 +173,7 @@ class MockSimulation(BaseSimulation):
         Returns:
             Deterministic PSF cube with shape ``[M, 4, 4]``.
         """
-        num_sci = int(np.asarray(context.setup.sci_r_arcsec, dtype=float).reshape(-1).shape[0])
+        num_sci = int(np.asarray(context.setup.sci_r, dtype=float).reshape(-1).shape[0])
         base = float(context.index + 1)
         return np.full((num_sci, 4, 4), 0.1 * base, dtype=np.float32)
 
@@ -188,9 +189,9 @@ class MockSimulation(BaseSimulation):
         """
         del context
         return PsfParameters(
-            pixel_scale_mas=5.0,
-            tel_diameter_m=8.0,
-            tel_pupil=np.ones((4, 4), dtype=np.float32),
+            pixel_scale=5.0 * u.mas,
+            tel_diameter=8.0 * u.m,
+            tel_pupil=np.ones((4, 4), dtype=np.float32) * u.dimensionless_unscaled,
         )
 
 
@@ -224,14 +225,14 @@ class ExtraStatsMockSimulation(MockSimulation):
     """Mock backend that emits one declared extra stat."""
 
     @property
-    def extra_stat_names(self) -> tuple[str, ...]:
+    def extra_stat_fields(self) -> Mapping[str, u.UnitBase]:
         """Return the declared mock extra stat registry."""
-        return ("halo_mas",)
+        return {"halo": u.mas}
 
     def build_extra_stats(self, context: SimulationContext) -> Mapping[str, Any]:
         """Build deterministic per-science extra stats for one simulation."""
-        num_sci = int(np.asarray(context.setup.sci_r_arcsec, dtype=float).reshape(-1).shape[0])
-        return {"halo_mas": np.full((num_sci,), float(context.index + 10), dtype=np.float32)}
+        num_sci = int(np.asarray(context.setup.sci_r, dtype=float).reshape(-1).shape[0])
+        return {"halo": np.full((num_sci,), float(context.index + 10), dtype=np.float32) * u.mas}
 
 
 class FailOnceMockSimulation(MockSimulation):

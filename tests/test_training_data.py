@@ -6,13 +6,9 @@ import math
 
 import numpy as np
 import pytest
+from astropy import units as u
 
-from ao_predict import (
-    FeatureConfig,
-    ModelTrainingDataConfig,
-    TargetConfig,
-    model_training_data_from_rows,
-)
+from ao_predict import ModelTrainingDataConfig
 from ao_predict.training.data import (
     _array_checksum,
     _ExampleSet,
@@ -20,6 +16,7 @@ from ao_predict.training.data import (
     prepare_model_training_data,
     resolve_automatic_split,
     standardize_data,
+    validate_explicit_schema,
 )
 
 
@@ -31,35 +28,14 @@ def _prepare(config: ModelTrainingDataConfig):  # type: ignore[no-untyped-def]
     return prepared
 
 
-def test_row_adapter_preserves_zero_copy_column_views() -> None:
-    features = np.arange(20, dtype=np.float64).reshape(5, 4)
-    targets = np.arange(10, dtype=np.float32).reshape(5, 2) + 1.0
-
-    config = model_training_data_from_rows(
-        features,
-        targets,
-        ("a", "b", "c", "d"),
-        ("x", "y"),
-        feature_units={"a": "m"},
-    )
-
-    assert np.shares_memory(config.features[0].values, features)
-    assert np.shares_memory(config.targets[1].values, targets)
-    assert config.features[0].unit == "m"
-    assert config.features[1].unit is None
-
-
 def test_feature_centered_data_broadcasts_only_shared_features_per_batch() -> None:
     shared = np.asarray([10.0, 20.0, 30.0])
     resolved = np.asarray([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]])
     target = resolved + 1.0
     prepared = _prepare(
         ModelTrainingDataConfig(
-            features=(
-                FeatureConfig("shared", shared),
-                FeatureConfig("resolved", resolved),
-            ),
-            targets=(TargetConfig("target", target),),
+            features={"shared": shared, "resolved": resolved},
+            targets={"target": target},
         )
     )
     state = fit_standardization(prepared, np.asarray([0, 1, 2]))
@@ -89,8 +65,8 @@ def test_rank_one_shared_feature_moments_equal_explicit_repetition() -> None:
     targets = np.ones((3, 5), dtype=np.float32)
     prepared = _prepare(
         ModelTrainingDataConfig(
-            features=(FeatureConfig("shared", shared),),
-            targets=(TargetConfig("target", targets),),
+            features={"shared": shared},
+            targets={"target": targets},
         )
     )
 
@@ -107,8 +83,8 @@ def test_rank_one_shared_feature_moments_equal_explicit_repetition() -> None:
 def test_constant_columns_use_scale_one_and_owned_float32_state() -> None:
     prepared = _prepare(
         ModelTrainingDataConfig(
-            features=(FeatureConfig("constant", np.full(4, 7.0)),),
-            targets=(TargetConfig("target", np.full(4, 3.0)),),
+            features={"constant": np.full(4, 7.0)},
+            targets={"target": np.full(4, 3.0)},
         )
     )
 
@@ -123,6 +99,107 @@ def test_constant_columns_use_scale_one_and_owned_float32_state() -> None:
     np.testing.assert_array_equal(standardized.target_values[0], 0.0)
 
 
+def test_explicit_validation_values_are_converted_to_training_units() -> None:
+    training = _prepare(
+        ModelTrainingDataConfig(
+            features={"distance": np.asarray([1.0, 2.0]) * u.m},
+            targets={"fwhm": np.asarray([100.0, 200.0]) * u.mas},
+        )
+    )
+    validation = _prepare(
+        ModelTrainingDataConfig(
+            features={"distance": np.asarray([100.0, 200.0]) * u.cm},
+            targets={"fwhm": np.asarray([0.1, 0.2]) * u.arcsec},
+        )
+    )
+    issues: list[str] = []
+
+    converted = validate_explicit_schema(training, validation, issues)
+
+    assert issues == []
+    assert converted.feature_units == ("m",)
+    assert converted.target_units == ("mas",)
+    np.testing.assert_allclose(converted.feature_values[0], [1.0, 2.0])
+    np.testing.assert_allclose(converted.target_values[0], [100.0, 200.0])
+    assert converted.component_checksums == (
+        _array_checksum(converted.feature_values[0]),
+        _array_checksum(converted.target_values[0]),
+    )
+
+    canonical_validation = _prepare(
+        ModelTrainingDataConfig(
+            features={"distance": np.asarray([1.0, 2.0]) * u.m},
+            targets={"fwhm": np.asarray([100.0, 200.0]) * u.mas},
+        )
+    )
+    assert converted.checksum == canonical_validation.checksum
+
+
+def test_explicit_validation_borrows_values_already_in_training_units() -> None:
+    training = _prepare(
+        ModelTrainingDataConfig(
+            features={"distance": np.asarray([1.0, 2.0]) * u.m},
+            targets={"fwhm": np.asarray([100.0, 200.0]) * u.mas},
+        )
+    )
+    validation = _prepare(
+        ModelTrainingDataConfig(
+            features={"distance": np.asarray([3.0, 4.0]) * u.m},
+            targets={"fwhm": np.asarray([300.0, 400.0]) * u.mas},
+        )
+    )
+    issues: list[str] = []
+
+    converted = validate_explicit_schema(training, validation, issues)
+
+    assert issues == []
+    assert converted is validation
+    assert converted.feature_values[0] is validation.feature_values[0]
+    assert converted.target_values[0] is validation.target_values[0]
+
+
+def test_explicit_validation_rejects_physical_and_nonphysical_mismatch() -> None:
+    training = _prepare(
+        ModelTrainingDataConfig(
+            features={"distance": np.asarray([1.0, 2.0]) * u.m},
+            targets={"target": np.asarray([1.0, 2.0])},
+        )
+    )
+    validation = _prepare(
+        ModelTrainingDataConfig(
+            features={"distance": np.asarray([1.0, 2.0])},
+            targets={"target": np.asarray([1.0, 2.0])},
+        )
+    )
+    issues: list[str] = []
+
+    converted = validate_explicit_schema(training, validation, issues)
+
+    assert converted is validation
+    assert any("both be physical quantities" in issue for issue in issues)
+
+
+def test_explicit_validation_rejects_incompatible_physical_units() -> None:
+    training = _prepare(
+        ModelTrainingDataConfig(
+            features={"distance": np.asarray([1.0, 2.0]) * u.m},
+            targets={"target": np.asarray([1.0, 2.0])},
+        )
+    )
+    validation = _prepare(
+        ModelTrainingDataConfig(
+            features={"distance": np.asarray([1.0, 2.0]) * u.s},
+            targets={"target": np.asarray([1.0, 2.0])},
+        )
+    )
+    issues: list[str] = []
+
+    converted = validate_explicit_schema(training, validation, issues)
+
+    assert converted is validation
+    assert any("units are not equivalent" in issue for issue in issues)
+
+
 def test_float64_standardization_preserves_variation_before_float32_conversion() -> (
     None
 ):
@@ -132,8 +209,8 @@ def test_float64_standardization_preserves_variation_before_float32_conversion()
     )
     prepared = _prepare(
         ModelTrainingDataConfig(
-            features=(FeatureConfig("offset", features),),
-            targets=(TargetConfig("target", np.asarray([1.0, 2.0, 3.0])),),
+            features={"offset": features},
+            targets={"target": np.asarray([1.0, 2.0, 3.0])},
         )
     )
 
@@ -163,11 +240,13 @@ def test_checksum_ignores_layout_but_includes_dtype_shape_and_values() -> None:
 
 def test_automatic_split_is_deterministic_and_rounds_fraction_up() -> None:
     prepared = _prepare(
-        model_training_data_from_rows(
-            np.arange(30, dtype=np.float32).reshape(10, 3),
-            np.arange(10, dtype=np.float32).reshape(10, 1) + 1.0,
-            ("a", "b", "c"),
-            ("target",),
+        ModelTrainingDataConfig(
+            features={
+                "a": np.arange(30, dtype=np.float32).reshape(10, 3)[:, 0],
+                "b": np.arange(30, dtype=np.float32).reshape(10, 3)[:, 1],
+                "c": np.arange(30, dtype=np.float32).reshape(10, 3)[:, 2],
+            },
+            targets={"target": np.arange(10, dtype=np.float32) + 1.0},
         )
     )
 
@@ -192,12 +271,12 @@ def test_automatic_split_is_deterministic_and_rounds_fraction_up() -> None:
 def test_target_broadcasting_and_non_positive_targets_are_rejected() -> None:
     issues: list[str] = []
     config = ModelTrainingDataConfig(
-        features=(FeatureConfig("feature", np.ones(3)),),
-        targets=(
-            TargetConfig("resolved", np.ones((3, 2))),
-            TargetConfig("shared", np.ones(3)),
-            TargetConfig("zero", np.asarray([1.0, 0.0, 2.0])),
-        ),
+        features={"feature": np.ones(3)},
+        targets={
+            "resolved": np.ones((3, 2)),
+            "shared": np.ones(3),
+            "zero": np.asarray([1.0, 0.0, 2.0]),
+        },
     )
 
     prepared = prepare_model_training_data(config, label="data", issues=issues)
@@ -217,15 +296,5 @@ def test_invalid_feature_and_target_definition_types_are_collected() -> None:
     prepared = prepare_model_training_data(config, label="data", issues=issues)
 
     assert prepared is None
-    assert any("must be a FeatureConfig" in issue for issue in issues)
-    assert any("must be a TargetConfig" in issue for issue in issues)
-
-
-def test_row_adapter_requires_numpy_arrays_to_preserve_zero_copy_contract() -> None:
-    with pytest.raises(TypeError, match="feature_rows must be a NumPy array"):
-        model_training_data_from_rows(  # type: ignore[arg-type]
-            [[1.0]],
-            np.asarray([[1.0]]),
-            ("feature",),
-            ("target",),
-        )
+    assert any("features must be a non-empty mapping" in issue for issue in issues)
+    assert any("targets must be a non-empty mapping" in issue for issue in issues)

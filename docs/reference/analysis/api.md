@@ -20,11 +20,15 @@ Public analysis behavior:
 - `dataset.sim(i) -> AnalysisSimulation`
 - `sim.config` with exactly `setup` and `options`
 - `sim.meta` with per-simulation scientific metadata plus dataset-level
-  telescope metadata such as `pixel_scale_mas`, `tel_diameter_m`, and
+  telescope metadata such as `pixel_scale`, `tel_diameter`, and
   `tel_pupil`
-- `sim.stats` with core `sr`, `ee`, and `fwhm_mas` plus any declared extra
+- `sim.stats` with core `sr`, `ee`, and `fwhm` plus any declared extra
   stats
 - lazy `sim.psfs`
+
+Physical and scientifically dimensionless setup, option, metadata, and
+statistics values retain their Astropy units in these views. Identifiers,
+counts, booleans, categories, and text remain plain values.
 
 PSFs are optional. If the dataset was created without persisted PSFs,
 accessing `sim.psfs` raises a clear error explaining that PSFs were not saved.

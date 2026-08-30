@@ -6,6 +6,7 @@ from typing import Any
 
 import numpy as np
 import pytest
+from astropy import units as u
 
 import ao_predict.simulation.api as sim_api
 from ao_predict.analysis import (
@@ -67,7 +68,7 @@ def test_analysis_simulation_psfs_lazy_loads_once() -> None:
 
     simulation = AnalysisSimulation(
         _config=freeze_mapping({"setup": {}, "options": {}}),
-        _meta=freeze_mapping({"pixel_scale_mas": 4.0}),
+        _meta=freeze_mapping({"pixel_scale": 4.0}),
         _stats=freeze_mapping({"sr": np.array([0.1], dtype=np.float32)}),
         _extra_lazy_fields={"psfs": _load_psfs},
     )
@@ -80,11 +81,50 @@ def test_analysis_simulation_psfs_lazy_loads_once() -> None:
     assert first.flags.writeable is False
 
 
+def test_analysis_lazy_extra_fields_preserve_quantities() -> None:
+    class QuantityAnalysisSimulation(AnalysisSimulation):
+        @property
+        def distance(self) -> u.Quantity:
+            return self._require_extra_field("distance")
+
+    class QuantityAnalysisDataset(AnalysisDataset[QuantityAnalysisSimulation]):
+        @property
+        def weights(self) -> u.Quantity:
+            return self._require_extra_field("weights")
+
+    payload = AnalysisDatasetLoadPayload(
+        path=Path("/tmp/quantity-analysis.h5"),
+        simulation_payload={"name": "quantity-analysis"},
+        setup={},
+        options={"wavelength": np.array([1.65]) * u.um},
+        meta={schema.KEY_META_PIXEL_SCALE: np.array([4.0]) * u.mas},
+        stats={schema.KEY_STATS_SR: np.array([[0.5]]) * u.one},
+        extra_stat_names=(),
+        dataset_extra_lazy_fields={
+            "weights": lambda: np.array([0.25, 0.75]) * u.one,
+        },
+        simulation_extra_lazy_fields=(
+            {"distance": lambda: np.array([1.0, 2.0]) * u.m},
+        ),
+    )
+    dataset = QuantityAnalysisDataset.from_load_payload(
+        payload,
+        simulation_cls=QuantityAnalysisSimulation,
+    )
+
+    assert isinstance(dataset.weights, u.Quantity)
+    assert dataset.weights.unit == u.dimensionless_unscaled
+    assert dataset.weights.flags.writeable is False
+    assert isinstance(dataset.sim(0).distance, u.Quantity)
+    assert dataset.sim(0).distance.unit == u.m
+    assert dataset.sim(0).distance.flags.writeable is False
+
+
 def test_analysis_simulation_requires_exact_config_shape() -> None:
     with pytest.raises(ValueError, match="exactly 'setup' and 'options'"):
         AnalysisSimulation(
             _config=freeze_mapping({"setup": {}, "options": {}, "simulation": {}}),
-            _meta=freeze_mapping({"pixel_scale_mas": 4.0}),
+            _meta=freeze_mapping({"pixel_scale": 4.0}),
             _stats=freeze_mapping({"sr": np.array([0.1], dtype=np.float32)}),
         )
 
@@ -173,12 +213,12 @@ def test_analysis_simulation_require_persisted_string_field_raises_on_empty_norm
 
 
 def test_analysis_dataset_sim_reuses_frozen_payloads() -> None:
-    setup = freeze_mapping({"ee_apertures_mas": np.array([50.0], dtype=np.float32)})
-    options = freeze_mapping({"wavelength_um": np.array([1.65], dtype=np.float64)})
+    setup = freeze_mapping({"ee_apertures": np.array([50.0], dtype=np.float32) * u.mas})
+    options = freeze_mapping({"wavelength": np.array([1.65], dtype=np.float64) * u.um})
     meta = freeze_mapping(
         {
-            "pixel_scale_mas": np.array([4.0], dtype=np.float32),
-            "tel_diameter_m": np.float32(8.0),
+            "pixel_scale": np.array([4.0], dtype=np.float32),
+            "tel_diameter": np.float32(8.0),
             "tel_pupil": np.ones((2, 2), dtype=np.float32),
         }
     )
@@ -196,13 +236,13 @@ def test_analysis_dataset_sim_reuses_frozen_payloads() -> None:
     sim = dataset.sim(0)
 
     assert len(dataset) == 1
-    assert np.array_equal(sim.config["setup"]["ee_apertures_mas"], setup["ee_apertures_mas"])
-    assert dataset.options["wavelength_um"].flags.writeable is False
+    assert np.array_equal(sim.config["setup"]["ee_apertures"], setup["ee_apertures"])
+    assert dataset.options["wavelength"].flags.writeable is False
     assert dataset.meta["tel_pupil"].flags.writeable is False
     assert dataset.stats["sr"].flags.writeable is False
-    assert sim.config["options"]["wavelength_um"] == options["wavelength_um"][0]
-    assert sim.meta["pixel_scale_mas"] == meta["pixel_scale_mas"][0]
-    assert sim.meta["tel_diameter_m"] == meta["tel_diameter_m"]
+    assert sim.config["options"]["wavelength"] == options["wavelength"][0]
+    assert sim.meta["pixel_scale"] == meta["pixel_scale"][0]
+    assert sim.meta["tel_diameter"] == meta["tel_diameter"]
     assert np.array_equal(sim.stats["sr"], stats["sr"][0])
 
 
@@ -211,11 +251,11 @@ def test_analysis_dataset_exposes_columnar_dataset_level_fields() -> None:
         path=Path("/tmp/example.h5"),
         simulation_payload=freeze_mapping({"name": "demo"}),
         setup=freeze_mapping({"mode": "LTAO"}),
-        options=freeze_mapping({"wavelength_um": np.array([1.25, 1.65], dtype=np.float64)}),
+        options=freeze_mapping({"wavelength": np.array([1.25, 1.65], dtype=np.float64) * u.um}),
         meta=freeze_mapping(
             {
-                "pixel_scale_mas": np.array([4.0, 5.0], dtype=np.float32),
-                "tel_diameter_m": np.float32(8.0),
+                "pixel_scale": np.array([4.0, 5.0], dtype=np.float32),
+                "tel_diameter": np.float32(8.0),
                 "tel_pupil": np.ones((2, 2), dtype=np.float32),
             }
         ),
@@ -224,9 +264,12 @@ def test_analysis_dataset_exposes_columnar_dataset_level_fields() -> None:
     )
 
     assert dataset.setup["mode"] == "LTAO"
-    np.testing.assert_allclose(dataset.options["wavelength_um"], np.array([1.25, 1.65], dtype=np.float64))
-    np.testing.assert_allclose(dataset.meta["pixel_scale_mas"], np.array([4.0, 5.0], dtype=np.float32))
-    assert dataset.meta["tel_diameter_m"] == np.float32(8.0)
+    np.testing.assert_allclose(
+        dataset.options["wavelength"].to_value(u.um),
+        np.array([1.25, 1.65], dtype=np.float64),
+    )
+    np.testing.assert_allclose(dataset.meta["pixel_scale"], np.array([4.0, 5.0], dtype=np.float32))
+    assert dataset.meta["tel_diameter"] == np.float32(8.0)
     np.testing.assert_allclose(dataset.stats["sr"], np.array([[0.1], [0.2]], dtype=np.float32))
 
 
@@ -236,11 +279,11 @@ def test_analysis_dataset_rejects_mismatched_column_lengths() -> None:
             path=Path("/tmp/example.h5"),
             simulation_payload=freeze_mapping({"name": "demo"}),
             setup=freeze_mapping({}),
-            options=freeze_mapping({"wavelength_um": np.array([1.25, 1.65], dtype=np.float64)}),
+            options=freeze_mapping({"wavelength": np.array([1.25, 1.65], dtype=np.float64) * u.um}),
             meta=freeze_mapping(
                 {
-                    "pixel_scale_mas": np.array([4.0], dtype=np.float32),
-                    "tel_diameter_m": np.float32(8.0),
+                    "pixel_scale": np.array([4.0], dtype=np.float32),
+                    "tel_diameter": np.float32(8.0),
                     "tel_pupil": np.ones((2, 2), dtype=np.float32),
                 }
             ),
@@ -254,11 +297,11 @@ def test_analysis_dataset_require_setup_field_reads_present_value() -> None:
         path=Path("/tmp/example.h5"),
         simulation_payload=freeze_mapping({"name": "demo"}),
         setup=freeze_mapping({"mode": "LTAO"}),
-        options=freeze_mapping({"wavelength_um": np.array([1.65], dtype=np.float64)}),
+        options=freeze_mapping({"wavelength": np.array([1.65], dtype=np.float64) * u.um}),
         meta=freeze_mapping(
             {
-                "pixel_scale_mas": np.array([4.0], dtype=np.float32),
-                "tel_diameter_m": np.float32(8.0),
+                "pixel_scale": np.array([4.0], dtype=np.float32),
+                "tel_diameter": np.float32(8.0),
                 "tel_pupil": np.ones((2, 2), dtype=np.float32),
             }
         ),
@@ -274,11 +317,11 @@ def test_analysis_dataset_require_setup_string_field_normalizes() -> None:
         path=Path("/tmp/example.h5"),
         simulation_payload=freeze_mapping({"name": "demo"}),
         setup=freeze_mapping({"mode": "  LTAO  "}),
-        options=freeze_mapping({"wavelength_um": np.array([1.65], dtype=np.float64)}),
+        options=freeze_mapping({"wavelength": np.array([1.65], dtype=np.float64) * u.um}),
         meta=freeze_mapping(
             {
-                "pixel_scale_mas": np.array([4.0], dtype=np.float32),
-                "tel_diameter_m": np.float32(8.0),
+                "pixel_scale": np.array([4.0], dtype=np.float32),
+                "tel_diameter": np.float32(8.0),
                 "tel_pupil": np.ones((2, 2), dtype=np.float32),
             }
         ),
@@ -294,11 +337,11 @@ def test_analysis_dataset_require_setup_field_raises_on_missing_field() -> None:
         path=Path("/tmp/example.h5"),
         simulation_payload=freeze_mapping({"name": "demo"}),
         setup=freeze_mapping({}),
-        options=freeze_mapping({"wavelength_um": np.array([1.65], dtype=np.float64)}),
+        options=freeze_mapping({"wavelength": np.array([1.65], dtype=np.float64) * u.um}),
         meta=freeze_mapping(
             {
-                "pixel_scale_mas": np.array([4.0], dtype=np.float32),
-                "tel_diameter_m": np.float32(8.0),
+                "pixel_scale": np.array([4.0], dtype=np.float32),
+                "tel_diameter": np.float32(8.0),
                 "tel_pupil": np.ones((2, 2), dtype=np.float32),
             }
         ),
@@ -315,11 +358,11 @@ def test_analysis_dataset_require_setup_string_field_raises_on_wrong_type() -> N
         path=Path("/tmp/example.h5"),
         simulation_payload=freeze_mapping({"name": "demo"}),
         setup=freeze_mapping({"mode": 3}),
-        options=freeze_mapping({"wavelength_um": np.array([1.65], dtype=np.float64)}),
+        options=freeze_mapping({"wavelength": np.array([1.65], dtype=np.float64) * u.um}),
         meta=freeze_mapping(
             {
-                "pixel_scale_mas": np.array([4.0], dtype=np.float32),
-                "tel_diameter_m": np.float32(8.0),
+                "pixel_scale": np.array([4.0], dtype=np.float32),
+                "tel_diameter": np.float32(8.0),
                 "tel_pupil": np.ones((2, 2), dtype=np.float32),
             }
         ),
@@ -336,11 +379,11 @@ def test_analysis_dataset_simulation_payload_helpers_read_present_value() -> Non
         path=Path("/tmp/example.h5"),
         simulation_payload=freeze_mapping({"mode": "LTAO", "name": "demo"}),
         setup=freeze_mapping({}),
-        options=freeze_mapping({"wavelength_um": np.array([1.65], dtype=np.float64)}),
+        options=freeze_mapping({"wavelength": np.array([1.65], dtype=np.float64) * u.um}),
         meta=freeze_mapping(
             {
-                "pixel_scale_mas": np.array([4.0], dtype=np.float32),
-                "tel_diameter_m": np.float32(8.0),
+                "pixel_scale": np.array([4.0], dtype=np.float32),
+                "tel_diameter": np.float32(8.0),
                 "tel_pupil": np.ones((2, 2), dtype=np.float32),
             }
         ),
@@ -356,11 +399,11 @@ def test_analysis_dataset_rejects_out_of_range_indexes() -> None:
         path=Path("/tmp/example.h5"),
         simulation_payload=freeze_mapping({"name": "demo"}),
         setup=freeze_mapping({}),
-        options=freeze_mapping({"wavelength_um": np.array([1.65], dtype=np.float64)}),
+        options=freeze_mapping({"wavelength": np.array([1.65], dtype=np.float64) * u.um}),
         meta=freeze_mapping(
             {
-                "pixel_scale_mas": np.array([4.0], dtype=np.float32),
-                "tel_diameter_m": np.float32(8.0),
+                "pixel_scale": np.array([4.0], dtype=np.float32),
+                "tel_diameter": np.float32(8.0),
                 "tel_pupil": np.ones((2, 2), dtype=np.float32),
             }
         ),
@@ -396,11 +439,11 @@ def test_analysis_dataset_subclasses_can_customize_sim_payload_without_reimpleme
         path=Path("/tmp/example.h5"),
         simulation_payload=freeze_mapping({"name": "demo"}),
         setup=freeze_mapping({}),
-        options=freeze_mapping({"wavelength_um": np.array([1.65], dtype=np.float64)}),
+        options=freeze_mapping({"wavelength": np.array([1.65], dtype=np.float64) * u.um}),
         meta=freeze_mapping(
             {
-                "pixel_scale_mas": np.array([4.0], dtype=np.float32),
-                "tel_diameter_m": np.float32(8.0),
+                "pixel_scale": np.array([4.0], dtype=np.float32),
+                "tel_diameter": np.float32(8.0),
                 "tel_pupil": np.ones((2, 2), dtype=np.float32),
             }
         ),
@@ -422,41 +465,41 @@ def test_load_analysis_dataset_loads_eager_non_psf_payloads(tmp_path: Path) -> N
         {
             "name": "ao_predict.simulation.tiptop:TiptopSimulation",
             "version": "x.y",
-            "extra_stat_names": np.array(["halo_mas"], dtype=str),
+            "extra_stat_fields": {"halo": "mas"},
             "ngs_mag_standard": "R",
             "base_config": "[section]\nvalue=1\n",
         },
         {
-            "ee_apertures_mas": np.array([50.0, 100.0], dtype=float),
+            "ee_apertures": np.array([50.0, 100.0], dtype=float) * u.mas,
             "sr_method": schema.DEFAULT_SETUP_SR_METHOD,
             "fwhm_summary": schema.DEFAULT_SETUP_FWHM_SUMMARY,
             "ee_geometry": schema.DEFAULT_SETUP_EE_GEOMETRY,
-            "atm_wavelength_um": 0.5,
-            "ngs_mag_zeropoint": 3.0e10,
-            "sci_r_arcsec": np.array([0.0, 10.0, 20.0], dtype=float),
-            "sci_theta_deg": np.array([0.0, 90.0, 180.0], dtype=float),
-            "lgs_r_arcsec": np.array([30.0, 30.0, 30.0, 30.0], dtype=float),
-            "lgs_theta_deg": np.array([45.0, 135.0, 225.0, 315.0], dtype=float),
+            "atm_wavelength": 0.5 * u.um,
+            "ngs_magnitude_zeropoint": 3.0e10 * u.photon / u.s,
+            "sci_r": np.array([0.0, 10.0, 20.0], dtype=float) * u.arcsec,
+            "sci_theta": np.array([0.0, 90.0, 180.0], dtype=float) * u.deg,
+            "lgs_r": np.array([30.0, 30.0, 30.0, 30.0], dtype=float) * u.arcsec,
+            "lgs_theta": np.array([45.0, 135.0, 225.0, 315.0], dtype=float) * u.deg,
             "atm_profiles": {
                 "0": {
                     "name": "default",
-                    "r0_m": 0.16,
-                    "L0_m": 25.0,
-                    "cn2_heights_m": np.array([0.0, 5000.0], dtype=float),
-                    "cn2_weights": np.array([0.6, 0.4], dtype=float),
-                    "wind_speed_mps": np.array([5.0, 10.0], dtype=float),
-                    "wind_direction_deg": np.array([0.0, 90.0], dtype=float),
+                    "r0": 0.16 * u.m,
+                    "L0": 25.0 * u.m,
+                    "cn2_heights": np.array([0.0, 5000.0], dtype=float) * u.m,
+                    "cn2_weights": np.array([0.6, 0.4], dtype=float) * u.one,
+                    "wind_speed": np.array([5.0, 10.0], dtype=float) * u.m / u.s,
+                    "wind_direction": np.array([0.0, 90.0], dtype=float) * u.deg,
                 }
             },
         },
         {
-            "wavelength_um": np.full((2,), 1.65, dtype=float),
+            "wavelength": np.full((2,), 1.65, dtype=float) * u.um,
             "atm_profile_id": np.zeros((2,), dtype=np.int32),
-            "zenith_angle_deg": np.full((2,), 20.0, dtype=float),
-            "r0_m": np.full((2,), 0.16, dtype=float),
-            "ngs_r_arcsec": np.ones((2, 3), dtype=float),
-            "ngs_theta_deg": np.zeros((2, 3), dtype=float),
-            "ngs_mag": np.full((2, 3), 15.0, dtype=float),
+            "zenith_angle": np.full((2,), 20.0, dtype=float) * u.deg,
+            "r0": np.full((2,), 0.16, dtype=float) * u.m,
+            "ngs_r": np.ones((2, 3), dtype=float) * u.arcsec,
+            "ngs_theta": np.zeros((2, 3), dtype=float) * u.deg,
+            "ngs_magnitude": np.full((2, 3), 15.0, dtype=float) * u.mag,
         },
         save_psfs=True,
     )
@@ -464,18 +507,18 @@ def test_load_analysis_dataset_loads_eager_non_psf_payloads(tmp_path: Path) -> N
     result0_stats = {
         schema.KEY_STATS_SR: np.array([0.1, 0.2, 0.3], dtype=np.float32),
         schema.KEY_STATS_EE: np.full((3, 2), 0.5, dtype=np.float32),
-        schema.KEY_STATS_FWHM_MAS: np.full((3,), 60.0, dtype=np.float32),
-        "halo_mas": np.full((3,), 7.0, dtype=np.float32),
+        schema.KEY_STATS_FWHM: np.full((3,), 60.0, dtype=np.float32),
+        "halo": np.full((3,), 7.0, dtype=np.float32),
     }
     result1_stats = {
         schema.KEY_STATS_SR: np.array([0.4, 0.5, 0.6], dtype=np.float32),
         schema.KEY_STATS_EE: np.full((3, 2), 0.7, dtype=np.float32),
-        schema.KEY_STATS_FWHM_MAS: np.full((3,), 80.0, dtype=np.float32),
-        "halo_mas": np.full((3,), 9.0, dtype=np.float32),
+        schema.KEY_STATS_FWHM: np.full((3,), 80.0, dtype=np.float32),
+        "halo": np.full((3,), 9.0, dtype=np.float32),
     }
     result_meta = {
-        schema.KEY_META_PIXEL_SCALE_MAS: 4.0,
-        schema.KEY_META_TEL_DIAMETER_M: 8.0,
+        schema.KEY_META_PIXEL_SCALE: 4.0,
+        schema.KEY_META_TEL_DIAMETER: 8.0,
         schema.KEY_META_TEL_PUPIL: np.ones((6, 6), dtype=np.float32),
     }
     store.write_simulation_success(
@@ -493,29 +536,44 @@ def test_load_analysis_dataset_loads_eager_non_psf_payloads(tmp_path: Path) -> N
 
     assert len(dataset) == 2
     assert dataset.path == data_path
-    assert dataset.extra_stat_names == ("halo_mas",)
+    assert dataset.extra_stat_names == ("halo",)
     assert dataset.simulation_payload["name"] == "ao_predict.simulation.tiptop:TiptopSimulation"
-    np.testing.assert_allclose(dataset.options["wavelength_um"], np.full((2,), 1.65, dtype=float))
     np.testing.assert_allclose(
-        dataset.meta[schema.KEY_META_PIXEL_SCALE_MAS],
+        dataset.options["wavelength"].to_value(u.um),
+        np.full((2,), 1.65, dtype=float),
+    )
+    np.testing.assert_allclose(
+        dataset.meta[schema.KEY_META_PIXEL_SCALE].to_value(u.mas),
         np.full((2,), 4.0, dtype=np.float32),
     )
-    assert dataset.meta[schema.KEY_META_TEL_DIAMETER_M] == np.float32(8.0)
-    np.testing.assert_allclose(dataset.stats[schema.KEY_STATS_SR][0], result0_stats[schema.KEY_STATS_SR])
-    np.testing.assert_allclose(dataset.stats["halo_mas"][1], result1_stats["halo_mas"])
+    assert dataset.meta[schema.KEY_META_TEL_DIAMETER].to_value(u.m) == np.float32(8.0)
+    np.testing.assert_allclose(
+        dataset.stats[schema.KEY_STATS_SR][0].to_value(u.one),
+        result0_stats[schema.KEY_STATS_SR],
+    )
+    np.testing.assert_allclose(dataset.stats["halo"][1].to_value(u.mas), result1_stats["halo"])
     assert tuple(sim0.config.keys()) == ("setup", "options")
-    assert sim0.config["options"]["wavelength_um"] == np.float64(1.65)
-    np.testing.assert_allclose(sim0.config["setup"]["ee_apertures_mas"], np.array([50.0, 100.0]))
-    assert sim0.meta[schema.KEY_META_PIXEL_SCALE_MAS] == np.float32(4.0)
-    assert sim0.meta[schema.KEY_META_TEL_DIAMETER_M] == np.float32(8.0)
-    np.testing.assert_allclose(sim0.meta[schema.KEY_META_TEL_PUPIL], np.ones((6, 6), dtype=np.float32))
-    np.testing.assert_allclose(sim0.stats[schema.KEY_STATS_SR], result0_stats[schema.KEY_STATS_SR])
-    np.testing.assert_allclose(sim1.stats["halo_mas"], result1_stats["halo_mas"])
+    assert sim0.config["options"]["wavelength"].to_value(u.um) == np.float64(1.65)
+    np.testing.assert_allclose(
+        sim0.config["setup"]["ee_apertures"].to_value(u.mas),
+        np.array([50.0, 100.0]),
+    )
+    assert sim0.meta[schema.KEY_META_PIXEL_SCALE].to_value(u.mas) == np.float32(4.0)
+    assert sim0.meta[schema.KEY_META_TEL_DIAMETER].to_value(u.m) == np.float32(8.0)
+    np.testing.assert_allclose(
+        sim0.meta[schema.KEY_META_TEL_PUPIL].to_value(u.one),
+        np.ones((6, 6), dtype=np.float32),
+    )
+    np.testing.assert_allclose(
+        sim0.stats[schema.KEY_STATS_SR].to_value(u.one),
+        result0_stats[schema.KEY_STATS_SR],
+    )
+    np.testing.assert_allclose(sim1.stats["halo"].to_value(u.mas), result1_stats["halo"])
     assert "simulation" not in sim0.config
-    assert dataset.options["wavelength_um"].flags.writeable is False
-    assert dataset.meta[schema.KEY_META_PIXEL_SCALE_MAS].flags.writeable is False
+    assert dataset.options["wavelength"].flags.writeable is False
+    assert dataset.meta[schema.KEY_META_PIXEL_SCALE].flags.writeable is False
     assert dataset.stats[schema.KEY_STATS_SR].flags.writeable is False
-    assert sim0.config["setup"]["ee_apertures_mas"].flags.writeable is False
+    assert sim0.config["setup"]["ee_apertures"].flags.writeable is False
     assert sim0.meta[schema.KEY_META_TEL_PUPIL].flags.writeable is False
     assert sim0.stats[schema.KEY_STATS_SR].flags.writeable is False
 
@@ -527,53 +585,53 @@ def test_load_analysis_dataset_preserves_analysis_visible_store_slice(tmp_path: 
         {
             "name": "ao_predict.simulation.tiptop:TiptopSimulation",
             "version": "x.y",
-            "extra_stat_names": np.array(["halo_mas"], dtype=str),
+            "extra_stat_fields": {"halo": "mas"},
             "ngs_mag_standard": "R",
             "base_config": "[section]\nvalue=1\n",
         },
         {
-            "ee_apertures_mas": np.array([50.0, 100.0], dtype=float),
+            "ee_apertures": np.array([50.0, 100.0], dtype=float) * u.mas,
             "sr_method": schema.DEFAULT_SETUP_SR_METHOD,
             "fwhm_summary": schema.DEFAULT_SETUP_FWHM_SUMMARY,
             "ee_geometry": schema.DEFAULT_SETUP_EE_GEOMETRY,
-            "atm_wavelength_um": 0.5,
-            "ngs_mag_zeropoint": 3.0e10,
-            "sci_r_arcsec": np.array([0.0, 10.0, 20.0], dtype=float),
-            "sci_theta_deg": np.array([0.0, 90.0, 180.0], dtype=float),
-            "lgs_r_arcsec": np.array([30.0, 30.0, 30.0, 30.0], dtype=float),
-            "lgs_theta_deg": np.array([45.0, 135.0, 225.0, 315.0], dtype=float),
+            "atm_wavelength": 0.5 * u.um,
+            "ngs_magnitude_zeropoint": 3.0e10 * u.photon / u.s,
+            "sci_r": np.array([0.0, 10.0, 20.0], dtype=float) * u.arcsec,
+            "sci_theta": np.array([0.0, 90.0, 180.0], dtype=float) * u.deg,
+            "lgs_r": np.array([30.0, 30.0, 30.0, 30.0], dtype=float) * u.arcsec,
+            "lgs_theta": np.array([45.0, 135.0, 225.0, 315.0], dtype=float) * u.deg,
             "atm_profiles": {
                 "0": {
                     "name": "default",
-                    "r0_m": 0.16,
-                    "L0_m": 25.0,
-                    "cn2_heights_m": np.array([0.0, 5000.0], dtype=float),
-                    "cn2_weights": np.array([0.6, 0.4], dtype=float),
-                    "wind_speed_mps": np.array([5.0, 10.0], dtype=float),
-                    "wind_direction_deg": np.array([0.0, 90.0], dtype=float),
+                    "r0": 0.16 * u.m,
+                    "L0": 25.0 * u.m,
+                    "cn2_heights": np.array([0.0, 5000.0], dtype=float) * u.m,
+                    "cn2_weights": np.array([0.6, 0.4], dtype=float) * u.one,
+                    "wind_speed": np.array([5.0, 10.0], dtype=float) * u.m / u.s,
+                    "wind_direction": np.array([0.0, 90.0], dtype=float) * u.deg,
                 }
             },
         },
         {
-            "wavelength_um": np.full((1,), 1.65, dtype=float),
+            "wavelength": np.full((1,), 1.65, dtype=float) * u.um,
             "atm_profile_id": np.zeros((1,), dtype=np.int32),
-            "zenith_angle_deg": np.full((1,), 20.0, dtype=float),
-            "r0_m": np.full((1,), 0.16, dtype=float),
-            "ngs_r_arcsec": np.ones((1, 3), dtype=float),
-            "ngs_theta_deg": np.zeros((1, 3), dtype=float),
-            "ngs_mag": np.full((1, 3), 15.0, dtype=float),
+            "zenith_angle": np.full((1,), 20.0, dtype=float) * u.deg,
+            "r0": np.full((1,), 0.16, dtype=float) * u.m,
+            "ngs_r": np.ones((1, 3), dtype=float) * u.arcsec,
+            "ngs_theta": np.zeros((1, 3), dtype=float) * u.deg,
+            "ngs_magnitude": np.full((1, 3), 15.0, dtype=float) * u.mag,
         },
         save_psfs=True,
     )
     expected_stats = {
         schema.KEY_STATS_SR: np.array([0.1, 0.2, 0.3], dtype=np.float32),
         schema.KEY_STATS_EE: np.full((3, 2), 0.5, dtype=np.float32),
-        schema.KEY_STATS_FWHM_MAS: np.full((3,), 60.0, dtype=np.float32),
-        "halo_mas": np.full((3,), 7.0, dtype=np.float32),
+        schema.KEY_STATS_FWHM: np.full((3,), 60.0, dtype=np.float32),
+        "halo": np.full((3,), 7.0, dtype=np.float32),
     }
     expected_meta = {
-        schema.KEY_META_PIXEL_SCALE_MAS: 4.0,
-        schema.KEY_META_TEL_DIAMETER_M: 8.0,
+        schema.KEY_META_PIXEL_SCALE: 4.0,
+        schema.KEY_META_TEL_DIAMETER: 8.0,
         schema.KEY_META_TEL_PUPIL: np.ones((6, 6), dtype=np.float32),
     }
     expected_psfs = np.full((3, 4, 4), 0.1, dtype=np.float32)
@@ -603,8 +661,8 @@ def test_load_analysis_dataset_preserves_analysis_visible_store_slice(tmp_path: 
             assert sim.config["options"][key] == value
     assert sim.meta.keys() == expected_meta_row.keys()
     assert sim.stats.keys() == expected_stats_row.keys()
-    assert sim.meta[schema.KEY_META_PIXEL_SCALE_MAS] == expected_meta_row[schema.KEY_META_PIXEL_SCALE_MAS]
-    assert sim.meta[schema.KEY_META_TEL_DIAMETER_M] == expected_meta_row[schema.KEY_META_TEL_DIAMETER_M]
+    assert sim.meta[schema.KEY_META_PIXEL_SCALE] == expected_meta_row[schema.KEY_META_PIXEL_SCALE]
+    assert sim.meta[schema.KEY_META_TEL_DIAMETER] == expected_meta_row[schema.KEY_META_TEL_DIAMETER]
     np.testing.assert_allclose(
         sim.meta[schema.KEY_META_TEL_PUPIL],
         expected_meta_row[schema.KEY_META_TEL_PUPIL],
@@ -612,10 +670,10 @@ def test_load_analysis_dataset_preserves_analysis_visible_store_slice(tmp_path: 
     np.testing.assert_allclose(sim.stats[schema.KEY_STATS_SR], expected_stats_row[schema.KEY_STATS_SR])
     np.testing.assert_allclose(sim.stats[schema.KEY_STATS_EE], expected_stats_row[schema.KEY_STATS_EE])
     np.testing.assert_allclose(
-        sim.stats[schema.KEY_STATS_FWHM_MAS],
-        expected_stats_row[schema.KEY_STATS_FWHM_MAS],
+        sim.stats[schema.KEY_STATS_FWHM],
+        expected_stats_row[schema.KEY_STATS_FWHM],
     )
-    np.testing.assert_allclose(sim.stats["halo_mas"], expected_stats_row["halo_mas"])
+    np.testing.assert_allclose(sim.stats["halo"], expected_stats_row["halo"])
     assert sim.psfs.shape == expected_psfs.shape
     np.testing.assert_allclose(sim.psfs, expected_psfs)
 
@@ -663,16 +721,19 @@ def test_load_analysis_dataset_supports_custom_simulation_cls(tmp_path: Path) ->
             return super().from_load_payload(payload)
 
         @property
-        def pixel_scale(self) -> np.float32:
-            return self.meta[schema.KEY_META_PIXEL_SCALE_MAS]
+        def pixel_scale(self) -> u.Quantity:
+            return self.meta[schema.KEY_META_PIXEL_SCALE]
 
     dataset = load_analysis_dataset(data_path, simulation_cls=CustomAnalysisSimulation)
     sim = dataset.sim(0)
 
     assert isinstance(sim, CustomAnalysisSimulation)
-    assert sim.config["options"]["wavelength_um"] == np.float64(1.65)
-    assert sim.pixel_scale == np.float32(4.0)
-    np.testing.assert_allclose(sim.stats[schema.KEY_STATS_SR], np.array([0.1, 0.2, 0.3], dtype=np.float32))
+    assert sim.config["options"]["wavelength"].to_value(u.um) == np.float64(1.65)
+    assert sim.pixel_scale.to_value(u.mas) == np.float32(4.0)
+    np.testing.assert_allclose(
+        sim.stats[schema.KEY_STATS_SR].to_value(u.one),
+        np.array([0.1, 0.2, 0.3], dtype=np.float32),
+    )
     np.testing.assert_allclose(sim.psfs, np.full((3, 4, 4), 0.1, dtype=np.float32))
 
 
@@ -835,7 +896,7 @@ def test_analysis_simulation_require_extra_field_raises_cleanly_when_missing() -
 
     simulation = CustomAnalysisSimulation(
         _config=freeze_mapping({"setup": {}, "options": {}}),
-        _meta=freeze_mapping({"pixel_scale_mas": 4.0}),
+        _meta=freeze_mapping({"pixel_scale": 4.0}),
         _stats=freeze_mapping({"sr": np.array([0.1], dtype=np.float32)}),
     )
 
@@ -876,10 +937,10 @@ def test_load_analysis_dataset_reads_dataset_built_via_init_and_run_pipeline(tmp
     request = InitDatasetRequest(
         dataset_path=dataset_path,
         simulation=SimulationConfig(name="mock_simulation:MockSimulation"),
-        setup=SetupConfig(ee_apertures_mas=[50.0, 100.0]),
+        setup=SetupConfig(ee_apertures=np.array([50.0, 100.0]) * u.mas),
         options=OptionsConfig(
             option_arrays={
-                "zenith_angle_deg": np.array([15.0, 25.0, 35.0], dtype=float),
+                "zenith_angle": np.array([15.0, 25.0, 35.0], dtype=float) * u.deg,
             }
         ),
         save_psfs=True,
@@ -899,9 +960,9 @@ def test_load_analysis_dataset_reads_dataset_built_via_init_and_run_pipeline(tmp
 
     assert len(dataset) == 3
     assert dataset.path == dataset_path
-    assert sim0.config["options"]["zenith_angle_deg"] == np.float64(15.0)
-    assert sim1.config["options"]["zenith_angle_deg"] == np.float64(25.0)
-    assert sim0.meta[schema.KEY_META_PIXEL_SCALE_MAS] == np.float32(5.0)
+    assert sim0.config["options"]["zenith_angle"].to_value(u.deg) == np.float64(15.0)
+    assert sim1.config["options"]["zenith_angle"].to_value(u.deg) == np.float64(25.0)
+    assert sim0.meta[schema.KEY_META_PIXEL_SCALE].to_value(u.mas) == np.float32(5.0)
     assert sim0.stats[schema.KEY_STATS_SR].shape == (1,)
     assert np.all(np.isfinite(sim0.stats[schema.KEY_STATS_SR]))
     np.testing.assert_allclose(sim0.psfs, np.full((1, 4, 4), 0.1, dtype=np.float32))
@@ -916,41 +977,41 @@ def test_analysis_simulation_views_are_read_only_to_callers(tmp_path: Path) -> N
         {
             "name": "ao_predict.simulation.tiptop:TiptopSimulation",
             "version": "x.y",
-            "extra_stat_names": np.array(["halo_mas"], dtype=str),
+            "extra_stat_fields": {"halo": "mas"},
             "ngs_mag_standard": "R",
             "base_config": "[section]\nvalue=1\n",
         },
         {
-            "ee_apertures_mas": np.array([50.0, 100.0], dtype=float),
+            "ee_apertures": np.array([50.0, 100.0], dtype=float) * u.mas,
             "sr_method": schema.DEFAULT_SETUP_SR_METHOD,
             "fwhm_summary": schema.DEFAULT_SETUP_FWHM_SUMMARY,
             "ee_geometry": schema.DEFAULT_SETUP_EE_GEOMETRY,
-            "atm_wavelength_um": 0.5,
-            "ngs_mag_zeropoint": 3.0e10,
-            "sci_r_arcsec": np.array([0.0, 10.0, 20.0], dtype=float),
-            "sci_theta_deg": np.array([0.0, 90.0, 180.0], dtype=float),
-            "lgs_r_arcsec": np.array([30.0, 30.0, 30.0, 30.0], dtype=float),
-            "lgs_theta_deg": np.array([45.0, 135.0, 225.0, 315.0], dtype=float),
+            "atm_wavelength": 0.5 * u.um,
+            "ngs_magnitude_zeropoint": 3.0e10 * u.photon / u.s,
+            "sci_r": np.array([0.0, 10.0, 20.0], dtype=float) * u.arcsec,
+            "sci_theta": np.array([0.0, 90.0, 180.0], dtype=float) * u.deg,
+            "lgs_r": np.array([30.0, 30.0, 30.0, 30.0], dtype=float) * u.arcsec,
+            "lgs_theta": np.array([45.0, 135.0, 225.0, 315.0], dtype=float) * u.deg,
             "atm_profiles": {
                 "0": {
                     "name": "default",
-                    "r0_m": 0.16,
-                    "L0_m": 25.0,
-                    "cn2_heights_m": np.array([0.0, 5000.0], dtype=float),
-                    "cn2_weights": np.array([0.6, 0.4], dtype=float),
-                    "wind_speed_mps": np.array([5.0, 10.0], dtype=float),
-                    "wind_direction_deg": np.array([0.0, 90.0], dtype=float),
+                    "r0": 0.16 * u.m,
+                    "L0": 25.0 * u.m,
+                    "cn2_heights": np.array([0.0, 5000.0], dtype=float) * u.m,
+                    "cn2_weights": np.array([0.6, 0.4], dtype=float) * u.one,
+                    "wind_speed": np.array([5.0, 10.0], dtype=float) * u.m / u.s,
+                    "wind_direction": np.array([0.0, 90.0], dtype=float) * u.deg,
                 }
             },
         },
         {
-            "wavelength_um": np.full((1,), 1.65, dtype=float),
+            "wavelength": np.full((1,), 1.65, dtype=float) * u.um,
             "atm_profile_id": np.zeros((1,), dtype=np.int32),
-            "zenith_angle_deg": np.full((1,), 20.0, dtype=float),
-            "r0_m": np.full((1,), 0.16, dtype=float),
-            "ngs_r_arcsec": np.ones((1, 3), dtype=float),
-            "ngs_theta_deg": np.zeros((1, 3), dtype=float),
-            "ngs_mag": np.full((1, 3), 15.0, dtype=float),
+            "zenith_angle": np.full((1,), 20.0, dtype=float) * u.deg,
+            "r0": np.full((1,), 0.16, dtype=float) * u.m,
+            "ngs_r": np.ones((1, 3), dtype=float) * u.arcsec,
+            "ngs_theta": np.zeros((1, 3), dtype=float) * u.deg,
+            "ngs_magnitude": np.full((1, 3), 15.0, dtype=float) * u.mag,
         },
         save_psfs=True,
     )
@@ -961,12 +1022,12 @@ def test_analysis_simulation_views_are_read_only_to_callers(tmp_path: Path) -> N
             stats={
                 schema.KEY_STATS_SR: np.array([0.1, 0.2, 0.3], dtype=np.float32),
                 schema.KEY_STATS_EE: np.full((3, 2), 0.5, dtype=np.float32),
-                schema.KEY_STATS_FWHM_MAS: np.full((3,), 60.0, dtype=np.float32),
-                "halo_mas": np.full((3,), 7.0, dtype=np.float32),
+                schema.KEY_STATS_FWHM: np.full((3,), 60.0, dtype=np.float32),
+                "halo": np.full((3,), 7.0, dtype=np.float32),
             },
             meta={
-                schema.KEY_META_PIXEL_SCALE_MAS: 4.0,
-                schema.KEY_META_TEL_DIAMETER_M: 8.0,
+                schema.KEY_META_PIXEL_SCALE: 4.0,
+                schema.KEY_META_TEL_DIAMETER: 8.0,
                 schema.KEY_META_TEL_PUPIL: np.ones((6, 6), dtype=np.float32),
             },
         ),
@@ -981,11 +1042,11 @@ def test_analysis_simulation_views_are_read_only_to_callers(tmp_path: Path) -> N
     with pytest.raises(TypeError):
         sim.stats["new"] = np.array([1.0], dtype=np.float32)
     with pytest.raises(ValueError, match="read-only"):
-        sim.config["setup"]["ee_apertures_mas"][0] = 99.0
+        sim.config["setup"]["ee_apertures"][0] = 99.0 * u.mas
     with pytest.raises(ValueError, match="read-only"):
-        sim.meta[schema.KEY_META_TEL_PUPIL][0, 0] = 0.0
+        sim.meta[schema.KEY_META_TEL_PUPIL][0, 0] = 0.0 * u.one
     with pytest.raises(ValueError, match="read-only"):
-        sim.stats["halo_mas"][0] = -1.0
+        sim.stats["halo"][0] = -1.0 * u.mas
     with pytest.raises(ValueError, match="read-only"):
         sim.psfs[0, 0, 0] = -1.0
 
@@ -997,41 +1058,41 @@ def test_analysis_dataset_psfs_remain_lazy_until_simulation_access(tmp_path: Pat
         {
             "name": "ao_predict.simulation.tiptop:TiptopSimulation",
             "version": "x.y",
-            "extra_stat_names": np.array([], dtype=str),
+            "extra_stat_fields": {},
             "ngs_mag_standard": "R",
             "base_config": "[section]\nvalue=1\n",
         },
         {
-            "ee_apertures_mas": np.array([50.0, 100.0], dtype=float),
+            "ee_apertures": np.array([50.0, 100.0], dtype=float) * u.mas,
             "sr_method": schema.DEFAULT_SETUP_SR_METHOD,
             "fwhm_summary": schema.DEFAULT_SETUP_FWHM_SUMMARY,
             "ee_geometry": schema.DEFAULT_SETUP_EE_GEOMETRY,
-            "atm_wavelength_um": 0.5,
-            "ngs_mag_zeropoint": 3.0e10,
-            "sci_r_arcsec": np.array([0.0, 10.0, 20.0], dtype=float),
-            "sci_theta_deg": np.array([0.0, 90.0, 180.0], dtype=float),
-            "lgs_r_arcsec": np.array([30.0, 30.0, 30.0, 30.0], dtype=float),
-            "lgs_theta_deg": np.array([45.0, 135.0, 225.0, 315.0], dtype=float),
+            "atm_wavelength": 0.5 * u.um,
+            "ngs_magnitude_zeropoint": 3.0e10 * u.photon / u.s,
+            "sci_r": np.array([0.0, 10.0, 20.0], dtype=float) * u.arcsec,
+            "sci_theta": np.array([0.0, 90.0, 180.0], dtype=float) * u.deg,
+            "lgs_r": np.array([30.0, 30.0, 30.0, 30.0], dtype=float) * u.arcsec,
+            "lgs_theta": np.array([45.0, 135.0, 225.0, 315.0], dtype=float) * u.deg,
             "atm_profiles": {
                 "0": {
                     "name": "default",
-                    "r0_m": 0.16,
-                    "L0_m": 25.0,
-                    "cn2_heights_m": np.array([0.0, 5000.0], dtype=float),
-                    "cn2_weights": np.array([0.6, 0.4], dtype=float),
-                    "wind_speed_mps": np.array([5.0, 10.0], dtype=float),
-                    "wind_direction_deg": np.array([0.0, 90.0], dtype=float),
+                    "r0": 0.16 * u.m,
+                    "L0": 25.0 * u.m,
+                    "cn2_heights": np.array([0.0, 5000.0], dtype=float) * u.m,
+                    "cn2_weights": np.array([0.6, 0.4], dtype=float) * u.one,
+                    "wind_speed": np.array([5.0, 10.0], dtype=float) * u.m / u.s,
+                    "wind_direction": np.array([0.0, 90.0], dtype=float) * u.deg,
                 }
             },
         },
         {
-            "wavelength_um": np.full((1,), 1.65, dtype=float),
+            "wavelength": np.full((1,), 1.65, dtype=float) * u.um,
             "atm_profile_id": np.zeros((1,), dtype=np.int32),
-            "zenith_angle_deg": np.full((1,), 20.0, dtype=float),
-            "r0_m": np.full((1,), 0.16, dtype=float),
-            "ngs_r_arcsec": np.ones((1, 3), dtype=float),
-            "ngs_theta_deg": np.zeros((1, 3), dtype=float),
-            "ngs_mag": np.full((1, 3), 15.0, dtype=float),
+            "zenith_angle": np.full((1,), 20.0, dtype=float) * u.deg,
+            "r0": np.full((1,), 0.16, dtype=float) * u.m,
+            "ngs_r": np.ones((1, 3), dtype=float) * u.arcsec,
+            "ngs_theta": np.zeros((1, 3), dtype=float) * u.deg,
+            "ngs_magnitude": np.full((1, 3), 15.0, dtype=float) * u.mag,
         },
         save_psfs=True,
     )
@@ -1042,11 +1103,11 @@ def test_analysis_dataset_psfs_remain_lazy_until_simulation_access(tmp_path: Pat
             stats={
                 schema.KEY_STATS_SR: np.array([0.1, 0.2, 0.3], dtype=np.float32),
                 schema.KEY_STATS_EE: np.full((3, 2), 0.5, dtype=np.float32),
-                schema.KEY_STATS_FWHM_MAS: np.full((3,), 60.0, dtype=np.float32),
+                schema.KEY_STATS_FWHM: np.full((3,), 60.0, dtype=np.float32),
             },
             meta={
-                schema.KEY_META_PIXEL_SCALE_MAS: 4.0,
-                schema.KEY_META_TEL_DIAMETER_M: 8.0,
+                schema.KEY_META_PIXEL_SCALE: 4.0,
+                schema.KEY_META_TEL_DIAMETER: 8.0,
                 schema.KEY_META_TEL_PUPIL: np.ones((6, 6), dtype=np.float32),
             },
         ),
@@ -1084,41 +1145,41 @@ def test_analysis_simulation_psfs_raises_clear_error_when_dataset_has_no_psfs(tm
         {
             "name": "ao_predict.simulation.tiptop:TiptopSimulation",
             "version": "x.y",
-            "extra_stat_names": np.array([], dtype=str),
+            "extra_stat_fields": {},
             "ngs_mag_standard": "R",
             "base_config": "[section]\nvalue=1\n",
         },
         {
-            "ee_apertures_mas": np.array([50.0, 100.0], dtype=float),
+            "ee_apertures": np.array([50.0, 100.0], dtype=float) * u.mas,
             "sr_method": schema.DEFAULT_SETUP_SR_METHOD,
             "fwhm_summary": schema.DEFAULT_SETUP_FWHM_SUMMARY,
             "ee_geometry": schema.DEFAULT_SETUP_EE_GEOMETRY,
-            "atm_wavelength_um": 0.5,
-            "ngs_mag_zeropoint": 3.0e10,
-            "sci_r_arcsec": np.array([0.0, 10.0, 20.0], dtype=float),
-            "sci_theta_deg": np.array([0.0, 90.0, 180.0], dtype=float),
-            "lgs_r_arcsec": np.array([30.0, 30.0, 30.0, 30.0], dtype=float),
-            "lgs_theta_deg": np.array([45.0, 135.0, 225.0, 315.0], dtype=float),
+            "atm_wavelength": 0.5 * u.um,
+            "ngs_magnitude_zeropoint": 3.0e10 * u.photon / u.s,
+            "sci_r": np.array([0.0, 10.0, 20.0], dtype=float) * u.arcsec,
+            "sci_theta": np.array([0.0, 90.0, 180.0], dtype=float) * u.deg,
+            "lgs_r": np.array([30.0, 30.0, 30.0, 30.0], dtype=float) * u.arcsec,
+            "lgs_theta": np.array([45.0, 135.0, 225.0, 315.0], dtype=float) * u.deg,
             "atm_profiles": {
                 "0": {
                     "name": "default",
-                    "r0_m": 0.16,
-                    "L0_m": 25.0,
-                    "cn2_heights_m": np.array([0.0, 5000.0], dtype=float),
-                    "cn2_weights": np.array([0.6, 0.4], dtype=float),
-                    "wind_speed_mps": np.array([5.0, 10.0], dtype=float),
-                    "wind_direction_deg": np.array([0.0, 90.0], dtype=float),
+                    "r0": 0.16 * u.m,
+                    "L0": 25.0 * u.m,
+                    "cn2_heights": np.array([0.0, 5000.0], dtype=float) * u.m,
+                    "cn2_weights": np.array([0.6, 0.4], dtype=float) * u.one,
+                    "wind_speed": np.array([5.0, 10.0], dtype=float) * u.m / u.s,
+                    "wind_direction": np.array([0.0, 90.0], dtype=float) * u.deg,
                 }
             },
         },
         {
-            "wavelength_um": np.full((1,), 1.65, dtype=float),
+            "wavelength": np.full((1,), 1.65, dtype=float) * u.um,
             "atm_profile_id": np.zeros((1,), dtype=np.int32),
-            "zenith_angle_deg": np.full((1,), 20.0, dtype=float),
-            "r0_m": np.full((1,), 0.16, dtype=float),
-            "ngs_r_arcsec": np.ones((1, 3), dtype=float),
-            "ngs_theta_deg": np.zeros((1, 3), dtype=float),
-            "ngs_mag": np.full((1, 3), 15.0, dtype=float),
+            "zenith_angle": np.full((1,), 20.0, dtype=float) * u.deg,
+            "r0": np.full((1,), 0.16, dtype=float) * u.m,
+            "ngs_r": np.ones((1, 3), dtype=float) * u.arcsec,
+            "ngs_theta": np.zeros((1, 3), dtype=float) * u.deg,
+            "ngs_magnitude": np.full((1, 3), 15.0, dtype=float) * u.mag,
         },
         save_psfs=False,
     )
@@ -1129,11 +1190,11 @@ def test_analysis_simulation_psfs_raises_clear_error_when_dataset_has_no_psfs(tm
             stats={
                 schema.KEY_STATS_SR: np.array([0.1, 0.2, 0.3], dtype=np.float32),
                 schema.KEY_STATS_EE: np.full((3, 2), 0.5, dtype=np.float32),
-                schema.KEY_STATS_FWHM_MAS: np.full((3,), 60.0, dtype=np.float32),
+                schema.KEY_STATS_FWHM: np.full((3,), 60.0, dtype=np.float32),
             },
             meta={
-                schema.KEY_META_PIXEL_SCALE_MAS: 4.0,
-                schema.KEY_META_TEL_DIAMETER_M: 8.0,
+                schema.KEY_META_PIXEL_SCALE: 4.0,
+                schema.KEY_META_TEL_DIAMETER: 8.0,
                 schema.KEY_META_TEL_PUPIL: np.ones((6, 6), dtype=np.float32),
             },
         ),
@@ -1152,41 +1213,41 @@ def test_analysis_dataset_loads_via_supported_loader_entrypoint(tmp_path: Path) 
         {
             "name": "ao_predict.simulation.tiptop:TiptopSimulation",
             "version": "x.y",
-            "extra_stat_names": np.array([], dtype=str),
+            "extra_stat_fields": {},
             "ngs_mag_standard": "R",
             "base_config": "[section]\nvalue=1\n",
         },
         {
-            "ee_apertures_mas": np.array([50.0, 100.0], dtype=float),
+            "ee_apertures": np.array([50.0, 100.0], dtype=float) * u.mas,
             "sr_method": schema.DEFAULT_SETUP_SR_METHOD,
             "fwhm_summary": schema.DEFAULT_SETUP_FWHM_SUMMARY,
             "ee_geometry": schema.DEFAULT_SETUP_EE_GEOMETRY,
-            "atm_wavelength_um": 0.5,
-            "ngs_mag_zeropoint": 3.0e10,
-            "sci_r_arcsec": np.array([0.0, 10.0, 20.0], dtype=float),
-            "sci_theta_deg": np.array([0.0, 90.0, 180.0], dtype=float),
-            "lgs_r_arcsec": np.array([30.0, 30.0, 30.0, 30.0], dtype=float),
-            "lgs_theta_deg": np.array([45.0, 135.0, 225.0, 315.0], dtype=float),
+            "atm_wavelength": 0.5 * u.um,
+            "ngs_magnitude_zeropoint": 3.0e10 * u.photon / u.s,
+            "sci_r": np.array([0.0, 10.0, 20.0], dtype=float) * u.arcsec,
+            "sci_theta": np.array([0.0, 90.0, 180.0], dtype=float) * u.deg,
+            "lgs_r": np.array([30.0, 30.0, 30.0, 30.0], dtype=float) * u.arcsec,
+            "lgs_theta": np.array([45.0, 135.0, 225.0, 315.0], dtype=float) * u.deg,
             "atm_profiles": {
                 "0": {
                     "name": "default",
-                    "r0_m": 0.16,
-                    "L0_m": 25.0,
-                    "cn2_heights_m": np.array([0.0, 5000.0], dtype=float),
-                    "cn2_weights": np.array([0.6, 0.4], dtype=float),
-                    "wind_speed_mps": np.array([5.0, 10.0], dtype=float),
-                    "wind_direction_deg": np.array([0.0, 90.0], dtype=float),
+                    "r0": 0.16 * u.m,
+                    "L0": 25.0 * u.m,
+                    "cn2_heights": np.array([0.0, 5000.0], dtype=float) * u.m,
+                    "cn2_weights": np.array([0.6, 0.4], dtype=float) * u.one,
+                    "wind_speed": np.array([5.0, 10.0], dtype=float) * u.m / u.s,
+                    "wind_direction": np.array([0.0, 90.0], dtype=float) * u.deg,
                 }
             },
         },
         {
-            "wavelength_um": np.full((1,), 1.65, dtype=float),
+            "wavelength": np.full((1,), 1.65, dtype=float) * u.um,
             "atm_profile_id": np.zeros((1,), dtype=np.int32),
-            "zenith_angle_deg": np.full((1,), 20.0, dtype=float),
-            "r0_m": np.full((1,), 0.16, dtype=float),
-            "ngs_r_arcsec": np.ones((1, 3), dtype=float),
-            "ngs_theta_deg": np.zeros((1, 3), dtype=float),
-            "ngs_mag": np.full((1, 3), 15.0, dtype=float),
+            "zenith_angle": np.full((1,), 20.0, dtype=float) * u.deg,
+            "r0": np.full((1,), 0.16, dtype=float) * u.m,
+            "ngs_r": np.ones((1, 3), dtype=float) * u.arcsec,
+            "ngs_theta": np.zeros((1, 3), dtype=float) * u.deg,
+            "ngs_magnitude": np.full((1, 3), 15.0, dtype=float) * u.mag,
         },
         save_psfs=False,
     )
@@ -1197,11 +1258,11 @@ def test_analysis_dataset_loads_via_supported_loader_entrypoint(tmp_path: Path) 
             stats={
                 schema.KEY_STATS_SR: np.array([0.1, 0.2, 0.3], dtype=np.float32),
                 schema.KEY_STATS_EE: np.full((3, 2), 0.5, dtype=np.float32),
-                schema.KEY_STATS_FWHM_MAS: np.full((3,), 60.0, dtype=np.float32),
+                schema.KEY_STATS_FWHM: np.full((3,), 60.0, dtype=np.float32),
             },
             meta={
-                schema.KEY_META_PIXEL_SCALE_MAS: 4.0,
-                schema.KEY_META_TEL_DIAMETER_M: 8.0,
+                schema.KEY_META_PIXEL_SCALE: 4.0,
+                schema.KEY_META_TEL_DIAMETER: 8.0,
                 schema.KEY_META_TEL_PUPIL: np.ones((6, 6), dtype=np.float32),
             },
         ),
@@ -1220,41 +1281,41 @@ def test_analysis_dataset_exposes_supported_scientific_view_contract(tmp_path: P
         {
             "name": "ao_predict.simulation.tiptop:TiptopSimulation",
             "version": "x.y",
-            "extra_stat_names": np.array(["halo_mas"], dtype=str),
+            "extra_stat_fields": {"halo": "mas"},
             "ngs_mag_standard": "R",
             "base_config": "[section]\nvalue=1\n",
         },
         {
-            "ee_apertures_mas": np.array([50.0, 100.0], dtype=float),
+            "ee_apertures": np.array([50.0, 100.0], dtype=float) * u.mas,
             "sr_method": schema.DEFAULT_SETUP_SR_METHOD,
             "fwhm_summary": schema.DEFAULT_SETUP_FWHM_SUMMARY,
             "ee_geometry": schema.DEFAULT_SETUP_EE_GEOMETRY,
-            "atm_wavelength_um": 0.5,
-            "ngs_mag_zeropoint": 3.0e10,
-            "sci_r_arcsec": np.array([0.0, 10.0, 20.0], dtype=float),
-            "sci_theta_deg": np.array([0.0, 90.0, 180.0], dtype=float),
-            "lgs_r_arcsec": np.array([30.0, 30.0, 30.0, 30.0], dtype=float),
-            "lgs_theta_deg": np.array([45.0, 135.0, 225.0, 315.0], dtype=float),
+            "atm_wavelength": 0.5 * u.um,
+            "ngs_magnitude_zeropoint": 3.0e10 * u.photon / u.s,
+            "sci_r": np.array([0.0, 10.0, 20.0], dtype=float) * u.arcsec,
+            "sci_theta": np.array([0.0, 90.0, 180.0], dtype=float) * u.deg,
+            "lgs_r": np.array([30.0, 30.0, 30.0, 30.0], dtype=float) * u.arcsec,
+            "lgs_theta": np.array([45.0, 135.0, 225.0, 315.0], dtype=float) * u.deg,
             "atm_profiles": {
                 "0": {
                     "name": "default",
-                    "r0_m": 0.16,
-                    "L0_m": 25.0,
-                    "cn2_heights_m": np.array([0.0, 5000.0], dtype=float),
-                    "cn2_weights": np.array([0.6, 0.4], dtype=float),
-                    "wind_speed_mps": np.array([5.0, 10.0], dtype=float),
-                    "wind_direction_deg": np.array([0.0, 90.0], dtype=float),
+                    "r0": 0.16 * u.m,
+                    "L0": 25.0 * u.m,
+                    "cn2_heights": np.array([0.0, 5000.0], dtype=float) * u.m,
+                    "cn2_weights": np.array([0.6, 0.4], dtype=float) * u.one,
+                    "wind_speed": np.array([5.0, 10.0], dtype=float) * u.m / u.s,
+                    "wind_direction": np.array([0.0, 90.0], dtype=float) * u.deg,
                 }
             },
         },
         {
-            "wavelength_um": np.array([1.25, 1.65], dtype=float),
+            "wavelength": np.array([1.25, 1.65], dtype=float) * u.um,
             "atm_profile_id": np.zeros((2,), dtype=np.int32),
-            "zenith_angle_deg": np.array([10.0, 25.0], dtype=float),
-            "r0_m": np.array([0.15, 0.16], dtype=float),
-            "ngs_r_arcsec": np.array([[1.0, 1.5, 2.0], [2.5, 3.0, 3.5]], dtype=float),
-            "ngs_theta_deg": np.array([[0.0, 45.0, 90.0], [135.0, 180.0, 225.0]], dtype=float),
-            "ngs_mag": np.array([[14.0, 15.0, 16.0], [17.0, 18.0, 19.0]], dtype=float),
+            "zenith_angle": np.array([10.0, 25.0], dtype=float) * u.deg,
+            "r0": np.array([0.15, 0.16], dtype=float) * u.m,
+            "ngs_r": np.array([[1.0, 1.5, 2.0], [2.5, 3.0, 3.5]], dtype=float) * u.arcsec,
+            "ngs_theta": np.array([[0.0, 45.0, 90.0], [135.0, 180.0, 225.0]], dtype=float) * u.deg,
+            "ngs_magnitude": np.array([[14.0, 15.0, 16.0], [17.0, 18.0, 19.0]], dtype=float) * u.mag,
         },
         save_psfs=False,
     )
@@ -1263,12 +1324,12 @@ def test_analysis_dataset_exposes_supported_scientific_view_contract(tmp_path: P
             "stats": {
                 schema.KEY_STATS_SR: np.array([0.1, 0.2, 0.3], dtype=np.float32),
                 schema.KEY_STATS_EE: np.full((3, 2), 0.5, dtype=np.float32),
-                schema.KEY_STATS_FWHM_MAS: np.full((3,), 60.0, dtype=np.float32),
-                "halo_mas": np.full((3,), 7.0, dtype=np.float32),
+                schema.KEY_STATS_FWHM: np.full((3,), 60.0, dtype=np.float32),
+                "halo": np.full((3,), 7.0, dtype=np.float32),
             },
             "meta": {
-                schema.KEY_META_PIXEL_SCALE_MAS: 4.0,
-                schema.KEY_META_TEL_DIAMETER_M: 8.0,
+                schema.KEY_META_PIXEL_SCALE: 4.0,
+                schema.KEY_META_TEL_DIAMETER: 8.0,
                 schema.KEY_META_TEL_PUPIL: np.ones((6, 6), dtype=np.float32),
             },
         },
@@ -1276,12 +1337,12 @@ def test_analysis_dataset_exposes_supported_scientific_view_contract(tmp_path: P
             "stats": {
                 schema.KEY_STATS_SR: np.array([0.4, 0.5, 0.6], dtype=np.float32),
                 schema.KEY_STATS_EE: np.full((3, 2), 0.7, dtype=np.float32),
-                schema.KEY_STATS_FWHM_MAS: np.full((3,), 80.0, dtype=np.float32),
-                "halo_mas": np.full((3,), 9.0, dtype=np.float32),
+                schema.KEY_STATS_FWHM: np.full((3,), 80.0, dtype=np.float32),
+                "halo": np.full((3,), 9.0, dtype=np.float32),
             },
             "meta": {
-                schema.KEY_META_PIXEL_SCALE_MAS: 5.0,
-                schema.KEY_META_TEL_DIAMETER_M: 8.0,
+                schema.KEY_META_PIXEL_SCALE: 5.0,
+                schema.KEY_META_TEL_DIAMETER: 8.0,
                 schema.KEY_META_TEL_PUPIL: np.ones((6, 6), dtype=np.float32),
             },
         },
@@ -1303,24 +1364,36 @@ def test_analysis_dataset_exposes_supported_scientific_view_contract(tmp_path: P
     assert len(dataset) == 2
     assert tuple(sim0.config.keys()) == ("setup", "options")
     np.testing.assert_allclose(
-        sim0.config["setup"]["ee_apertures_mas"],
+        sim0.config["setup"]["ee_apertures"].to_value(u.mas),
         np.array([50.0, 100.0], dtype=float),
     )
     assert sim0.config["setup"]["sr_method"] == schema.DEFAULT_SETUP_SR_METHOD
     assert sim0.config["setup"]["ee_geometry"] == schema.DEFAULT_SETUP_EE_GEOMETRY
-    assert sim0.config["options"]["wavelength_um"] == np.float64(1.25)
-    assert sim1.config["options"]["zenith_angle_deg"] == np.float64(25.0)
-    assert sim0.meta[schema.KEY_META_PIXEL_SCALE_MAS] == np.float32(4.0)
-    assert sim1.meta[schema.KEY_META_PIXEL_SCALE_MAS] == np.float32(5.0)
-    assert sim0.meta[schema.KEY_META_TEL_DIAMETER_M] == np.float32(8.0)
-    np.testing.assert_allclose(sim1.meta[schema.KEY_META_TEL_PUPIL], np.ones((6, 6), dtype=np.float32))
-    np.testing.assert_allclose(sim0.stats[schema.KEY_STATS_SR], expected_rows[0]["stats"][schema.KEY_STATS_SR])
-    np.testing.assert_allclose(sim0.stats[schema.KEY_STATS_EE], expected_rows[0]["stats"][schema.KEY_STATS_EE])
+    assert sim0.config["options"]["wavelength"].to_value(u.um) == np.float64(1.25)
+    assert sim1.config["options"]["zenith_angle"].to_value(u.deg) == np.float64(25.0)
+    assert sim0.meta[schema.KEY_META_PIXEL_SCALE].to_value(u.mas) == np.float32(4.0)
+    assert sim1.meta[schema.KEY_META_PIXEL_SCALE].to_value(u.mas) == np.float32(5.0)
+    assert sim0.meta[schema.KEY_META_TEL_DIAMETER].to_value(u.m) == np.float32(8.0)
     np.testing.assert_allclose(
-        sim1.stats[schema.KEY_STATS_FWHM_MAS],
-        expected_rows[1]["stats"][schema.KEY_STATS_FWHM_MAS],
+        sim1.meta[schema.KEY_META_TEL_PUPIL].to_value(u.one),
+        np.ones((6, 6), dtype=np.float32),
     )
-    np.testing.assert_allclose(sim1.stats["halo_mas"], expected_rows[1]["stats"]["halo_mas"])
+    np.testing.assert_allclose(
+        sim0.stats[schema.KEY_STATS_SR].to_value(u.one),
+        expected_rows[0]["stats"][schema.KEY_STATS_SR],
+    )
+    np.testing.assert_allclose(
+        sim0.stats[schema.KEY_STATS_EE].to_value(u.one),
+        expected_rows[0]["stats"][schema.KEY_STATS_EE],
+    )
+    np.testing.assert_allclose(
+        sim1.stats[schema.KEY_STATS_FWHM].to_value(u.mas),
+        expected_rows[1]["stats"][schema.KEY_STATS_FWHM],
+    )
+    np.testing.assert_allclose(
+        sim1.stats["halo"].to_value(u.mas),
+        expected_rows[1]["stats"]["halo"],
+    )
 
 
 def _success_result(
@@ -1331,10 +1404,18 @@ def _success_result(
 ) -> object:
     from ao_predict.simulation import SimulationResult, SimulationState
 
+    stat_units = {**schema.STATS_FIELD_UNITS, "halo": u.mas}
+    meta_units = schema.META_FIELD_UNITS
     return SimulationResult(
         state=SimulationState.SUCCEEDED,
-        stats=stats,
-        meta=dict(meta),
+        stats={
+            name: value if isinstance(value, u.Quantity) else np.asarray(value) * stat_units[name]
+            for name, value in stats.items()
+        },
+        meta={
+            name: value if isinstance(value, u.Quantity) else np.asarray(value) * meta_units[name]
+            for name, value in meta.items()
+        },
         psfs=psfs,
     )
 
@@ -1349,41 +1430,41 @@ def _write_single_analysis_result(store: SimulationStore, *, save_psfs: bool) ->
         {
             "name": "ao_predict.simulation.tiptop:TiptopSimulation",
             "version": "x.y",
-            "extra_stat_names": np.array([], dtype=str),
+            "extra_stat_fields": {},
             "ngs_mag_standard": "R",
             "base_config": "[section]\nvalue=1\n",
         },
         {
-            "ee_apertures_mas": np.array([50.0, 100.0], dtype=float),
+            "ee_apertures": np.array([50.0, 100.0], dtype=float) * u.mas,
             "sr_method": schema.DEFAULT_SETUP_SR_METHOD,
             "fwhm_summary": schema.DEFAULT_SETUP_FWHM_SUMMARY,
             "ee_geometry": schema.DEFAULT_SETUP_EE_GEOMETRY,
-            "atm_wavelength_um": 0.5,
-            "ngs_mag_zeropoint": 3.0e10,
-            "sci_r_arcsec": np.array([0.0, 10.0, 20.0], dtype=float),
-            "sci_theta_deg": np.array([0.0, 90.0, 180.0], dtype=float),
-            "lgs_r_arcsec": np.array([30.0, 30.0, 30.0, 30.0], dtype=float),
-            "lgs_theta_deg": np.array([45.0, 135.0, 225.0, 315.0], dtype=float),
+            "atm_wavelength": 0.5 * u.um,
+            "ngs_magnitude_zeropoint": 3.0e10 * u.photon / u.s,
+            "sci_r": np.array([0.0, 10.0, 20.0], dtype=float) * u.arcsec,
+            "sci_theta": np.array([0.0, 90.0, 180.0], dtype=float) * u.deg,
+            "lgs_r": np.array([30.0, 30.0, 30.0, 30.0], dtype=float) * u.arcsec,
+            "lgs_theta": np.array([45.0, 135.0, 225.0, 315.0], dtype=float) * u.deg,
             "atm_profiles": {
                 "0": {
                     "name": "default",
-                    "r0_m": 0.16,
-                    "L0_m": 25.0,
-                    "cn2_heights_m": np.array([0.0, 5000.0], dtype=float),
-                    "cn2_weights": np.array([0.6, 0.4], dtype=float),
-                    "wind_speed_mps": np.array([5.0, 10.0], dtype=float),
-                    "wind_direction_deg": np.array([0.0, 90.0], dtype=float),
+                    "r0": 0.16 * u.m,
+                    "L0": 25.0 * u.m,
+                    "cn2_heights": np.array([0.0, 5000.0], dtype=float) * u.m,
+                    "cn2_weights": np.array([0.6, 0.4], dtype=float) * u.one,
+                    "wind_speed": np.array([5.0, 10.0], dtype=float) * u.m / u.s,
+                    "wind_direction": np.array([0.0, 90.0], dtype=float) * u.deg,
                 }
             },
         },
         {
-            "wavelength_um": np.full((1,), 1.65, dtype=float),
+            "wavelength": np.full((1,), 1.65, dtype=float) * u.um,
             "atm_profile_id": np.zeros((1,), dtype=np.int32),
-            "zenith_angle_deg": np.full((1,), 20.0, dtype=float),
-            "r0_m": np.full((1,), 0.16, dtype=float),
-            "ngs_r_arcsec": np.ones((1, 3), dtype=float),
-            "ngs_theta_deg": np.zeros((1, 3), dtype=float),
-            "ngs_mag": np.full((1, 3), 15.0, dtype=float),
+            "zenith_angle": np.full((1,), 20.0, dtype=float) * u.deg,
+            "r0": np.full((1,), 0.16, dtype=float) * u.m,
+            "ngs_r": np.ones((1, 3), dtype=float) * u.arcsec,
+            "ngs_theta": np.zeros((1, 3), dtype=float) * u.deg,
+            "ngs_magnitude": np.full((1, 3), 15.0, dtype=float) * u.mag,
         },
         save_psfs=save_psfs,
     )
@@ -1394,11 +1475,11 @@ def _write_single_analysis_result(store: SimulationStore, *, save_psfs: bool) ->
             stats={
                 schema.KEY_STATS_SR: np.array([0.1, 0.2, 0.3], dtype=np.float32),
                 schema.KEY_STATS_EE: np.full((3, 2), 0.5, dtype=np.float32),
-                schema.KEY_STATS_FWHM_MAS: np.full((3,), 60.0, dtype=np.float32),
+                schema.KEY_STATS_FWHM: np.full((3,), 60.0, dtype=np.float32),
             },
             meta={
-                schema.KEY_META_PIXEL_SCALE_MAS: 4.0,
-                schema.KEY_META_TEL_DIAMETER_M: 8.0,
+                schema.KEY_META_PIXEL_SCALE: 4.0,
+                schema.KEY_META_TEL_DIAMETER: 8.0,
                 schema.KEY_META_TEL_PUPIL: np.ones((6, 6), dtype=np.float32),
             },
         ),

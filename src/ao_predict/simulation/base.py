@@ -7,14 +7,15 @@ from dataclasses import dataclass, replace
 from typing import Any, Mapping, TypeVar
 
 import numpy as np
+from astropy import units as u
 
 from . import schema
 from . import atm
 from .coordinates import resolve_science_coordinates
-from .helpers import _MISSING, get_num_sci, select_mapping_value
+from .helpers import _MISSING, select_mapping_value
 from .interfaces import Simulation, SimulationContext, SimulationResult, SimulationSetup, SimulationState
 from .stats import clip_and_sum_normalize_psfs
-from ..utils import as_array_dict, as_float_vector
+from .._units import quantity_value, require_quantity, unit_string
 
 
 @dataclass(frozen=True)
@@ -26,7 +27,7 @@ class BaseSimulationSetup(SimulationSetup):
     inputs from magnitudes.
     """
 
-    ngs_mag_zeropoint: float
+    ngs_magnitude_zeropoint: u.Quantity
 
 
 @dataclass(frozen=True)
@@ -38,9 +39,9 @@ class PsfParameters:
     for persistence and core post-processing.
     """
 
-    pixel_scale_mas: float
-    tel_diameter_m: float
-    tel_pupil: np.ndarray
+    pixel_scale: u.Quantity
+    tel_diameter: u.Quantity
+    tel_pupil: u.Quantity
 
 
 TBaseSetup = TypeVar("TBaseSetup", bound=BaseSimulationSetup)
@@ -80,7 +81,10 @@ def _normalize_diagnostic_field_specs(fields: Any, *, prefix: str = "") -> dict[
                 elif not isinstance(shape_value, str):
                     shape_value = int(shape_value)
                 shape_values.append(shape_value)
-            specs[field_name] = {"dtype": dtype, "shape": shape_values}
+            spec = {"dtype": dtype, "shape": shape_values}
+            if "unit" in value:
+                spec["unit"] = unit_string(value["unit"])
+            specs[field_name] = spec
         else:
             specs.update(_normalize_diagnostic_field_specs(value, prefix=name))
     return specs
@@ -100,18 +104,18 @@ class BaseSimulation(Simulation, ABC):
     runtime execution, and extraction of backend outputs.
     """
 
-    KEY_SETUP_LGS_R_ARCSEC = "lgs_r_arcsec"
-    KEY_SETUP_LGS_THETA_DEG = "lgs_theta_deg"
-    KEY_SETUP_NGS_MAG_ZEROPOINT = "ngs_mag_zeropoint"
+    KEY_SETUP_LGS_R = schema.KEY_SETUP_LGS_R
+    KEY_SETUP_LGS_THETA = schema.KEY_SETUP_LGS_THETA
+    KEY_SETUP_NGS_MAGNITUDE_ZEROPOINT = schema.KEY_SETUP_NGS_MAGNITUDE_ZEROPOINT
 
     SETUP_KEYS_BASE = (
-        schema.KEY_SETUP_ATM_WAVELENGTH_UM,
+        schema.KEY_SETUP_ATM_WAVELENGTH,
         schema.KEY_SETUP_ATM_PROFILES,
-        KEY_SETUP_LGS_R_ARCSEC,
-        KEY_SETUP_LGS_THETA_DEG,
-        KEY_SETUP_NGS_MAG_ZEROPOINT,
-        schema.KEY_SETUP_SCI_R_ARCSEC,
-        schema.KEY_SETUP_SCI_THETA_DEG,
+        KEY_SETUP_LGS_R,
+        KEY_SETUP_LGS_THETA,
+        KEY_SETUP_NGS_MAGNITUDE_ZEROPOINT,
+        schema.KEY_SETUP_SCI_R,
+        schema.KEY_SETUP_SCI_THETA,
     )
     # Construction and properties
 
@@ -136,7 +140,7 @@ class BaseSimulation(Simulation, ABC):
     def ngs_mag_standard(self) -> str:
         """Return the default ``R`` standard for persisted NGS magnitudes.
 
-        Subclasses whose ``options/ngs_mag`` values use another photometric
+        Subclasses whose ``options/ngs_magnitude`` values use another photometric
         standard must override this property.
         """
         return schema.DEFAULT_NGS_MAG_STANDARD
@@ -186,7 +190,9 @@ class BaseSimulation(Simulation, ABC):
         )
         payload[schema.KEY_SIMULATION_DIAGNOSTICS_LEVEL] = diagnostics_level
         if diagnostics_level != schema.DIAGNOSTICS_LEVEL_NONE:
-            diagnostic_fields = dict(self._diagnostic_field_specs(diagnostics_level))
+            diagnostic_fields = _normalize_diagnostic_field_specs(
+                self._diagnostic_field_specs(diagnostics_level)
+            )
             if not diagnostic_fields:
                 raise ValueError(f"{type(self).__name__} diagnostics_level={diagnostics_level!r} declared no diagnostics fields.")
             payload[schema.KEY_SIMULATION_DIAGNOSTIC_FIELDS] = diagnostic_fields
@@ -281,7 +287,7 @@ class BaseSimulation(Simulation, ABC):
         self,
         base_setup_payload: Mapping[str, Any],
         setup_cfg: Mapping[str, Any],
-        atm_wavelength_um: float | None,
+        atm_wavelength: u.Quantity | None,
         *,
         _default_atm_profile: Mapping[str, Any] | None = None,
     ) -> dict[int, dict[str, Any]]:
@@ -303,40 +309,47 @@ class BaseSimulation(Simulation, ABC):
             for profile_id, profile in parsed_defaults.items():
                 profiles[int(profile_id)] = dict(profile)
 
-        profiles = atm.normalize_atm_profiles_with_seeing_alias(profiles, atm_wavelength_um)
+        profiles = atm.normalize_atm_profiles_with_seeing_alias(profiles, atm_wavelength)
         atm.validate_standard_atm_profiles(profiles)
         return profiles
 
     @classmethod
     def _validate_base_setup(cls, setup: BaseSimulationSetup) -> None:
         """Validate shared semantic constraints on a typed base setup object."""
-        lgs_r = as_float_vector(setup.lgs_r_arcsec, label=cls.KEY_SETUP_LGS_R_ARCSEC)
-        lgs_theta = as_float_vector(setup.lgs_theta_deg, label=cls.KEY_SETUP_LGS_THETA_DEG)
+        lgs_r = quantity_value(setup.lgs_r, u.arcsec, label=cls.KEY_SETUP_LGS_R, dtype=float).reshape(-1)
+        lgs_theta = quantity_value(setup.lgs_theta, u.deg, label=cls.KEY_SETUP_LGS_THETA, dtype=float).reshape(-1)
         cls._validate_base_setup_values(
-            ngs_mag_zeropoint=setup.ngs_mag_zeropoint,
-            lgs_r_arcsec=lgs_r,
-            lgs_theta_deg=lgs_theta,
+            ngs_magnitude_zeropoint=setup.ngs_magnitude_zeropoint,
+            lgs_r=lgs_r,
+            lgs_theta=lgs_theta,
             atm_profiles=setup.atm_profiles,
         )
 
     @classmethod
     def _validate_base_setup_values(
         cls,
-        ngs_mag_zeropoint: float,
-        lgs_r_arcsec: np.ndarray,
-        lgs_theta_deg: np.ndarray,
+        ngs_magnitude_zeropoint: u.Quantity,
+        lgs_r: np.ndarray,
+        lgs_theta: np.ndarray,
         atm_profiles: Mapping[int, Mapping[str, Any]],
     ) -> None:
         """Validate normalized shared setup values before persistence or binding."""
-        ngs_mag_zeropoint = float(ngs_mag_zeropoint)
-        if not np.isfinite(ngs_mag_zeropoint) or ngs_mag_zeropoint <= 0.0:
-            raise ValueError(f"setup['{cls.KEY_SETUP_NGS_MAG_ZEROPOINT}'] must be a positive finite scalar.")
+        ngs_magnitude_zeropoint = float(
+            quantity_value(
+                ngs_magnitude_zeropoint,
+                u.photon / u.s,
+                label=cls.KEY_SETUP_NGS_MAGNITUDE_ZEROPOINT,
+                dtype=float,
+            ).item()
+        )
+        if not np.isfinite(ngs_magnitude_zeropoint) or ngs_magnitude_zeropoint <= 0.0:
+            raise ValueError(f"setup['{cls.KEY_SETUP_NGS_MAGNITUDE_ZEROPOINT}'] must be a positive finite scalar.")
 
-        if lgs_r_arcsec.shape != lgs_theta_deg.shape:
+        if lgs_r.shape != lgs_theta.shape:
             raise ValueError(
-                f"setup['{cls.KEY_SETUP_LGS_R_ARCSEC}'] and setup['{cls.KEY_SETUP_LGS_THETA_DEG}'] must have identical shape."
+                f"setup['{cls.KEY_SETUP_LGS_R}'] and setup['{cls.KEY_SETUP_LGS_THETA}'] must have identical shape."
             )
-        if lgs_r_arcsec.size > 0 and (not np.all(np.isfinite(lgs_r_arcsec)) or not np.all(np.isfinite(lgs_theta_deg))):
+        if lgs_r.size > 0 and (not np.all(np.isfinite(lgs_r)) or not np.all(np.isfinite(lgs_theta))):
             raise ValueError("setup LGS coordinates must be finite.")
 
         atm.validate_standard_atm_profiles(atm_profiles)
@@ -346,12 +359,12 @@ class BaseSimulation(Simulation, ABC):
         base_setup_payload: Mapping[str, Any],
         setup_cfg: Mapping[str, Any],
         *,
-        default_atm_wavelength_um: Any = _MISSING,
+        default_atm_wavelength: Any = _MISSING,
         default_atm_profile: Mapping[str, Any] | None = None,
-        default_lgs_r_arcsec: Any = _MISSING,
-        default_lgs_theta_deg: Any = _MISSING,
-        default_sci_r_arcsec: Any = _MISSING,
-        default_sci_theta_deg: Any = _MISSING,
+        default_lgs_r: Any = _MISSING,
+        default_lgs_theta: Any = _MISSING,
+        default_sci_r: Any = _MISSING,
+        default_sci_theta: Any = _MISSING,
         default_ngs_mag_zeropoint: Any = None,
     ) -> dict[str, Any]:
         """Build, validate, and serialize setup payload using shared base fields.
@@ -359,78 +372,82 @@ class BaseSimulation(Simulation, ABC):
         This build path is persistence-oriented and intentionally does not
         require simulation-specific setup subclasses.
         """
-        ee_apertures_mas = select_mapping_value(
+        ee_apertures = select_mapping_value(
             base_setup_payload,
             setup_cfg,
-            schema.KEY_SETUP_EE_APERTURES_MAS,
+            schema.KEY_SETUP_EE_APERTURES,
         )
 
-        atm_wavelength_um = select_mapping_value(
+        atm_wavelength = select_mapping_value(
             base_setup_payload,
             setup_cfg,
-            schema.KEY_SETUP_ATM_WAVELENGTH_UM,
-            default=default_atm_wavelength_um,
+            schema.KEY_SETUP_ATM_WAVELENGTH,
+            default=default_atm_wavelength,
         )
         atm_profiles = self._build_atm_profiles(
             base_setup_payload,
             setup_cfg,
-            float(atm_wavelength_um) if atm_wavelength_um is not None else None,
+            require_quantity(atm_wavelength, u.um, label=schema.KEY_SETUP_ATM_WAVELENGTH) if atm_wavelength is not None else None,
             _default_atm_profile=default_atm_profile,
         )
 
-        lgs_r_arcsec = select_mapping_value(
+        lgs_r = select_mapping_value(
             base_setup_payload,
             setup_cfg,
-            self.KEY_SETUP_LGS_R_ARCSEC,
-            default=default_lgs_r_arcsec,
+            self.KEY_SETUP_LGS_R,
+            default=default_lgs_r,
         )
-        lgs_theta_deg = select_mapping_value(
+        lgs_theta = select_mapping_value(
             base_setup_payload,
             setup_cfg,
-            self.KEY_SETUP_LGS_THETA_DEG,
-            default=default_lgs_theta_deg,
+            self.KEY_SETUP_LGS_THETA,
+            default=default_lgs_theta,
         )
 
-        ngs_mag_zeropoint = select_mapping_value(
+        ngs_magnitude_zeropoint = select_mapping_value(
             base_setup_payload,
             setup_cfg,
-            self.KEY_SETUP_NGS_MAG_ZEROPOINT,
+            self.KEY_SETUP_NGS_MAGNITUDE_ZEROPOINT,
             default=default_ngs_mag_zeropoint,
         )
-        if ngs_mag_zeropoint is None:
-            raise ValueError(f"{type(self).__name__} requires setup['{self.KEY_SETUP_NGS_MAG_ZEROPOINT}'].")
+        if ngs_magnitude_zeropoint is None:
+            raise ValueError(f"{type(self).__name__} requires setup['{self.KEY_SETUP_NGS_MAGNITUDE_ZEROPOINT}'].")
 
-        sci_r_arcsec = select_mapping_value(
+        sci_r = select_mapping_value(
             base_setup_payload,
             setup_cfg,
-            schema.KEY_SETUP_SCI_R_ARCSEC,
-            default=default_sci_r_arcsec,
+            schema.KEY_SETUP_SCI_R,
+            default=default_sci_r,
         )
-        sci_theta_deg = select_mapping_value(
+        sci_theta = select_mapping_value(
             base_setup_payload,
             setup_cfg,
-            schema.KEY_SETUP_SCI_THETA_DEG,
-            default=default_sci_theta_deg,
+            schema.KEY_SETUP_SCI_THETA,
+            default=default_sci_theta,
         )
 
-        ee_apertures_mas = as_float_vector(ee_apertures_mas, label=schema.KEY_SETUP_EE_APERTURES_MAS)
-        atm_wavelength_um_scalar = float(atm_wavelength_um)
+        ee_apertures = require_quantity(ee_apertures, u.mas, label=schema.KEY_SETUP_EE_APERTURES)
+        atm_wavelength_quantity = require_quantity(atm_wavelength, u.um, label=schema.KEY_SETUP_ATM_WAVELENGTH)
         atm_profiles_map = {int(k): dict(v) for k, v in atm_profiles.items()}
-        lgs_r_arcsec = as_float_vector(lgs_r_arcsec, label=self.KEY_SETUP_LGS_R_ARCSEC)
-        lgs_theta_deg = as_float_vector(lgs_theta_deg, label=self.KEY_SETUP_LGS_THETA_DEG)
-        ngs_mag_zeropoint_scalar = float(ngs_mag_zeropoint)
-        sci_r_arcsec = as_float_vector(sci_r_arcsec, label=schema.KEY_SETUP_SCI_R_ARCSEC)
-        sci_theta_deg = as_float_vector(sci_theta_deg, label=schema.KEY_SETUP_SCI_THETA_DEG)
+        lgs_r = require_quantity(lgs_r, u.arcsec, label=self.KEY_SETUP_LGS_R)
+        lgs_theta = require_quantity(lgs_theta, u.deg, label=self.KEY_SETUP_LGS_THETA)
+        ngs_magnitude_zeropoint = require_quantity(
+            ngs_magnitude_zeropoint,
+            u.photon / u.s,
+            label=self.KEY_SETUP_NGS_MAGNITUDE_ZEROPOINT,
+        )
+        sci_r = require_quantity(sci_r, u.arcsec, label=schema.KEY_SETUP_SCI_R)
+        sci_theta = require_quantity(sci_theta, u.deg, label=schema.KEY_SETUP_SCI_THETA)
 
         self._validate_base_setup_values(
-            ngs_mag_zeropoint_scalar,
-            lgs_r_arcsec,
-            lgs_theta_deg,
+            ngs_magnitude_zeropoint,
+            lgs_r,
+            lgs_theta,
             atm_profiles_map,
         )
 
         return {
-            schema.KEY_SETUP_EE_APERTURES_MAS: ee_apertures_mas,
+            schema.KEY_SETUP_EE_APERTURES: ee_apertures,
             schema.KEY_SETUP_SR_METHOD: str(
                 select_mapping_value(
                     base_setup_payload,
@@ -455,13 +472,13 @@ class BaseSimulation(Simulation, ABC):
                     default=schema.DEFAULT_SETUP_EE_GEOMETRY,
                 )
             ).strip(),
-            schema.KEY_SETUP_ATM_WAVELENGTH_UM: atm_wavelength_um_scalar,
+            schema.KEY_SETUP_ATM_WAVELENGTH: atm_wavelength_quantity,
             schema.KEY_SETUP_ATM_PROFILES: atm_profiles_map,
-            self.KEY_SETUP_LGS_R_ARCSEC: lgs_r_arcsec,
-            self.KEY_SETUP_LGS_THETA_DEG: lgs_theta_deg,
-            self.KEY_SETUP_NGS_MAG_ZEROPOINT: ngs_mag_zeropoint_scalar,
-            schema.KEY_SETUP_SCI_R_ARCSEC: sci_r_arcsec,
-            schema.KEY_SETUP_SCI_THETA_DEG: sci_theta_deg,
+            self.KEY_SETUP_LGS_R: lgs_r,
+            self.KEY_SETUP_LGS_THETA: lgs_theta,
+            self.KEY_SETUP_NGS_MAGNITUDE_ZEROPOINT: ngs_magnitude_zeropoint,
+            schema.KEY_SETUP_SCI_R: sci_r,
+            schema.KEY_SETUP_SCI_THETA: sci_theta,
         }
 
     def _parse_base_setup_payload(
@@ -470,29 +487,20 @@ class BaseSimulation(Simulation, ABC):
         setup_cls: type[TBaseSetup],
     ) -> TBaseSetup:
         """Deserialize and validate shared setup fields into ``setup_cls``."""
-        lgs_r_raw = setup_payload.get(self.KEY_SETUP_LGS_R_ARCSEC, [])
-        lgs_theta_raw = setup_payload.get(self.KEY_SETUP_LGS_THETA_DEG, [])
+        lgs_r_raw = setup_payload.get(self.KEY_SETUP_LGS_R, [])
+        lgs_theta_raw = setup_payload.get(self.KEY_SETUP_LGS_THETA, [])
         setup = setup_cls(
-            ee_apertures_mas=as_float_vector(
-                setup_payload[schema.KEY_SETUP_EE_APERTURES_MAS],
-                label=schema.KEY_SETUP_EE_APERTURES_MAS,
-            ),
+            ee_apertures=require_quantity(setup_payload[schema.KEY_SETUP_EE_APERTURES], u.mas, label=schema.KEY_SETUP_EE_APERTURES),
             sr_method=str(setup_payload[schema.KEY_SETUP_SR_METHOD]).strip(),
             fwhm_summary=str(setup_payload[schema.KEY_SETUP_FWHM_SUMMARY]).strip(),
             ee_geometry=str(setup_payload[schema.KEY_SETUP_EE_GEOMETRY]).strip(),
-            atm_wavelength_um=float(setup_payload[schema.KEY_SETUP_ATM_WAVELENGTH_UM]),
+            atm_wavelength=require_quantity(setup_payload[schema.KEY_SETUP_ATM_WAVELENGTH], u.um, label=schema.KEY_SETUP_ATM_WAVELENGTH),
             atm_profiles=atm.parse_atm_profiles(setup_payload[schema.KEY_SETUP_ATM_PROFILES]),
-            lgs_r_arcsec=as_float_vector(lgs_r_raw, label=self.KEY_SETUP_LGS_R_ARCSEC),
-            lgs_theta_deg=as_float_vector(lgs_theta_raw, label=self.KEY_SETUP_LGS_THETA_DEG),
-            ngs_mag_zeropoint=float(setup_payload[self.KEY_SETUP_NGS_MAG_ZEROPOINT]),
-            sci_r_arcsec=as_float_vector(
-                setup_payload[schema.KEY_SETUP_SCI_R_ARCSEC],
-                label=schema.KEY_SETUP_SCI_R_ARCSEC,
-            ),
-            sci_theta_deg=as_float_vector(
-                setup_payload[schema.KEY_SETUP_SCI_THETA_DEG],
-                label=schema.KEY_SETUP_SCI_THETA_DEG,
-            ),
+            lgs_r=require_quantity(lgs_r_raw, u.arcsec, label=self.KEY_SETUP_LGS_R),
+            lgs_theta=require_quantity(lgs_theta_raw, u.deg, label=self.KEY_SETUP_LGS_THETA),
+            ngs_magnitude_zeropoint=require_quantity(setup_payload[self.KEY_SETUP_NGS_MAGNITUDE_ZEROPOINT], u.photon / u.s, label=self.KEY_SETUP_NGS_MAGNITUDE_ZEROPOINT),
+            sci_r=require_quantity(setup_payload[schema.KEY_SETUP_SCI_R], u.arcsec, label=schema.KEY_SETUP_SCI_R),
+            sci_theta=require_quantity(setup_payload[schema.KEY_SETUP_SCI_THETA], u.deg, label=schema.KEY_SETUP_SCI_THETA),
         )
         self._validate_base_setup(setup)
         return setup
@@ -563,7 +571,7 @@ class BaseSimulation(Simulation, ABC):
         base_options_payload: Mapping[str, Any],
         *,
         default_options: Mapping[str, Any] | None = None,
-    ) -> dict[str, np.ndarray]:
+    ) -> dict[str, np.ndarray | u.Quantity]:
         """Build a complete persisted ``/options`` payload from partial inputs.
 
         This shared builder fills missing 1D option keys from scalar defaults,
@@ -589,17 +597,35 @@ class BaseSimulation(Simulation, ABC):
             raise ValueError("num_sims must be > 0.")
         default_options = dict(default_options or {})
 
-        options_payload: dict[str, np.ndarray] = as_array_dict(base_options_payload, copy_arrays=True)
+        options_payload: dict[str, Any] = {}
+        for key, value in base_options_payload.items():
+            unit = schema.OPTION_FIELD_UNITS.get(str(key))
+            if unit is None:
+                options_payload[str(key)] = np.asarray(value).copy()
+            else:
+                options_payload[str(key)] = quantity_value(
+                    value,
+                    unit,
+                    label=f"options.{key}",
+                ).copy() * unit
 
         for key, value in default_options.items():
             if key not in options_payload:
-                value = np.asarray(value)
-                dtype = value.dtype if value.ndim == 0 else float
-                options_payload[key] = np.full((num_sims,), value, dtype=dtype)
+                unit = schema.OPTION_FIELD_UNITS.get(key)
+                if unit is None:
+                    raw = np.asarray(value)
+                    dtype = raw.dtype if raw.ndim == 0 else float
+                    options_payload[key] = np.full((num_sims,), raw, dtype=dtype)
+                else:
+                    raw = quantity_value(value, unit, label=f"default options.{key}")
+                    options_payload[key] = np.full((num_sims,), raw.item(), dtype=float) * unit
 
         for key in schema.OPTION_KEYS_NGS:
             if key in options_payload:
-                options_payload[key] = np.asarray(options_payload[key], dtype=float)
+                unit = schema.OPTION_FIELD_UNITS[key]
+                options_payload[key] = quantity_value(
+                    options_payload[key], unit, label=f"options.{key}", dtype=float
+                ) * unit
 
         if schema.KEY_OPTION_ATM_PROFILE_ID in options_payload:
             options_payload[schema.KEY_OPTION_ATM_PROFILE_ID] = np.asarray(
@@ -654,25 +680,25 @@ class BaseSimulation(Simulation, ABC):
         """
         options_row = dict(options)
         setup = self.setup
-        resolved_sci_r_arcsec = setup.sci_r_arcsec
-        resolved_sci_theta_deg = setup.sci_theta_deg
+        resolved_sci_r = setup.sci_r
+        resolved_sci_theta = setup.sci_theta
         runtime_setup = setup
         if any(key in options_row for key in schema.OPTION_KEYS_SCI_OFFSETS):
             science = resolve_science_coordinates(setup, options_row)
-            resolved_sci_r_arcsec = science.r_arcsec
-            resolved_sci_theta_deg = science.theta_deg
+            resolved_sci_r = science.r
+            resolved_sci_theta = science.theta
             runtime_setup = replace(
                 setup,
-                sci_r_arcsec=resolved_sci_r_arcsec,
-                sci_theta_deg=resolved_sci_theta_deg,
+                sci_r=resolved_sci_r,
+                sci_theta=resolved_sci_theta,
             )
         runtime = self._create_runtime_context(index=int(index), options=options_row, setup=runtime_setup)
         return SimulationContext(
             index=int(index),
             setup=setup,
             options=options_row,
-            resolved_sci_r_arcsec=resolved_sci_r_arcsec,
-            resolved_sci_theta_deg=resolved_sci_theta_deg,
+            resolved_sci_r=resolved_sci_r,
+            resolved_sci_theta=resolved_sci_theta,
             runtime=runtime,
         )
 
@@ -684,16 +710,16 @@ class BaseSimulation(Simulation, ABC):
         implementations that need the effective science field can use this
         helper without changing the context's setup contract.
         """
-        resolved_r = context.resolved_sci_r_arcsec
-        resolved_theta = context.resolved_sci_theta_deg
+        resolved_r = context.resolved_sci_r
+        resolved_theta = context.resolved_sci_theta
         if resolved_r is None and resolved_theta is None:
             return context.setup
         if resolved_r is None or resolved_theta is None:
             raise ValueError("SimulationContext resolved science coordinates must be provided together.")
         return replace(
             context.setup,
-            sci_r_arcsec=resolved_r,
-            sci_theta_deg=resolved_theta,
+            sci_r=resolved_r,
+            sci_theta=resolved_theta,
         )
 
     @abstractmethod
@@ -760,8 +786,8 @@ class BaseSimulation(Simulation, ABC):
             state=SimulationState.SUCCEEDED,
             psfs=psfs,
             meta={
-                schema.KEY_META_PIXEL_SCALE_MAS: np.float32(psf_parameters.pixel_scale_mas),
-                schema.KEY_META_TEL_DIAMETER_M: np.float32(psf_parameters.tel_diameter_m),
+                schema.KEY_META_PIXEL_SCALE: psf_parameters.pixel_scale.to(u.mas),
+                schema.KEY_META_TEL_DIAMETER: psf_parameters.tel_diameter.to(u.m),
                 schema.KEY_META_TEL_PUPIL: psf_parameters.tel_pupil,
             },
             diagnostics=dict(self._extract_diagnostics(context)),

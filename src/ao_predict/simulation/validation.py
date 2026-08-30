@@ -10,17 +10,18 @@ import re
 from typing import Any, Mapping
 
 import numpy as np
+from astropy import units as u
+
+from .._units import parse_unit, quantity_value, unit_string
 from . import schema
 from .interfaces import SimulationResult, SimulationState
 from ..utils import (
     as_array,
-    as_float_matrix,
     as_float_scalar,
-    as_float_vector,
     require_keys,
 )
 
-_META_FIELD_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_DIRECT_FIELD_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 #
@@ -31,22 +32,22 @@ def validate_simulation_payload_core(
     simulation: Mapping[str, Any],
     expected_name: str | None = None,
     expected_version: str | None = None,
-    expected_extra_stat_names: tuple[str, ...] | None = None,
+    expected_extra_stat_fields: Mapping[str, u.UnitBase] | None = None,
     *,
     expected_ngs_mag_standard: str | None = None,
 ) -> None:
     """Validate the complete current ``/simulation`` payload contract.
 
-    This strict validator requires every current core field and does not apply
-    legacy upgrades. Load paths that accept recognized legacy payloads should
-    use :func:`resolve_simulation_payload_for_load`.
+    This strict validator requires every current core field. Load paths use
+    the same final-contract validation and do not apply representation
+    upgrades.
 
     Args:
         simulation: Candidate ``/simulation`` payload mapping.
         expected_name: Optional simulation class ``name`` expected by the caller.
         expected_version: Optional simulation class ``version`` expected by the caller.
-        expected_extra_stat_names: Optional declared simulation-owned extra stat
-            names expected by the caller.
+        expected_extra_stat_fields: Optional declared simulation-owned extra
+            statistic units expected by the caller.
         expected_ngs_mag_standard: Optional NGS magnitude standard declared by
             the simulation implementation.
 
@@ -97,54 +98,31 @@ def validate_simulation_payload_core(
             f"declares {expected_ngs_mag_standard!r}."
         )
 
-    extra_stat_names = as_array(simulation.get(schema.KEY_SIMULATION_EXTRA_STAT_NAMES, ()))
-    if extra_stat_names.ndim > 1:
-        raise ValueError(
-            f"simulation['{schema.KEY_SIMULATION_EXTRA_STAT_NAMES}'] must be a scalar or 1D string array."
-        )
-    extra_stat_names = tuple(str(name).strip() for name in np.asarray(extra_stat_names).reshape(-1).tolist())
-
-    if any(not name for name in extra_stat_names):
-        raise ValueError(f"simulation['{schema.KEY_SIMULATION_EXTRA_STAT_NAMES}'] must not contain empty names.")
-
-    duplicate_extra_stat_names = sorted({name for name in extra_stat_names if extra_stat_names.count(name) > 1})
-    if duplicate_extra_stat_names:
-        raise ValueError(
-            f"simulation['{schema.KEY_SIMULATION_EXTRA_STAT_NAMES}'] contains duplicate names: {duplicate_extra_stat_names}."
-        )
+    extra_stat_fields = normalize_unit_field_mapping(
+        simulation[schema.KEY_SIMULATION_EXTRA_STAT_FIELDS],
+        label=f"simulation['{schema.KEY_SIMULATION_EXTRA_STAT_FIELDS}']",
+    )
+    extra_stat_names = tuple(extra_stat_fields)
 
     core_stat_names = set(schema.CORE_STATS_KEYS)
     collision_extra_stat_names = sorted(name for name in extra_stat_names if name in core_stat_names)
     if collision_extra_stat_names:
         raise ValueError(
-            f"simulation['{schema.KEY_SIMULATION_EXTRA_STAT_NAMES}'] collides with core stats: {collision_extra_stat_names}."
+            f"simulation['{schema.KEY_SIMULATION_EXTRA_STAT_FIELDS}'] collides with core stats: {collision_extra_stat_names}."
         )
 
-    if expected_extra_stat_names is not None and extra_stat_names != tuple(expected_extra_stat_names):
+    if expected_extra_stat_fields is not None:
+        expected = normalize_unit_field_mapping(expected_extra_stat_fields, label="simulation implementation extra_stat_fields")
+    else:
+        expected = None
+    if expected is not None and extra_stat_fields != expected:
         raise ValueError(
             "Simulation payload extra stat registry mismatch: "
-            f"payload has {list(extra_stat_names)}, "
-            f"but instantiated simulation declares {list(expected_extra_stat_names)}."
+            f"payload has {extra_stat_fields}, "
+            f"but instantiated simulation declares {expected}."
         )
 
-    normalize_meta_field_names(simulation.get(schema.KEY_SIMULATION_META_FIELDS, ()))
-
-
-def _upgrade_legacy_simulation_payload(
-    simulation: Mapping[str, Any],
-) -> dict[str, Any] | None:
-    """Return an upgraded legacy payload copy or ``None`` when no upgrade applies.
-
-    The only recognized legacy shape currently lacks
-    ``/simulation/ngs_mag_standard``. The upgrade supplies the historical ``R``
-    default without mutating the caller's mapping or persisted dataset. The
-    returned payload still requires current-contract validation.
-    """
-    if schema.KEY_SIMULATION_NGS_MAG_STANDARD in simulation:
-        return None
-    upgraded = dict(simulation)
-    upgraded[schema.KEY_SIMULATION_NGS_MAG_STANDARD] = schema.DEFAULT_NGS_MAG_STANDARD
-    return upgraded
+    normalize_meta_fields(simulation.get(schema.KEY_SIMULATION_META_FIELDS, {}))
 
 
 def resolve_simulation_payload_for_load(
@@ -152,54 +130,63 @@ def resolve_simulation_payload_for_load(
     *,
     expected_name: str | None = None,
     expected_version: str | None = None,
-    expected_extra_stat_names: tuple[str, ...] | None = None,
+    expected_extra_stat_fields: Mapping[str, u.UnitBase] | None = None,
     expected_ngs_mag_standard: str | None = None,
 ) -> dict[str, Any]:
-    """Return a current, validated payload, upgrading recognized legacy input.
-
-    Validation always targets the current persisted contract first. If that
-    fails and the payload predates ``ngs_mag_standard``, an in-memory copy is
-    completed with the historical ``R`` default and validated again. The
-    supplied mapping and persisted dataset are never mutated.
+    """Return a validated copy of the final simulation payload.
 
     Args:
-        simulation: Candidate current or legacy ``/simulation`` payload.
+        simulation: Candidate final-contract ``/simulation`` payload.
         expected_name: Optional simulation class name expected by the caller.
         expected_version: Optional simulation class version expected by the caller.
-        expected_extra_stat_names: Optional simulation-owned extra-stat names
-            expected by the caller.
+        expected_extra_stat_fields: Optional simulation-owned extra-stat units.
         expected_ngs_mag_standard: Optional NGS magnitude standard expected by
             the caller.
 
     Returns:
-        A validated current-contract copy of ``simulation``.
-
+        A validated final-contract copy of ``simulation``.
     Raises:
-        ValueError: If neither the current nor recognized legacy payload is valid.
+        ValueError: If the payload does not satisfy the final contract.
         TypeError: If a field has an invalid type.
     """
-    try:
-        validate_simulation_payload_core(
-            simulation,
-            expected_name=expected_name,
-            expected_version=expected_version,
-            expected_extra_stat_names=expected_extra_stat_names,
-            expected_ngs_mag_standard=expected_ngs_mag_standard,
-        )
-        return dict(simulation)
-    except (TypeError, ValueError):
-        upgraded = _upgrade_legacy_simulation_payload(simulation)
-        if upgraded is None:
-            raise
-
     validate_simulation_payload_core(
-        upgraded,
+        simulation,
         expected_name=expected_name,
         expected_version=expected_version,
-        expected_extra_stat_names=expected_extra_stat_names,
+        expected_extra_stat_fields=expected_extra_stat_fields,
         expected_ngs_mag_standard=expected_ngs_mag_standard,
     )
-    return upgraded
+    return dict(simulation)
+
+
+def normalize_unit_field_mapping(value: Any, *, label: str) -> dict[str, str]:
+    """Return an insertion-ordered name-to-generic-unit mapping."""
+    if not isinstance(value, Mapping):
+        raise TypeError(f"{label} must be a mapping from field names to units.")
+    normalized: dict[str, str] = {}
+    for raw_name, raw_unit in value.items():
+        name = validate_direct_dataset_field_name(raw_name, label=label)
+        if name in normalized:
+            raise ValueError(f"{label} contains duplicate field name {name!r} after normalization.")
+        normalized[name] = unit_string(parse_unit(raw_unit, label=f"{label}[{name!r}]"))
+    return normalized
+
+
+def validate_direct_dataset_field_name(name: Any, *, label: str) -> str:
+    """Return one validated direct HDF5 dataset field name."""
+    if not isinstance(name, str):
+        raise TypeError(f"{label} names must be strings.")
+    normalized = name.strip()
+    if not normalized:
+        raise ValueError(f"{label} names must be non-empty.")
+    if "/" in normalized:
+        raise ValueError(f"{label} names must be direct dataset names, got {normalized!r}.")
+    if not _DIRECT_FIELD_NAME_RE.match(normalized):
+        raise ValueError(
+            f"{label} name {normalized!r} must start with a letter or underscore "
+            "and contain only letters, digits, and underscores."
+        )
+    return normalized
 
 
 def validate_meta_field_name(name: Any, *, label: str = "meta field") -> str:
@@ -208,35 +195,37 @@ def validate_meta_field_name(name: Any, *, label: str = "meta field") -> str:
     Extra meta fields are direct children of the persisted ``/meta`` group and
     carry one scalar value per simulation. Names therefore use the same simple
     key grammar as core metadata and may not collide with core AO Predict meta
-    fields such as ``pixel_scale_mas``.
+    fields such as ``pixel_scale``.
     """
 
-    normalized = str(name).strip()
-    if not normalized:
-        raise ValueError(f"{label} names must be non-empty.")
-    if "/" in normalized:
-        raise ValueError(f"{label} names must be direct /meta dataset names, got {normalized!r}.")
-    if not _META_FIELD_NAME_RE.match(normalized):
-        raise ValueError(
-            f"{label} name {normalized!r} must start with a letter or underscore "
-            "and contain only letters, digits, and underscores."
-        )
+    normalized = validate_direct_dataset_field_name(name, label=label)
     if normalized in schema.CORE_META_KEYS:
         raise ValueError(f"{label} name {normalized!r} collides with a core /meta field.")
     return normalized
 
 
-def normalize_meta_field_names(value: Any, *, label: str = "simulation['meta_fields']") -> tuple[str, ...]:
-    """Return validated declared scalar ``/meta`` field names."""
+def normalize_meta_fields(
+    value: Any,
+    *,
+    label: str = "simulation['meta_fields']",
+) -> dict[str, str | None]:
+    """Return validated scalar metadata field names and optional units.
 
-    names_array = as_array(value)
-    if names_array.ndim > 1:
-        raise ValueError(f"{label} must be a scalar or 1D string array.")
-    names = tuple(validate_meta_field_name(name, label=label) for name in names_array.reshape(-1).tolist())
-    duplicates = sorted({name for name in names if names.count(name) > 1})
-    if duplicates:
-        raise ValueError(f"{label} contains duplicate names: {duplicates}.")
-    return names
+    A unit string declares a physical or scientifically dimensionless scalar.
+    ``None`` declares an ordinary numeric scalar, such as a count, whose
+    persisted dataset must not carry a ``units`` attribute.
+    """
+    if not isinstance(value, Mapping):
+        raise TypeError(f"{label} must be a mapping from field names to units or None.")
+    fields: dict[str, str | None] = {}
+    for raw_name, raw_unit in value.items():
+        name = validate_meta_field_name(raw_name, label=label)
+        fields[name] = (
+            None
+            if raw_unit is None or (isinstance(raw_unit, str) and not raw_unit.strip())
+            else unit_string(parse_unit(raw_unit, label=f"{label}[{name!r}]"))
+        )
+    return fields
 
 
 def validate_setup_payload_core(setup: Mapping[str, Any]) -> None:
@@ -250,12 +239,14 @@ def validate_setup_payload_core(setup: Mapping[str, Any]) -> None:
     """
     require_keys(setup, schema.REQUIRED_SETUP_KEYS, label="setup")
 
-    ee_apertures_mas = as_float_vector(
-        setup[schema.KEY_SETUP_EE_APERTURES_MAS],
-        label=f"setup['{schema.KEY_SETUP_EE_APERTURES_MAS}']",
-    )
-    if ee_apertures_mas.size == 0 or not np.all(np.isfinite(ee_apertures_mas)):
-        raise ValueError("setup['ee_apertures_mas'] must be a non-empty 1D finite array.")
+    ee_apertures = quantity_value(
+        setup[schema.KEY_SETUP_EE_APERTURES],
+        schema.SETUP_FIELD_UNITS[schema.KEY_SETUP_EE_APERTURES],
+        label=f"setup['{schema.KEY_SETUP_EE_APERTURES}']",
+        dtype=float,
+    ).reshape(-1)
+    if ee_apertures.size == 0 or not np.all(np.isfinite(ee_apertures)):
+        raise ValueError("setup['ee_apertures'] must be a non-empty 1D finite array.")
 
     sr_method = str(setup[schema.KEY_SETUP_SR_METHOD]).strip()
     if sr_method not in schema.SETUP_STATS_SR_METHODS:
@@ -281,30 +272,36 @@ def validate_setup_payload_core(setup: Mapping[str, Any]) -> None:
             + "."
         )
 
-    atm_wavelength_um = as_float_scalar(
-        setup[schema.KEY_SETUP_ATM_WAVELENGTH_UM],
-        label=f"setup['{schema.KEY_SETUP_ATM_WAVELENGTH_UM}']",
+    atm_wavelength_array = quantity_value(
+        setup[schema.KEY_SETUP_ATM_WAVELENGTH],
+        schema.SETUP_FIELD_UNITS[schema.KEY_SETUP_ATM_WAVELENGTH],
+        label=f"setup['{schema.KEY_SETUP_ATM_WAVELENGTH}']",
     )
-    if not np.isfinite(atm_wavelength_um) or atm_wavelength_um <= 0.0:
-        raise ValueError(f"setup['{schema.KEY_SETUP_ATM_WAVELENGTH_UM}'] must be a positive finite scalar.")
+    atm_wavelength = as_float_scalar(atm_wavelength_array, label="setup.atm_wavelength")
+    if not np.isfinite(atm_wavelength) or atm_wavelength <= 0.0:
+        raise ValueError(f"setup['{schema.KEY_SETUP_ATM_WAVELENGTH}'] must be a positive finite scalar.")
 
-    sci_r_arcsec = as_float_vector(
-        setup[schema.KEY_SETUP_SCI_R_ARCSEC],
-        label=f"setup['{schema.KEY_SETUP_SCI_R_ARCSEC}']",
-    )
-    sci_theta_deg = as_float_vector(
-        setup[schema.KEY_SETUP_SCI_THETA_DEG],
-        label=f"setup['{schema.KEY_SETUP_SCI_THETA_DEG}']",
-    )
-    if sci_r_arcsec.size == 0 or sci_theta_deg.size == 0:
+    sci_r = quantity_value(
+        setup[schema.KEY_SETUP_SCI_R],
+        schema.SETUP_FIELD_UNITS[schema.KEY_SETUP_SCI_R],
+        label=f"setup['{schema.KEY_SETUP_SCI_R}']",
+        dtype=float,
+    ).reshape(-1)
+    sci_theta = quantity_value(
+        setup[schema.KEY_SETUP_SCI_THETA],
+        schema.SETUP_FIELD_UNITS[schema.KEY_SETUP_SCI_THETA],
+        label=f"setup['{schema.KEY_SETUP_SCI_THETA}']",
+        dtype=float,
+    ).reshape(-1)
+    if sci_r.size == 0 or sci_theta.size == 0:
         raise ValueError(
-            f"setup['{schema.KEY_SETUP_SCI_R_ARCSEC}'] and setup['{schema.KEY_SETUP_SCI_THETA_DEG}'] must be non-empty 1D arrays."
+            f"setup['{schema.KEY_SETUP_SCI_R}'] and setup['{schema.KEY_SETUP_SCI_THETA}'] must be non-empty 1D arrays."
         )
-    if sci_r_arcsec.shape != sci_theta_deg.shape:
+    if sci_r.shape != sci_theta.shape:
         raise ValueError(
-            f"setup['{schema.KEY_SETUP_SCI_R_ARCSEC}'] and setup['{schema.KEY_SETUP_SCI_THETA_DEG}'] must have identical shape."
+            f"setup['{schema.KEY_SETUP_SCI_R}'] and setup['{schema.KEY_SETUP_SCI_THETA}'] must have identical shape."
         )
-    if not np.all(np.isfinite(sci_r_arcsec)) or not np.all(np.isfinite(sci_theta_deg)):
+    if not np.all(np.isfinite(sci_r)) or not np.all(np.isfinite(sci_theta)):
         raise ValueError("setup science coordinates must be finite.")
 
 
@@ -317,7 +314,7 @@ def validate_ngs_options(options: Mapping[str, Any], expected_num_sims: int | No
     """Validate the shared NGS option triplet when present.
 
     The shared NGS options are the coupled triplet
-    ``ngs_r_arcsec``/``ngs_theta_deg``/``ngs_mag``. Persisted ``/options``
+    ``ngs_r``/``ngs_theta``/``ngs_magnitude``. Persisted ``/options``
     requires the triplet, but this helper is also reused in earlier options
     preparation flows where the triplet may not yet be materialized. When
     present, all three keys must exist with identical ``[N, Kmax]`` shape,
@@ -339,14 +336,29 @@ def validate_ngs_options(options: Mapping[str, Any], expected_num_sims: int | No
 
     missing_ngs_keys = [key for key in schema.OPTION_KEYS_NGS if key not in options]
     if missing_ngs_keys:
-        raise ValueError("Explicit NGS options must provide ngs_r_arcsec, ngs_theta_deg, and ngs_mag together.")
+        raise ValueError("Explicit NGS options must provide ngs_r, ngs_theta, and ngs_magnitude together.")
 
-    ngs_r = as_float_matrix(options[schema.KEY_OPTION_NGS_R_ARCSEC], label=schema.KEY_OPTION_NGS_R_ARCSEC)
-    ngs_theta = as_float_matrix(options[schema.KEY_OPTION_NGS_THETA_DEG], label=schema.KEY_OPTION_NGS_THETA_DEG)
-    ngs_mag = as_float_matrix(options[schema.KEY_OPTION_NGS_MAG], label=schema.KEY_OPTION_NGS_MAG)
-    if ngs_r.ndim != 2 or ngs_theta.ndim != 2 or ngs_mag.ndim != 2:
+    ngs_r = quantity_value(
+        options[schema.KEY_OPTION_NGS_R],
+        schema.OPTION_FIELD_UNITS[schema.KEY_OPTION_NGS_R],
+        label=schema.KEY_OPTION_NGS_R,
+        dtype=float,
+    )
+    ngs_theta = quantity_value(
+        options[schema.KEY_OPTION_NGS_THETA],
+        schema.OPTION_FIELD_UNITS[schema.KEY_OPTION_NGS_THETA],
+        label=schema.KEY_OPTION_NGS_THETA,
+        dtype=float,
+    )
+    ngs_magnitude = quantity_value(
+        options[schema.KEY_OPTION_NGS_MAGNITUDE],
+        schema.OPTION_FIELD_UNITS[schema.KEY_OPTION_NGS_MAGNITUDE],
+        label=schema.KEY_OPTION_NGS_MAGNITUDE,
+        dtype=float,
+    )
+    if ngs_r.ndim != 2 or ngs_theta.ndim != 2 or ngs_magnitude.ndim != 2:
         raise ValueError("NGS option arrays must be 2D [N, Kmax].")
-    if ngs_r.shape != ngs_theta.shape or ngs_r.shape != ngs_mag.shape:
+    if ngs_r.shape != ngs_theta.shape or ngs_r.shape != ngs_magnitude.shape:
         raise ValueError("NGS option arrays must have identical shape [N, Kmax].")
     if expected_num_sims is not None and int(ngs_r.shape[0]) != int(expected_num_sims):
         raise ValueError("NGS option arrays first dimension must match N.")
@@ -355,7 +367,7 @@ def validate_ngs_options(options: Mapping[str, Any], expected_num_sims: int | No
 
     finite_r = np.isfinite(ngs_r)
     finite_theta = np.isfinite(ngs_theta)
-    finite_mag = np.isfinite(ngs_mag)
+    finite_mag = np.isfinite(ngs_magnitude)
     any_finite = finite_r | finite_theta | finite_mag
     all_finite = finite_r & finite_theta & finite_mag
     partial = any_finite & ~all_finite
@@ -363,7 +375,7 @@ def validate_ngs_options(options: Mapping[str, Any], expected_num_sims: int | No
         count = int(np.count_nonzero(partial))
         raise ValueError(
             f"Invalid NGS options: found {count} entries with partial NaN values. "
-            "Each star slot must be either all finite or all NaN across ngs_r_arcsec/ngs_theta_deg/ngs_mag."
+            "Each star slot must be either all finite or all NaN across ngs_r/ngs_theta/ngs_magnitude."
         )
 
 
@@ -411,7 +423,14 @@ def validate_options_payload_core(
         raise ValueError(f"options N={num_sims} does not match expected N={int(expected_num_sims)}.")
 
     for key in schema.OPTION_KEYS_1D:
-        arr = np.asarray(options[key])
+        if key in schema.OPTION_FIELD_UNITS:
+            arr = quantity_value(
+                options[key],
+                schema.OPTION_FIELD_UNITS[key],
+                label=f"options['{key}']",
+            )
+        else:
+            arr = np.asarray(options[key])
         if arr.ndim != 1:
             raise ValueError(f"options['{key}'] must be 1D [N].")
         if int(arr.shape[0]) != num_sims:
@@ -430,7 +449,11 @@ def validate_options_payload_core(
     for key in schema.OPTION_KEYS_SCI_OFFSETS:
         if key not in options:
             continue
-        arr = np.asarray(options[key])
+        arr = quantity_value(
+            options[key],
+            schema.OPTION_FIELD_UNITS[key],
+            label=f"options['{key}']",
+        )
         if arr.ndim != 2:
             raise ValueError(f"options['{key}'] must be 2D [N, M].")
         if int(arr.shape[0]) != num_sims:
@@ -505,8 +528,8 @@ def validate_successful_result(
     num_sci: int,
     num_ee: int,
     *,
-    extra_stat_names: tuple[str, ...] = (),
-    meta_field_names: tuple[str, ...] = (),
+    extra_stat_fields: Mapping[str, u.UnitBase] | None = None,
+    meta_fields: Mapping[str, u.UnitBase | None] | None = None,
     require_psfs: bool = False,
 ) -> None:
     """Validate one successful simulation result against core persistence rules.
@@ -515,9 +538,9 @@ def validate_successful_result(
         result: Successful per-simulation result payload.
         num_sci: Required science-target count ``M``.
         num_ee: Required EE-aperture count ``A``.
-        extra_stat_names: Declared simulation-owned extra stat names.
-        meta_field_names: Declared simulation-owned scalar ``/meta`` field
-            names in addition to core PSF metadata.
+        extra_stat_fields: Declared simulation-owned extra-stat units.
+        meta_fields: Declared simulation-owned scalar metadata units, with
+            ``None`` for ordinary nonphysical numeric fields.
         require_psfs: Whether a valid PSF cube must be present.
 
     Raises:
@@ -533,20 +556,20 @@ def validate_successful_result(
     missing_stats_keys = [key for key in schema.REQUIRED_STATS_KEYS if key not in result.stats]
     if missing_stats_keys:
         raise ValueError(
-            "result.stats must include sr, ee, and fwhm_mas for successful results."
+            "result.stats must include sr, ee, and fwhm for successful results."
         )
 
-    sr = np.asarray(result.stats[schema.KEY_STATS_SR], dtype=np.float32)
+    sr = quantity_value(result.stats[schema.KEY_STATS_SR], schema.STATS_FIELD_UNITS[schema.KEY_STATS_SR], label="result.sr", dtype=np.float32)
     if sr.shape != (int(num_sci),):
         raise ValueError(f"result.{schema.KEY_STATS_SR} must have shape ({int(num_sci)},), got {sr.shape}")
     if not np.all(np.isfinite(sr)):
         raise ValueError(f"result.{schema.KEY_STATS_SR} must contain only finite values.")
 
-    fwhm = np.asarray(result.stats[schema.KEY_STATS_FWHM_MAS], dtype=np.float32)
+    fwhm = quantity_value(result.stats[schema.KEY_STATS_FWHM], schema.STATS_FIELD_UNITS[schema.KEY_STATS_FWHM], label="result.fwhm", dtype=np.float32)
     if fwhm.shape != (int(num_sci),):
-        raise ValueError(f"result.{schema.KEY_STATS_FWHM_MAS} must have shape ({int(num_sci)},), got {fwhm.shape}")
+        raise ValueError(f"result.{schema.KEY_STATS_FWHM} must have shape ({int(num_sci)},), got {fwhm.shape}")
 
-    ee = np.asarray(result.stats[schema.KEY_STATS_EE], dtype=np.float32)
+    ee = quantity_value(result.stats[schema.KEY_STATS_EE], schema.STATS_FIELD_UNITS[schema.KEY_STATS_EE], label="result.ee", dtype=np.float32)
 
     if ee.ndim == 1:
         if int(num_ee) != 1 or ee.shape != (int(num_sci),):
@@ -560,6 +583,8 @@ def validate_successful_result(
     if not np.all(np.isfinite(ee)):
         raise ValueError(f"result.{schema.KEY_STATS_EE} must contain only finite values.")
 
+    extra_stat_fields = dict(extra_stat_fields or {})
+    extra_stat_names = tuple(extra_stat_fields)
     missing_extra_stats = [key for key in extra_stat_names if key not in result.stats]
     if missing_extra_stats:
         raise ValueError(f"result.stats is missing declared extra stats: {', '.join(missing_extra_stats)}")
@@ -570,7 +595,7 @@ def validate_successful_result(
         raise ValueError(f"result.stats contains undeclared stats: {', '.join(unexpected_stat_names)}")
 
     for key in extra_stat_names:
-        value = np.asarray(result.stats[key], dtype=np.float32)
+        value = quantity_value(result.stats[key], extra_stat_fields[key], label=f"result.{key}", dtype=np.float32)
         if value.shape != (int(num_sci),):
             raise ValueError(f"result.{key} must have shape ({int(num_sci)},), got {value.shape}")
         if not np.all(np.isfinite(value)):
@@ -579,26 +604,27 @@ def validate_successful_result(
     missing_meta_keys = [key for key in schema.REQUIRED_META_KEYS if key not in result.meta]
     if missing_meta_keys:
         raise ValueError(
-            "result.meta must include pixel_scale_mas, tel_diameter_m, and tel_pupil for successful results."
+            "result.meta must include pixel_scale, tel_diameter, and tel_pupil for successful results."
         )
 
-    pixel_scale = np.asarray(result.meta[schema.KEY_META_PIXEL_SCALE_MAS], dtype=np.float32)
-    tel_diameter = np.asarray(result.meta[schema.KEY_META_TEL_DIAMETER_M], dtype=np.float32)
-    tel_pupil = np.asarray(result.meta[schema.KEY_META_TEL_PUPIL], dtype=np.float32)
+    pixel_scale = quantity_value(result.meta[schema.KEY_META_PIXEL_SCALE], schema.META_FIELD_UNITS[schema.KEY_META_PIXEL_SCALE], label="result.meta.pixel_scale", dtype=np.float32)
+    tel_diameter = quantity_value(result.meta[schema.KEY_META_TEL_DIAMETER], schema.META_FIELD_UNITS[schema.KEY_META_TEL_DIAMETER], label="result.meta.tel_diameter", dtype=np.float32)
+    tel_pupil = quantity_value(result.meta[schema.KEY_META_TEL_PUPIL], schema.META_FIELD_UNITS[schema.KEY_META_TEL_PUPIL], label="result.meta.tel_pupil", dtype=np.float32)
     if pixel_scale.ndim != 0:
-        raise ValueError("result.meta.pixel_scale_mas must be a scalar.")
+        raise ValueError("result.meta.pixel_scale must be a scalar.")
     if tel_diameter.ndim != 0:
-        raise ValueError("result.meta.tel_diameter_m must be a scalar.")
+        raise ValueError("result.meta.tel_diameter must be a scalar.")
     if tel_pupil.ndim != 2:
         raise ValueError("result.meta.tel_pupil must be 2D [Ny, Nx].")
     if not np.all(np.isfinite(pixel_scale.reshape(1))):
-        raise ValueError("result.meta.pixel_scale_mas must contain only finite values.")
+        raise ValueError("result.meta.pixel_scale must contain only finite values.")
     if not np.all(np.isfinite(tel_diameter.reshape(1))):
-        raise ValueError("result.meta.tel_diameter_m must contain only finite values.")
+        raise ValueError("result.meta.tel_diameter must contain only finite values.")
     if not np.all(np.isfinite(tel_pupil)):
         raise ValueError("result.meta.tel_pupil must contain only finite values.")
 
-    meta_field_names = normalize_meta_field_names(meta_field_names, label="meta_field_names")
+    meta_fields = dict(meta_fields or {})
+    meta_field_names = tuple(meta_fields)
     missing_meta_fields = [key for key in meta_field_names if key not in result.meta]
     if missing_meta_fields:
         raise ValueError(f"result.meta is missing declared meta fields: {', '.join(missing_meta_fields)}")
@@ -609,7 +635,13 @@ def validate_successful_result(
         raise ValueError(f"result.meta contains undeclared fields: {', '.join(unexpected_meta_names)}")
 
     for key in meta_field_names:
-        value = np.asarray(result.meta[key], dtype=np.float32)
+        unit = meta_fields[key]
+        if unit is None:
+            if isinstance(result.meta[key], u.Quantity):
+                raise TypeError(f"result.meta.{key} must be an ordinary numeric scalar.")
+            value = np.asarray(result.meta[key], dtype=np.float32)
+        else:
+            value = quantity_value(result.meta[key], unit, label=f"result.meta.{key}", dtype=np.float32)
         if value.ndim != 0:
             raise ValueError(f"result.meta.{key} must be a scalar.")
         if not np.all(np.isfinite(value.reshape(1))):

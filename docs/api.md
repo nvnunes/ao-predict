@@ -22,23 +22,22 @@ continuation, and publication of a validated model package.
 
 ```python
 import numpy as np
+from astropy import units as u
 
 from ao_predict import (
+    ModelTrainingDataConfig,
     TrainModelRequest,
-    model_training_data_from_rows,
     train_model,
 )
 
-features = np.asarray(
-    [[0.5, 1.0], [1.0, 1.5], [1.5, 2.0], [2.0, 2.5]],
-    dtype=np.float32,
-)
-targets = np.asarray([[0.8], [1.2], [1.7], [2.1]], dtype=np.float32)
-data = model_training_data_from_rows(
-    features,
-    targets,
-    feature_names=("seeing", "airmass"),
-    target_names=("fwhm",),
+data = ModelTrainingDataConfig(
+    features={
+        "wavelength": np.asarray([1.25, 1.65, 2.18, 2.20]) * u.um,
+        "airmass": np.asarray([1.0, 1.1, 1.3, 1.5]) * u.one,
+    },
+    targets={
+        "fwhm": np.asarray([80.0, 72.0, 65.0, 63.0]) * u.mas,
+    },
 )
 
 result = train_model(
@@ -88,13 +87,29 @@ complete simulations. For explicit partitions, AO Predict checks the ordered
 feature and target schema but trusts the caller to prevent scientific leakage
 between the partitions.
 
-The public data configuration holds one NumPy array per feature and target.
+The public data configuration holds one named array per feature and target.
+Physical and scientifically dimensionless columns use Astropy quantities, so
+units travel with the values instead of being encoded in field names.
 Targets have shape `(simulations,)` or
 `(simulations, examples_per_simulation)` and must all share a shape. A feature
 may have that complete shape or the compact `(simulations,)` shape; compact
 features are expanded only while assembling a batch. Caller arrays are borrowed
 without mutation until AO Predict has made its owned standardized `float32`
-state, so callers must not mutate them while `train_model()` is active.
+state, so callers must not mutate them while `train_model()` is active. Build
+the feature and target mappings directly from an analysis dataset when that is
+the training source:
+
+```python
+from ao_predict import ModelTrainingDataConfig
+
+data = ModelTrainingDataConfig(
+    features={
+        "wavelength": dataset.options["wavelength"],
+        "zenith_angle": dataset.options["zenith_angle"],
+    },
+    targets={"fwhm": dataset.stats["fwhm"]},
+)
+```
 
 `model_path` is a path stem, not a directory. For `models/example`, training
 owns these companions:
@@ -128,6 +143,7 @@ between candidates according to what exists.
 
 ```python
 import numpy as np
+from astropy import units as u
 
 from ao_predict import load_model_predictor
 
@@ -150,8 +166,9 @@ print(evaluation.relative_rmse)
 
 Direct feature input has shape `(examples, features)` and direct predictions
 have shape `(examples, targets)`. Model metadata fixes the input and output
-order, exposed through `feature_names` and `target_names`. Prediction always
-returns a physical-unit `float32` NumPy array.
+order, exposed through `feature_names` and `target_names`. Direct matrices are
+interpreted in model-native units and return a `float32` NumPy matrix in the
+model's target units.
 
 Named input avoids assembling a complete feature matrix and can keep values
 shared at simulation scope:
@@ -159,33 +176,42 @@ shared at simulation scope:
 ```python
 predictions = predictor.predict(
     {
-        "seeing": np.asarray([0.6, 0.8], dtype=np.float32),
+        "wavelength": np.asarray([1.25, 1.65], dtype=np.float32) * u.um,
         "airmass": np.asarray(
             [[1.0, 1.2, 1.4], [1.1, 1.3, 1.5]],
             dtype=np.float32,
-        ),
+        ) * u.one,
     }
 )
-assert predictions.shape == (2, 3, 1)
+assert predictions["fwhm"].shape == (2, 3)
+assert predictions["fwhm"].unit == u.mas
 ```
 
 Each named feature is either `(simulations,)` or
 `(simulations, related_examples)`. Rank-one values are shared over the related
 axis while AO Predict gathers each bounded batch; they do not need to be
 repeated by the caller. When every feature is rank one, prediction returns
-`(simulations, targets)`. Mapping insertion order is irrelevant, but names must
-match the package exactly.
+one value array per target with shape `(simulations,)`. Mapping insertion order
+is irrelevant, but names must match the package exactly. Physical named input
+values must carry units compatible with the model; named output carries the
+model target unit for each physical target.
 
 `predict_one()` accepts one positional feature vector or an exact-name mapping
-of real scalars and returns `(targets,)`. `predict()` and `evaluate()` accept a
-positive per-call `batch_size`; `None` uses the predictor default. A loaded
-predictor also exposes its normalized `model_path`, exact `model_package_path`,
-resolved `device`, names, and units as read-only properties.
+of scalar quantities. Plain named scalars are also accepted and interpreted in
+model-native units. Positional input returns a `(targets,)` NumPy vector;
+named input returns a target-name mapping of scalar quantities. `predict()` and
+`evaluate()` accept a positive per-call `batch_size`; `None` uses the predictor
+default. A loaded predictor also exposes its normalized `model_path`, exact
+`model_package_path`, resolved `device`, names, and units as read-only
+properties.
 
 Evaluation accepts direct arrays or exact-name mappings independently for
 features and targets. Targets must provide every resolved example value, must
-be finite and strictly positive, and are never broadcast. The immutable result
-reports dimensionless ratios:
+be finite and strictly positive, and are never broadcast. Direct target arrays
+follow `target_names` order and use the model's native target units. In a named
+mapping, physical targets must be quantities compatible with the model's target
+units, while genuinely nonphysical targets remain plain NumPy arrays. The
+immutable result reports dimensionless ratios:
 
 - `relative_mse`: mean squared relative residual pooled over all examples and
   targets
@@ -212,6 +238,7 @@ public signatures and result fields.
 ## Lifecycle Functions
 
 ### `init_dataset(request: InitDatasetRequest) -> int`
+
 Initialize an HDF5 simulation dataset from code-provided config.
 
 Responsibilities:
@@ -221,16 +248,21 @@ Responsibilities:
 - allocate status/meta/stats (and optional psfs) datasets
 
 Simulation payload note:
-- ao-predict assembles the core `/simulation` fields: `name`, `version`, `extra_stat_names`, and `ngs_mag_standard`.
-- Simulations expose the extra-stat registry through the `Simulation.extra_stat_names` property.
-- `Simulation.ngs_mag_standard` declares the photometric standard of `/options/ngs_mag`; `BaseSimulation` supplies `R` as the default and subclasses override it when needed.
+- ao-predict assembles the core `/simulation` fields: `name`, `version`,
+  `extra_stat_fields`, and `ngs_mag_standard`.
+- Simulations expose extra-stat names and units through the
+  `Simulation.extra_stat_fields` property. Names must start with a letter or
+  underscore, contain only letters, digits, and underscores, and must not
+  collide with the core `sr`, `ee`, or `fwhm` statistics.
+- `Simulation.ngs_mag_standard` declares the photometric standard of
+  `/options/ngs_magnitude`; `BaseSimulation` supplies `R` as the default and
+  subclasses override it when needed.
 - The simulation implementation completes that base payload with simulation-specific persisted fields.
-- New datasets require the complete current payload. Older datasets without `ngs_mag_standard` load with the historical `R` default and are not rewritten; see the [persisted-contract compatibility lifecycle](architecture.md#persisted-contract-compatibility).
 - This mirrors the existing core-plus-completion pattern used for `/setup` and `/options`.
 
 Stats note:
-- Core stats under `/stats` are `sr`, `ee`, and `fwhm_mas`.
-- Successful runs may persist `fwhm_mas = NaN` when contour-based FWHM cannot be
+- Core stats under `/stats` are `sr`, `ee`, and `fwhm`.
+- Successful runs may persist `fwhm = NaN` when contour-based FWHM cannot be
   recovered; `sr` and `ee` remain finite for successful results.
 - Dataset-level stats selectors live under `/setup` as `sr_method`, `fwhm_summary`, and `ee_geometry`.
 - The implemented core stats family is:
@@ -238,16 +270,17 @@ Stats note:
   - EE: fixed peak-centered image-domain aperture accumulation selected by `/setup/ee_geometry`
   - FWHM: fixed native contour measurement summarized by `/setup/fwhm_summary`
 - Core metadata under `/meta` mixes one per-simulation field and invariant telescope fields:
-  - `/meta/pixel_scale_mas` is `[N]`
-  - `/meta/tel_diameter_m` is a scalar
+  - `/meta/pixel_scale` is `[N]`
+  - `/meta/tel_diameter` is a scalar
   - `/meta/tel_pupil` is `[Ny, Nx]`
 - Simulations may also declare extra 2D stats with shape `[N, M]`.
-- The declared extra stat registry is persisted in `/simulation/extra_stat_names`.
+- The declared extra-stat unit registry is persisted in `/simulation/extra_stat_fields`.
 - During execution, successful simulations expose PSFs and metadata in `finalize(...)` and leave `result.stats` empty.
 - ao-predict computes the core stats from PSFs and assembles the final `result.stats`.
 - Simulations contribute only declared extra stats through the `Simulation.build_extra_stats(...)` hook.
 
 ### `run_simulations_by_state(dataset_path: str | Path, *, state: SimulationState | int = SimulationState.PENDING, verbose: bool = False, indexes: list[int] | None = None, num_workers: int = 1, chunk_multiple: int = 10) -> RunSummary`
+
 Run simulations for a selected source state.
 
 Supported `state` values:
@@ -262,6 +295,7 @@ Execution controls:
 - Simulation implementations may override `Simulation.warmup_worker()` to prepare process-local worker state before a chunk runs.
 
 ### `resume_simulations(dataset_path: str | Path, *, expected_request: InitDatasetRequest | None = None, verbose: bool = False, num_workers: int = 1, chunk_multiple: int = 10) -> RunSummary`
+
 Resume a dataset by running pending rows and retrying only preexisting failures.
 
 Behavior:
@@ -275,6 +309,7 @@ Behavior:
 `save_psfs` is not a resume option. Resumed rows use the storage layout chosen when the dataset was initialized.
 
 ### `reset_simulations(dataset_path: str | Path, indexes: list[int] | None = None) -> int`
+
 Reset all simulations to pending state (`SimulationState.PENDING`).
 
 Returns:
@@ -285,6 +320,7 @@ Notes:
 - Existing `/stats`, `/meta`, and `/psfs` values are retained and overwritten as simulations are rerun.
 
 ### `check_dataset(dataset_path: str | Path) -> DatasetStatus`
+
 Validate schema and completion status.
 
 `ok=True` only when:
@@ -293,12 +329,14 @@ Validate schema and completion status.
 - `num_failed == 0`
 
 ### `validate_dataset(dataset_path: str | Path) -> None`
+
 Strict dataset validation that raises when issues are present.
 
 Raises:
 - `DatasetValidationError` when schema/state checks fail.
 
 ### `validate_dataset_matches_request(dataset_path: str | Path, request: InitDatasetRequest) -> None`
+
 Validate that an existing dataset matches an initialization request.
 
 The request is prepared through the same lifecycle as `init_dataset(...)`.
@@ -312,6 +350,7 @@ Raises:
 ## Dataclasses
 
 ### `SimulationConfig`
+
 - `name: str`
 - `base_path: str | None = None`
 - `specific_fields: dict[str, object] = {}`
@@ -321,46 +360,57 @@ For `TiptopSimulation`, provide `specific_fields["config_path"]` and optionally
 `base_path` to resolve relative `config_path` values.
 
 ### `SetupConfig`
-- `ee_apertures_mas: list[float]`
+
+- `ee_apertures: u.Quantity`
 - `sr_method: str | None = None`
 - `fwhm_summary: str | None = None`
 - `ee_geometry: str | None = None`
 - `specific_fields: dict[str, object] = {}`
 
-Core typed setup fields are `ee_apertures_mas`, `sr_method`, `fwhm_summary`, and `ee_geometry`. All other setup fields can be passed in `specific_fields`.
-For `TiptopSimulation`, include `specific_fields["ngs_mag_zeropoint"]`.
+Core typed setup fields are `ee_apertures`, `sr_method`, `fwhm_summary`, and `ee_geometry`. All other setup fields can be passed in `specific_fields`.
+For `TiptopSimulation`, include `specific_fields["ngs_magnitude_zeropoint"]`.
 These setup fields control how persisted `/stats/sr`, `/stats/ee`, and
-`/stats/fwhm_mas` are computed and interpreted across the whole dataset.
+`/stats/fwhm` are computed and interpreted across the whole dataset.
 
 ### `OptionsConfig`
-- `option_arrays: dict[str, np.ndarray | list[object] | tuple[object, ...]]`
 
-Columnar per-option arrays keyed by option names.
+- `option_arrays: dict[str, np.ndarray | u.Quantity]`
+
+Columnar per-option arrays keyed by unit-free option names. Physical and
+scientifically dimensionless numeric columns are quantities; identifiers,
+counts, Boolean values, categories, and text remain ordinary arrays.
 
 Code-driven initialization may include independently optional
-`sci_dx_arcsec` and `sci_dy_arcsec` matrices with shape `[N, M]`, where `M`
+`sci_dx` and `sci_dy` matrices with shape `[N, M]`, where `M`
 is the invariant science-point count in `/setup`. Retained matrices are finite
 `float32`; an absent or all-zero axis means zero offset and is not persisted.
 During execution, `SimulationContext.setup` remains invariant and the
-effective polar field is available through `resolved_sci_r_arcsec` and
-`resolved_sci_theta_deg`.
+effective polar field is available through `resolved_sci_r` and
+`resolved_sci_theta`.
 
 ### `TableOptionsConfig`
+
 - `broadcast: dict[str, object] = {}`
 - `columns: list[str] | None = None`
+- `units: dict[str, str | u.UnitBase] = {}`
 - `rows: list[list[object]] | None = None`
 
-Config-style options input for table/broadcast workflows.
+Config-style options input for table/broadcast workflows. Each physical table
+column must have a corresponding `units` entry; values are converted to AO
+Predict's canonical field unit during preparation. Physical broadcast values
+carry units directly as quantities.
 
 ### `InitDatasetRequest`
+
 - `dataset_path: str | Path`
 - `simulation: SimulationConfig | Mapping[str, object]`
 - `setup: SetupConfig | Mapping[str, object]`
-- `options: OptionsConfig | TableOptionsConfig | Mapping[str, np.ndarray | list[object] | tuple[object, ...]]`
+- `options: OptionsConfig | TableOptionsConfig | Mapping[str, np.ndarray | u.Quantity]`
 - `overwrite: bool = False`
 - `save_psfs: bool = False`
 
 ### `DatasetStatus`
+
 - `dataset_path: Path`
 - `num_sims: int`
 - `num_pending: int`
@@ -370,6 +420,7 @@ Config-style options input for table/broadcast workflows.
 - `issues: list[str]`
 
 ### `DatasetValidationError`
+
 - subclass of `ValueError`
 - `issues: list[str]` with collected validation messages
 
@@ -379,26 +430,29 @@ Config-style options input for table/broadcast workflows.
 
 1. `OptionsConfig(option_arrays=...)` typed columnar input.
 2. `TableOptionsConfig(...)` typed table/broadcast input.
-3. Raw direct columnar mapping (`{key: ndarray}`).
+3. Raw direct columnar mapping (`{key: ndarray_or_quantity}`).
 
 Notes:
 - Inputs must be columnar per-option arrays with first dimension `N` (one entry per simulation).
+- Physical arrays in code-first input must be quantities. Bare arrays do not
+  acquire implicit physical units.
 - Use columnar arrays when calling `init_dataset` from Python code.
 - API mapping keys are case-sensitive and must be lowercase (`simulation`, `setup`, and options keys).
-- `TableOptionsConfig.columns` and `TableOptionsConfig.broadcast` keys must be lowercase.
-- `wavelength_um` is required at execution time because the core Strehl
+- `TableOptionsConfig.columns`, `TableOptionsConfig.units`, and
+  `TableOptionsConfig.broadcast` keys must be lowercase.
+- `wavelength` is required at execution time because the core Strehl
   calculation builds a diffraction-limited reference PSF for each simulation.
-- The persisted `/options` payload always contains the NGS triplet (`ngs_r_arcsec`, `ngs_theta_deg`, `ngs_mag`).
+- The persisted `/options` payload always contains the NGS triplet (`ngs_r`, `ngs_theta`, `ngs_magnitude`).
 - If NGS input is provided explicitly, provide the full triplet. Unused star slots may be represented with `NaN`, but each slot must be either all finite or all `NaN` across the triplet.
 - If explicit NGS input is omitted, the selected simulation must supply the persisted NGS triplet during options preparation.
 - During execution, ao-predict derives a runtime-only `ngs_used` boolean vector from the persisted NGS triplet. This field is not persisted in `/options`.
 - If omitted, setup defaults `sr_method` to `pixel_fit`, `fwhm_summary` to `geom`, and `ee_geometry` to `ensquared`.
 
 Atmospheric input note:
-- `r0_m` is the canonical persisted per-sim atmospheric option.
-- `seeing_arcsec` is accepted as an input alias and converted to `r0_m` using `setup.atm_wavelength_um` before persistence.
-- `seeing_arcsec` is never persisted in `/options`.
-- In `setup.atm_profiles`, `seeing_arcsec` is accepted per profile and normalized to `r0_m` before persistence.
+- `r0` is the canonical persisted per-sim atmospheric option.
+- `seeing` is accepted as an input alias and converted to `r0` using `setup.atm_wavelength` before persistence.
+- `seeing` is never persisted in `/options`.
+- In `setup.atm_profiles`, `seeing` is accepted per profile and normalized to `r0` before persistence.
 - Bound `SimulationSetup` instances contain normalized concrete arrays for `lgs_*` and `sci_*` fields; absent LGS inputs are represented as empty arrays, not `None`.
 
 Generated table helper:
@@ -406,13 +460,16 @@ Generated table helper:
   generates one mapping per simulation and needs a stable
   `TableOptionsConfig`.
 - The helper returns `GeneratedOptions`, which preserves table `columns`,
-  `rows`, and `broadcast` defaults and exposes
+  `units`, `rows`, and `broadcast` defaults and exposes
   `to_table_options_config()` for `InitDatasetRequest.options`.
 
 ## Working Example
 
 ```python
 from pathlib import Path
+
+import numpy as np
+from astropy import units as u
 
 from ao_predict import (
     InitDatasetRequest,
@@ -435,15 +492,16 @@ request = InitDatasetRequest(
         specific_fields={"config_path": "sample_tiptop.ini"},
     ),
     setup=SetupConfig(
-        ee_apertures_mas=[50.0, 100.0],
+        ee_apertures=np.array([50.0, 100.0]) * u.mas,
         sr_method="pixel_fit",
         fwhm_summary="geom",
         ee_geometry="ensquared",
-        specific_fields={"ngs_mag_zeropoint": 3.0e10},
+        specific_fields={"ngs_magnitude_zeropoint": 3.0e10 * u.photon / u.s},
     ),
     options=TableOptionsConfig(
-        broadcast={"zenith_angle_deg": 20.0},
-        columns=["wavelength_um"],
+        broadcast={"zenith_angle": 20.0 * u.deg},
+        columns=["wavelength"],
+        units={"wavelength": u.um},
         rows=[[1.654], [2.179]],
     ),
     overwrite=True,
@@ -492,23 +550,24 @@ interpolation coordinate.
 ```python
 from pathlib import Path
 import numpy as np
+from astropy import units as u
 import ao_predict as aop
 import ao_predict.interpolation as interp
 
-x_arcsec = np.asarray([-30.0, 0.0, 30.0, -30.0, 0.0, 30.0, -30.0, 0.0, 30.0], dtype=float)
-y_arcsec = np.asarray([-30.0, -30.0, -30.0, 0.0, 0.0, 0.0, 30.0, 30.0, 30.0], dtype=float)
-ngs_psfs = np.ones((x_arcsec.size, 100, 100), dtype=np.float32) / 100**2
-science_psfs = np.ones((x_arcsec.size, 100, 100), dtype=np.float32) / 100**2
-tel_diameter_m = 8.0
-tel_pupil = np.ones((64, 64), dtype=np.float32)
+x = np.asarray([-30.0, 0.0, 30.0, -30.0, 0.0, 30.0, -30.0, 0.0, 30.0], dtype=float) * u.arcsec
+y = np.asarray([-30.0, -30.0, -30.0, 0.0, 0.0, 0.0, 30.0, 30.0, 30.0], dtype=float) * u.arcsec
+ngs_psfs = np.ones((x.size, 100, 100), dtype=np.float32) / 100**2
+science_psfs = np.ones((x.size, 100, 100), dtype=np.float32) / 100**2
+tel_diameter = 8.0 * u.m
+tel_pupil = np.ones((64, 64), dtype=np.float32) * u.one
 
 ngs_samples = interp.NgsHoPsfSamples(
-    x_arcsec=x_arcsec,
-    y_arcsec=y_arcsec,
+    x=x,
+    y=y,
     psfs=ngs_psfs,
-    wavelength_um=0.710,
-    pixel_scale_mas=5.0,
-    tel_diameter_m=tel_diameter_m,
+    wavelength=0.710 * u.um,
+    pixel_scale=5.0 * u.mas,
+    tel_diameter=tel_diameter,
     tel_pupil=tel_pupil,
 )
 
@@ -519,12 +578,12 @@ interp.save_ngs_ho_metric_interpolator(
 )
 
 science_samples = interp.ScienceHoPsfSamples(
-    x_arcsec=x_arcsec,
-    y_arcsec=y_arcsec,
+    x=x,
+    y=y,
     psfs=science_psfs,
-    wavelength_um=2.179,
-    pixel_scale_mas=5.0,
-    tel_diameter_m=tel_diameter_m,
+    wavelength=2.179 * u.um,
+    pixel_scale=5.0 * u.mas,
+    tel_diameter=tel_diameter,
     tel_pupil=tel_pupil,
 )
 
@@ -545,14 +604,15 @@ hybrid_simulation = aop.SimulationConfig(
 )
 ```
 
-To make zenith/airmass active, provide `zenith_angle_deg` with one value per
+To make zenith/airmass active, provide `zenith_angle` with one value per
 source plane. For Science-HO wavelength or zenith/airmass interpolation, supply
-per-plane `wavelength_um`, `pixel_scale_mas`, and optionally `zenith_angle_deg`,
+per-plane `wavelength`, `pixel_scale`, and optionally `zenith_angle`,
 and shape `psfs` as `(planes, field points, psf_y, psf_x)`. For smoothed NGS
 metric fields, pass `RbfInterpolationConfig(...)` to
 `build_ngs_ho_metric_interpolator_from_psfs(...)`.
 
 ## Error Behavior
+
 - Invalid payload structure and schema mismatches raise `ValueError`/`TypeError`.
 - Existing dataset without `overwrite=True` raises `FileExistsError`.
 - Dataset/config mismatches raise `DatasetConfigMismatchError`.
@@ -566,6 +626,9 @@ PSF image or a PSF cube. Import it from the package root together with
 needed:
 
 ```python
+import numpy as np
+from astropy import units as u
+
 from ao_predict import (
     PsfMetadata,
     clip_and_sum_normalize_psfs,
@@ -575,16 +638,16 @@ from ao_predict import (
 )
 
 metadata = PsfMetadata(
-    wavelength_um=1.65,
-    pixel_scale_mas=4.0,
-    tel_diameter_m=8.0,
-    tel_pupil=tel_pupil,
+    wavelength=1.65 * u.um,
+    pixel_scale=4.0 * u.mas,
+    tel_diameter=8.0 * u.m,
+    tel_pupil=np.asarray(tel_pupil) * u.one,
 )
 
-sr, ee, fwhm_mas = compute_psf_stats(
+sr, ee, fwhm = compute_psf_stats(
     psfs,
     metadata,
-    ee_apertures_mas=[50.0, 100.0],
+    ee_apertures=np.array([50.0, 100.0]) * u.mas,
     sr_method="pixel_fit",
     fwhm_summary="geom",
     ee_geometry="ensquared",
@@ -601,7 +664,7 @@ fwhm_only = compute_psf_fwhm(
 ee_only = compute_psf_ee(
     psfs,
     metadata,
-    ee_apertures_mas=[50.0, 100.0],
+    ee_apertures=np.array([50.0, 100.0]) * u.mas,
     sr_method="pixel_fit",
     ee_geometry="ensquared",
     preprocess="default",
@@ -610,24 +673,25 @@ ee_only = compute_psf_ee(
 selected = compute_psf_stats(
     psfs,
     metadata,
-    metrics=("fwhm_mas", "ee"),
-    ee_apertures_mas=[50.0, 100.0],
+    metrics=("fwhm", "ee"),
+    ee_apertures=np.array([50.0, 100.0]) * u.mas,
     preprocess="default",
 )
 ```
 
-`wavelength_um` and `pixel_scale_mas` may be scalar values shared by all PSFs,
-or one-dimensional per-PSF arrays matching the PSF cube length. `ee_apertures_mas`
-may be a shared aperture vector or a per-PSF aperture array with shape `[M, A]`.
+`wavelength` and `pixel_scale` may be scalar quantities shared by all PSFs,
+or one-dimensional per-PSF arrays matching the PSF cube length. `ee_apertures`
+may be a shared quantity vector or a per-PSF quantity array with shape `[M, A]`.
 It is required only when enclosed energy is computed.
 
-When `metrics` is omitted, `compute_psf_stats(...)` returns the legacy tuple
-`(sr, ee, fwhm_mas)`. When `metrics` is supplied, it must be a non-empty
-sequence drawn from `"sr"`, `"ee"`, and `"fwhm_mas"`; the return value is a
-tuple in the requested order. The focused helpers
-`compute_psf_sr(...)`, `compute_psf_ee(...)`, and `compute_psf_fwhm(...)` return
-only their named metric and use the same metadata, selector, and preprocessing
-contracts.
+When `metrics` is omitted, `compute_psf_stats(...)` returns the standard tuple
+`(sr, ee, fwhm)`. When `metrics` is supplied, it must be a non-empty
+sequence drawn from `"sr"`, `"ee"`, and `"fwhm"`; the return value is a
+tuple in the requested order. Every returned value is an Astropy quantity:
+`sr` and `ee` are dimensionless, and `fwhm` is in milliarcseconds. The focused
+helpers `compute_psf_sr(...)`, `compute_psf_ee(...)`, and
+`compute_psf_fwhm(...)` return only their named metric and use the same
+metadata, selector, and preprocessing contracts.
 
 Metric selector options are:
 
@@ -683,10 +747,10 @@ Use:
 - `dataset.sim(i)` to get one `AnalysisSimulation`
 - `sim.config` for the persisted simulation view with exactly `setup` and `options`
 - `sim.meta` for persisted scientific metadata, including per-simulation
-  `pixel_scale_mas` plus dataset-level telescope metadata such as
-  `tel_diameter_m` and `tel_pupil`
+  `pixel_scale` plus dataset-level telescope metadata such as
+  `tel_diameter` and `tel_pupil`
 - `sim.stats` for the persisted scientific stats surface, including core
-  `sr`, `ee`, and `fwhm_mas` plus any declared extra stats
+  `sr`, `ee`, and `fwhm` plus any declared extra stats
 - `sim.psfs` for lazy PSF access when PSFs were saved
 
 If the dataset was initialized without persisted PSFs, `sim.psfs` raises a
@@ -717,8 +781,3 @@ class CustomAnalysisDataset(AnalysisDataset[CustomAnalysisSimulation]):
 ```
 
 Compatibility adapters and legacy shaping are handled by `girmos-aosims`.
-
-## Current Limits
-- Execution mode is serial.
-- Dataset path is required.
-- Parallel workers, automatic option generation, and high-level data-loading utilities are not yet implemented.

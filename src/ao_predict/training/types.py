@@ -8,52 +8,26 @@ from enum import StrEnum
 from pathlib import Path
 
 import numpy as np
-
-
-@dataclass(frozen=True)
-class FeatureConfig:
-    """One ordered scalar model input.
-
-    Attributes:
-        name: Non-empty feature name.
-        values: One value per simulation or per related simulation result.
-        unit: Optional physical unit label.
-    """
-
-    name: str
-    values: np.ndarray
-    unit: str | None = None
-
-
-@dataclass(frozen=True)
-class TargetConfig:
-    """One ordered scalar physical model output.
-
-    Attributes:
-        name: Non-empty target name.
-        values: Strictly positive observations fitted by the model.
-        unit: Optional physical unit label.
-    """
-
-    name: str
-    values: np.ndarray
-    unit: str | None = None
+from astropy import units as u
 
 
 @dataclass(frozen=True)
 class ModelTrainingDataConfig:
-    """Ordered feature and target values supplied to model training.
+    """Ordered named feature and target values supplied to model training.
 
     Public data configurations are passive. ``train_model`` performs coupled
-    shape, numerical, schema, and partition validation before fitting.
+    shape, numerical, unit, schema, and partition validation before fitting.
+    Mapping insertion order defines model input and output order. Physical and
+    scientifically dimensionless values carry Astropy units directly; plain
+    NumPy arrays represent genuinely nonphysical values.
 
     Attributes:
-        features: Ordered scalar model inputs.
-        targets: Ordered scalar physical model outputs.
+        features: Unit-free feature names mapped to scalar value arrays.
+        targets: Unit-free target names mapped to strictly positive value arrays.
     """
 
-    features: tuple[FeatureConfig, ...]
-    targets: tuple[TargetConfig, ...]
+    features: Mapping[str, np.ndarray | u.Quantity]
+    targets: Mapping[str, np.ndarray | u.Quantity]
 
 
 @dataclass(frozen=True)
@@ -233,78 +207,3 @@ class TrainingRecoveryMismatchError(ValueError):
             self.mismatches
         )
         super().__init__(message)
-
-
-def model_training_data_from_rows(
-    feature_rows: np.ndarray,
-    target_rows: np.ndarray,
-    feature_names: tuple[str, ...] | list[str],
-    target_names: tuple[str, ...] | list[str],
-    *,
-    feature_units: Mapping[str, str] | None = None,
-    target_units: Mapping[str, str] | None = None,
-) -> ModelTrainingDataConfig:
-    """Build one-example-per-simulation training data from row matrices.
-
-    NumPy inputs are retained through column views and are not copied. Complete
-    coupled and numerical validation remains the responsibility of
-    ``train_model``.
-
-    Args:
-        feature_rows: Rank-two NumPy array with one simulation per row.
-        target_rows: Rank-two NumPy array with the same row count.
-        feature_names: Ordered name for each feature column.
-        target_names: Ordered name for each target column.
-        feature_units: Optional feature units keyed by feature name.
-        target_units: Optional target units keyed by target name.
-
-    Returns:
-        Canonical feature-centered model-training data using column views.
-
-    Raises:
-        TypeError: If either values input is not a NumPy array.
-        ValueError: If ranks, row counts, names, or unit keys do not match.
-    """
-
-    if not isinstance(feature_rows, np.ndarray):
-        raise TypeError("feature_rows must be a NumPy array.")
-    if not isinstance(target_rows, np.ndarray):
-        raise TypeError("target_rows must be a NumPy array.")
-    feature_array = feature_rows
-    target_array = target_rows
-    if feature_array.ndim != 2:
-        raise ValueError("feature_rows must be a two-dimensional array.")
-    if target_array.ndim != 2:
-        raise ValueError("target_rows must be a two-dimensional array.")
-    if feature_array.shape[0] != target_array.shape[0]:
-        raise ValueError("feature_rows and target_rows must have the same row count.")
-    feature_names = tuple(feature_names)
-    target_names = tuple(target_names)
-    if len(feature_names) != feature_array.shape[1]:
-        raise ValueError("feature_names must match the feature_rows column count.")
-    if len(target_names) != target_array.shape[1]:
-        raise ValueError("target_names must match the target_rows column count.")
-    feature_units = dict(feature_units or {})
-    target_units = dict(target_units or {})
-    unknown_feature_units = set(feature_units) - set(feature_names)
-    unknown_target_units = set(target_units) - set(target_names)
-    if unknown_feature_units:
-        raise ValueError(
-            "feature_units contains unknown names: "
-            + ", ".join(sorted(unknown_feature_units))
-        )
-    if unknown_target_units:
-        raise ValueError(
-            "target_units contains unknown names: "
-            + ", ".join(sorted(unknown_target_units))
-        )
-    return ModelTrainingDataConfig(
-        features=tuple(
-            FeatureConfig(name, feature_array[:, index], feature_units.get(name))
-            for index, name in enumerate(feature_names)
-        ),
-        targets=tuple(
-            TargetConfig(name, target_array[:, index], target_units.get(name))
-            for index, name in enumerate(target_names)
-        ),
-    )

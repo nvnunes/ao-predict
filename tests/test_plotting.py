@@ -42,13 +42,13 @@ def _make_simulation(
         )
     if setup is None:
         setup = {
-            schema.KEY_SETUP_SCI_R_ARCSEC: np.array([0.0, 5.0, 5.0], dtype=np.float32),
-            schema.KEY_SETUP_SCI_THETA_DEG: np.array([0.0, 0.0, 90.0], dtype=np.float32),
+            schema.KEY_SETUP_SCI_R: np.array([0.0, 5.0, 5.0], dtype=np.float32),
+            schema.KEY_SETUP_SCI_THETA: np.array([0.0, 0.0, 90.0], dtype=np.float32),
         }
     if options is None:
         options = {}
     if meta is None:
-        meta = {schema.KEY_META_PIXEL_SCALE_MAS: np.float32(4.0)}
+        meta = {schema.KEY_META_PIXEL_SCALE: np.float32(4.0)}
     if stats is None:
         stats = {
             schema.KEY_STATS_SR: np.array([0.1, 0.2, 0.3], dtype=np.float32),
@@ -60,7 +60,7 @@ def _make_simulation(
                 ],
                 dtype=np.float32,
             ),
-            schema.KEY_STATS_FWHM_MAS: np.array([50.0, 45.0, 40.0], dtype=np.float32),
+            schema.KEY_STATS_FWHM: np.array([50.0, 45.0, 40.0], dtype=np.float32),
         }
     return AnalysisSimulation(
         _config={"setup": setup, "options": options},
@@ -176,7 +176,7 @@ def test_plot_metric_field_returns_savable_figure() -> None:
 
 
 def test_resolve_metric_name_supports_core_aliases_and_extension_aliases() -> None:
-    assert resolve_metric_name("FWHM") == schema.KEY_STATS_FWHM_MAS
+    assert resolve_metric_name("FWHM") == schema.KEY_STATS_FWHM
     assert resolve_metric_name("Strehl Ratio") == schema.KEY_STATS_SR
     assert resolve_metric_name("extra_metric") == "extra_metric"
     assert resolve_metric_name("Jitter mas", aliases={"Jitter mas": "jitter"}) == "jitter"
@@ -208,9 +208,9 @@ def test_plot_metric_field_applies_color_limits() -> None:
 
 def test_plot_metric_field_selects_multidimensional_metric_value() -> None:
     setup = {
-        schema.KEY_SETUP_SCI_R_ARCSEC: np.array([0.0, 5.0, 5.0], dtype=np.float32),
-        schema.KEY_SETUP_SCI_THETA_DEG: np.array([0.0, 0.0, 90.0], dtype=np.float32),
-        schema.KEY_SETUP_EE_APERTURES_MAS: np.array([50.0, 100.0], dtype=np.float32),
+        schema.KEY_SETUP_SCI_R: np.array([0.0, 5.0, 5.0], dtype=np.float32),
+        schema.KEY_SETUP_SCI_THETA: np.array([0.0, 0.0, 90.0], dtype=np.float32),
+        schema.KEY_SETUP_EE_APERTURES: np.array([50.0, 100.0], dtype=np.float32),
     }
     fig = plot_metric_field(
         _make_simulation(setup=setup),
@@ -249,15 +249,15 @@ def test_plot_metric_field_can_draw_contours() -> None:
 
 def test_plot_metric_field_can_draw_ngs_and_lgs_markers() -> None:
     setup = {
-        schema.KEY_SETUP_SCI_R_ARCSEC: np.array([0.0, 5.0, 5.0], dtype=np.float32),
-        schema.KEY_SETUP_SCI_THETA_DEG: np.array([0.0, 0.0, 90.0], dtype=np.float32),
-        BaseSimulation.KEY_SETUP_LGS_R_ARCSEC: np.array([30.0, 30.0], dtype=np.float32),
-        BaseSimulation.KEY_SETUP_LGS_THETA_DEG: np.array([45.0, 135.0], dtype=np.float32),
+        schema.KEY_SETUP_SCI_R: np.array([0.0, 5.0, 5.0], dtype=np.float32),
+        schema.KEY_SETUP_SCI_THETA: np.array([0.0, 0.0, 90.0], dtype=np.float32),
+        BaseSimulation.KEY_SETUP_LGS_R: np.array([30.0, 30.0], dtype=np.float32),
+        BaseSimulation.KEY_SETUP_LGS_THETA: np.array([45.0, 135.0], dtype=np.float32),
     }
     options = {
-        schema.KEY_OPTION_NGS_R_ARCSEC: np.array([10.0, 12.0], dtype=np.float32),
-        schema.KEY_OPTION_NGS_THETA_DEG: np.array([0.0, 90.0], dtype=np.float32),
-        schema.KEY_OPTION_NGS_MAG: np.array([14.0, 15.5], dtype=np.float32),
+        schema.KEY_OPTION_NGS_R: np.array([10.0, 12.0], dtype=np.float32),
+        schema.KEY_OPTION_NGS_THETA: np.array([0.0, 90.0], dtype=np.float32),
+        schema.KEY_OPTION_NGS_MAGNITUDE: np.array([14.0, 15.5], dtype=np.float32),
     }
     fig = plot_metric_field(
         _make_simulation(setup=setup, options=options),
@@ -292,9 +292,9 @@ def test_plot_metric_field_can_draw_ngs_and_lgs_markers() -> None:
 
 def test_plot_metric_field_can_move_metric_name_to_y_axis() -> None:
     setup = {
-        schema.KEY_SETUP_SCI_R_ARCSEC: np.array([0.0, 5.0, 5.0], dtype=np.float32),
-        schema.KEY_SETUP_SCI_THETA_DEG: np.array([0.0, 0.0, 90.0], dtype=np.float32),
-        schema.KEY_SETUP_EE_APERTURES_MAS: np.array([50.0, 100.0], dtype=np.float32),
+        schema.KEY_SETUP_SCI_R: np.array([0.0, 5.0, 5.0], dtype=np.float32),
+        schema.KEY_SETUP_SCI_THETA: np.array([0.0, 0.0, 90.0], dtype=np.float32),
+        schema.KEY_SETUP_EE_APERTURES: np.array([50.0, 100.0], dtype=np.float32),
     }
     fig = plot_metric_field(
         _make_simulation(setup=setup),
@@ -426,17 +426,17 @@ def test_plot_metric_field_comparison_accepts_prepared_grid_row() -> None:
 
 
 def test_plot_metric_field_raises_for_missing_requested_ngs_markers() -> None:
-    with pytest.raises(ValueError, match="Missing required plotting field 'ngs_r_arcsec'"):
+    with pytest.raises(ValueError, match="Missing required plotting field 'ngs_r'"):
         plot_metric_field(_make_simulation(), show_ngs=True)
 
 
 def test_plot_metric_field_raises_for_missing_requested_ngs_magnitude_labels() -> None:
     options = {
-        schema.KEY_OPTION_NGS_R_ARCSEC: np.array([10.0], dtype=np.float32),
-        schema.KEY_OPTION_NGS_THETA_DEG: np.array([0.0], dtype=np.float32),
+        schema.KEY_OPTION_NGS_R: np.array([10.0], dtype=np.float32),
+        schema.KEY_OPTION_NGS_THETA: np.array([0.0], dtype=np.float32),
     }
 
-    with pytest.raises(ValueError, match="Missing required plotting field 'ngs_mag'"):
+    with pytest.raises(ValueError, match="Missing required plotting field 'ngs_magnitude'"):
         plot_metric_field(_make_simulation(options=options), show_ngs_mags=True)
 
 

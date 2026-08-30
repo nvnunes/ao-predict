@@ -8,7 +8,10 @@ from typing import Any, Mapping
 import pickle
 
 import numpy as np
+from astropy import units as u
 from scipy.interpolate import RBFInterpolator
+
+from .._units import quantity_value
 
 
 DEFAULT_RBF_KERNEL = "thin_plate_spline"
@@ -80,17 +83,18 @@ def validate_regular_grid_config(config: RegularGridInterpolationConfig) -> Regu
     return RegularGridInterpolationConfig(method=method)
 
 
-def zenith_angle_to_airmass(zenith_angle_deg: float | np.ndarray) -> np.ndarray:
+def zenith_angle_to_airmass(zenith_angle: u.Quantity) -> u.Quantity:
     """Convert zenith angle in degrees to airmass using ``sec(z)``.
 
     Args:
-        zenith_angle_deg: Scalar or array-like zenith angle values in degrees.
+        zenith_angle: Scalar or array-like zenith angle values in degrees.
 
     Returns:
         A NumPy array of airmass values with the input shape.
     """
 
-    return 1.0 / np.cos(np.deg2rad(np.asarray(zenith_angle_deg, dtype=float)))
+    values = quantity_value(zenith_angle, u.deg, label="zenith_angle", dtype=float)
+    return (1.0 / np.cos(np.deg2rad(values))) * u.dimensionless_unscaled
 
 
 def require_finite_vector(value: Any, *, label: str, length: int | None = None) -> np.ndarray:
@@ -159,31 +163,31 @@ def validate_psf_array(psfs: Any, *, label: str, ndim: int) -> np.ndarray:
     return array
 
 
-def field_coordinates(x_arcsec: Any, y_arcsec: Any) -> np.ndarray:
-    """Return validated ``(x_arcsec, y_arcsec)`` field coordinates."""
+def field_coordinates(x: Any, y: Any) -> np.ndarray:
+    """Return validated ``(x, y)`` field coordinates."""
 
-    x = require_finite_vector(x_arcsec, label="x_arcsec")
-    y = require_finite_vector(y_arcsec, label="y_arcsec", length=x.size)
+    x = require_finite_vector(quantity_value(x, u.arcsec, label="x"), label="x")
+    y = require_finite_vector(quantity_value(y, u.arcsec, label="y"), label="y", length=x.size)
     if x.size == 0:
         raise ValueError("At least one field coordinate is required.")
     return np.column_stack([x, y])
 
 
-def rectangular_field_axes(x_arcsec: Any, y_arcsec: Any, *, label: str) -> tuple[np.ndarray, np.ndarray]:
+def rectangular_field_axes(x: Any, y: Any, *, label: str) -> tuple[np.ndarray, np.ndarray]:
     """Return sorted rectangular field axes after validating complete support."""
 
-    coordinates = field_coordinates(x_arcsec, y_arcsec)
-    x_axis = unique_sorted(coordinates[:, 0], label="x_arcsec")
-    y_axis = unique_sorted(coordinates[:, 1], label="y_arcsec")
+    coordinates = field_coordinates(x, y)
+    x_axis = unique_sorted(coordinates[:, 0], label="x")
+    y_axis = unique_sorted(coordinates[:, 1], label="y")
     if coordinates.shape[0] != x_axis.size * y_axis.size:
         raise ValueError(
-            f"{label} must form a complete rectangular x_arcsec x y_arcsec field grid; "
+            f"{label} must form a complete rectangular x x y field grid; "
             f"got {coordinates.shape[0]} points for {x_axis.size} x {y_axis.size} axes."
         )
     seen: set[tuple[int, int]] = set()
     for x_value, y_value in coordinates:
-        ix = axis_index(x_axis, float(x_value), label="x_arcsec")
-        iy = axis_index(y_axis, float(y_value), label="y_arcsec")
+        ix = axis_index(x_axis, float(x_value), label="x")
+        iy = axis_index(y_axis, float(y_value), label="y")
         key = (iy, ix)
         if key in seen:
             raise ValueError(f"Duplicate {label} field point at x={x_value}, y={y_value}.")
@@ -192,8 +196,8 @@ def rectangular_field_axes(x_arcsec: Any, y_arcsec: Any, *, label: str) -> tuple
 
 
 def grid_field_values(
-    x_arcsec: Any,
-    y_arcsec: Any,
+    x: Any,
+    y: Any,
     values: Any,
     x_axis: np.ndarray,
     y_axis: np.ndarray,
@@ -203,7 +207,7 @@ def grid_field_values(
 ) -> np.ndarray:
     """Place point-indexed values into a rectangular ``(y, x, ...)`` grid."""
 
-    coordinates = field_coordinates(x_arcsec, y_arcsec)
+    coordinates = field_coordinates(x, y)
     values = np.asarray(values, dtype=dtype)
     if values.shape[0] != coordinates.shape[0]:
         raise ValueError(
@@ -211,8 +215,8 @@ def grid_field_values(
         )
     grid = np.full((y_axis.size, x_axis.size, *values.shape[1:]), np.nan, dtype=dtype)
     for point_index, (x_value, y_value) in enumerate(coordinates):
-        ix = axis_index(x_axis, float(x_value), label="x_arcsec")
-        iy = axis_index(y_axis, float(y_value), label="y_arcsec")
+        ix = axis_index(x_axis, float(x_value), label="x")
+        iy = axis_index(y_axis, float(y_value), label="y")
         grid[iy, ix] = values[point_index]
     if not np.all(np.isfinite(grid)):
         raise ValueError(f"{label} field grid is incomplete.")
@@ -235,9 +239,9 @@ def validate_rectangular_field_query(
     x = np.asarray(coordinates[:, 0], dtype=float)
     y = np.asarray(coordinates[:, 1], dtype=float)
     if np.any(x < x_axis[0] - atol) or np.any(x > x_axis[-1] + atol):
-        raise ValueError(f"x_arcsec query is outside {label} field support [{x_axis[0]}, {x_axis[-1]}].")
+        raise ValueError(f"x query is outside {label} field support [{x_axis[0]}, {x_axis[-1]}].")
     if np.any(y < y_axis[0] - atol) or np.any(y > y_axis[-1] + atol):
-        raise ValueError(f"y_arcsec query is outside {label} field support [{y_axis[0]}, {y_axis[-1]}].")
+        raise ValueError(f"y query is outside {label} field support [{y_axis[0]}, {y_axis[-1]}].")
 
 
 def snap_rectangular_field_query(x_axis: Any, y_axis: Any, coordinates: np.ndarray) -> np.ndarray:

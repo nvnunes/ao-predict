@@ -1,9 +1,10 @@
 # ao-predict
+
 AO Predict: a framework for fast AO performance prediction
 
 AO Predict provides batched TIPTOP-style simulation with resumable HDF5
 persistence and an instrument-independent PyTorch lifecycle for training dense
-surrogate models from prepared NumPy features and targets, then loading those
+surrogate models from named feature and target arrays, then loading those
 models for bounded physical prediction and aggregate evaluation.
 
 ## Installation
@@ -18,6 +19,7 @@ That path is intended for package use. For local development in this repo, use
 the canonical workflow in `Local Development Setup` below.
 
 ## Quickstart: CLI
+
 These examples assume `ao-predict` is available on your `PATH`.
 
 ```bash
@@ -39,6 +41,7 @@ ao-predict simulate reset examples/sims/simulate_tiptop_cli_example1.h5 --sims 2
 ```
 
 CLI key casing:
+
 - YAML/CSV keys can be any case; CLI normalizes them to lowercase.
 
 Full CLI documentation: [`docs/cli.md`](docs/cli.md)
@@ -47,6 +50,9 @@ Full CLI documentation: [`docs/cli.md`](docs/cli.md)
 
 ```python
 from pathlib import Path
+
+import numpy as np
+from astropy import units as u
 
 from ao_predict import (
     InitDatasetRequest,
@@ -68,12 +74,13 @@ request = InitDatasetRequest(
         specific_fields={"config_path": "sample_tiptop.ini"},
     ),
     setup=SetupConfig(
-        ee_apertures_mas=[50.0, 100.0],
-        specific_fields={"ngs_mag_zeropoint": 3.0e10},
+        ee_apertures=np.array([50.0, 100.0]) * u.mas,
+        specific_fields={"ngs_magnitude_zeropoint": 3.0e10 * u.photon / u.s},
     ),
     options=TableOptionsConfig(
-        broadcast={"zenith_angle_deg": 20.0},
-        columns=["wavelength_um"],
+        broadcast={"zenith_angle": 20.0 * u.deg},
+        columns=["wavelength"],
+        units={"wavelength": u.um},
         rows=[[1.654], [2.179]],
     ),
     overwrite=True,
@@ -94,6 +101,7 @@ explicitly and then run pending simulations again.
 Python API guide: [`docs/api.md`](docs/api.md)
 
 API key casing:
+
 - Mapping keys are case-sensitive and must be lowercase.
 
 ## Model Training And Prediction
@@ -148,17 +156,20 @@ To reinstall the package and extras into the local environment:
 ```
 
 To run the local docs server:
+
 ```bash
 ./.conda/bin/mkdocs serve
 ```
 
 Pre-commit checks are versioned in `.githooks/pre-commit`.
 If your clone is not using that hooks path, run:
+
 ```bash
 git config core.hooksPath .githooks
 ```
 
 ## Working Examples
+
 - API script: `examples/simulate_tiptop_api.py`
 - CLI YAML config: `examples/simulate_tiptop_cli_example1.yaml`
 - CLI YAML config with CSV table: `examples/simulate_tiptop_cli_example2.yaml`

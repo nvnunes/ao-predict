@@ -66,8 +66,7 @@ _METRIC_NAME_ALIASES = {
     "strehl_ratio": schema.KEY_STATS_SR,
     "ee": schema.KEY_STATS_EE,
     "ensquared_energy": schema.KEY_STATS_EE,
-    "fwhm": schema.KEY_STATS_FWHM_MAS,
-    "fwhm_mas": schema.KEY_STATS_FWHM_MAS,
+    "fwhm": schema.KEY_STATS_FWHM,
 }
 
 
@@ -341,9 +340,9 @@ def resolve_metric_name(
     return _METRIC_NAME_ALIASES.get(lookup_name, metric_name)
 
 
-def _polar_to_xy(r_arcsec: np.ndarray, theta_deg: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    theta_rad = np.deg2rad(theta_deg)
-    return r_arcsec * np.cos(theta_rad), r_arcsec * np.sin(theta_rad)
+def _polar_to_xy(r: np.ndarray, theta: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    theta_rad = np.deg2rad(theta)
+    return r * np.cos(theta_rad), r * np.sin(theta_rad)
 
 
 def _figure_and_axis(ax: Axes | None) -> tuple[Figure, Axes]:
@@ -426,12 +425,12 @@ def _require_source_coordinate_arrays(
     *,
     label: str,
 ) -> tuple[np.ndarray, np.ndarray]:
-    r_arcsec = _require_1d_array(mapping, r_key)
-    theta_deg = _require_1d_array(mapping, theta_key)
-    if r_arcsec.shape != theta_deg.shape:
+    r = _require_1d_array(mapping, r_key)
+    theta = _require_1d_array(mapping, theta_key)
+    if r.shape != theta.shape:
         raise ValueError(f"{label} coordinate arrays must have matching shapes.")
-    finite = np.isfinite(r_arcsec) & np.isfinite(theta_deg)
-    return r_arcsec[finite], theta_deg[finite]
+    finite = np.isfinite(r) & np.isfinite(theta)
+    return r[finite], theta[finite]
 
 
 def _select_psf(simulation: AnalysisSimulation, psf_index: int) -> np.ndarray:
@@ -472,7 +471,7 @@ def _require_matching_science_coordinates(
 ) -> None:
     left_setup = left.config["setup"]
     right_setup = right.config["setup"]
-    for key in (schema.KEY_SETUP_SCI_R_ARCSEC, schema.KEY_SETUP_SCI_THETA_DEG):
+    for key in (schema.KEY_SETUP_SCI_R, schema.KEY_SETUP_SCI_THETA):
         left_values = np.asarray(left_setup[key], dtype=float)
         right_values = np.asarray(right_setup[key], dtype=float)
         if left_values.shape != right_values.shape or not np.allclose(left_values, right_values):
@@ -519,13 +518,13 @@ def _shared_metric_range(
     return vmin, vmax
 
 
-def _psf_extent(psf: np.ndarray, pixel_scale_mas: float) -> tuple[float, float, float, float]:
+def _psf_extent(psf: np.ndarray, pixel_scale: float) -> tuple[float, float, float, float]:
     ny, nx = psf.shape
     return (
-        -0.5 * nx * pixel_scale_mas,
-        0.5 * nx * pixel_scale_mas,
-        -0.5 * ny * pixel_scale_mas,
-        0.5 * ny * pixel_scale_mas,
+        -0.5 * nx * pixel_scale,
+        0.5 * nx * pixel_scale,
+        -0.5 * ny * pixel_scale,
+        0.5 * ny * pixel_scale,
     )
 
 
@@ -553,7 +552,7 @@ def _core_extent(core: np.ndarray) -> tuple[float, float, float, float]:
 
 
 def _default_metric_cmap(metric_name: str) -> str:
-    if metric_name == schema.KEY_STATS_FWHM_MAS:
+    if metric_name == schema.KEY_STATS_FWHM:
         return "plasma_r"
     return "plasma"
 
@@ -563,7 +562,7 @@ def _metric_display_name(metric_name: str) -> str:
         return "SR"
     if metric_name == schema.KEY_STATS_EE:
         return "EE"
-    if metric_name == schema.KEY_STATS_FWHM_MAS:
+    if metric_name == schema.KEY_STATS_FWHM:
         return "FWHM"
     return metric_name
 
@@ -580,7 +579,7 @@ def _metric_display_title(
         return _metric_display_name(metric_name)
 
     apertures = np.asarray(
-        simulation.config["setup"].get(schema.KEY_SETUP_EE_APERTURES_MAS, []),
+        simulation.config["setup"].get(schema.KEY_SETUP_EE_APERTURES, []),
         dtype=float,
     ).reshape(-1)
     if value_index < apertures.size and np.isfinite(apertures[value_index]):
@@ -598,13 +597,13 @@ def _metric_colorbar_label(metric_name: str) -> str:
         return "Strehl Ratio"
     if metric_name == schema.KEY_STATS_EE:
         return "EE"
-    if metric_name == schema.KEY_STATS_FWHM_MAS:
+    if metric_name == schema.KEY_STATS_FWHM:
         return "FWHM [mas]"
     return metric_name
 
 
 def _metric_colorbar_unit_label(metric_name: str) -> str:
-    if metric_name == schema.KEY_STATS_FWHM_MAS:
+    if metric_name == schema.KEY_STATS_FWHM:
         return "[mas]"
     return ""
 
@@ -693,10 +692,10 @@ def _format_contour_label(value: float) -> str:
     return text
 
 
-def _field_radius(r_arcsec: np.ndarray) -> float:
-    if r_arcsec.size == 0:
+def _field_radius(r: np.ndarray) -> float:
+    if r.size == 0:
         raise ValueError("Science coordinate arrays must contain at least one point.")
-    radius = float(np.nanmax(r_arcsec))
+    radius = float(np.nanmax(r))
     if not np.isfinite(radius) or radius <= 0.0:
         raise ValueError("Science coordinates must span a positive field radius.")
     return radius
@@ -716,20 +715,20 @@ def _field_grid(
 
 
 def _interpolate_metric_field(
-    x_arcsec: np.ndarray,
-    y_arcsec: np.ndarray,
+    x: np.ndarray,
+    y: np.ndarray,
     metric_values: np.ndarray,
     x_grid: np.ndarray,
     y_grid: np.ndarray,
     interpolation: _MetricInterpolation,
 ) -> np.ndarray:
-    if x_arcsec.size < 3:
+    if x.size < 3:
         raise ValueError("Metric field interpolation requires at least three science points.")
     if interpolation == "nearest":
-        return griddata((x_arcsec, y_arcsec), metric_values, (x_grid, y_grid), method="nearest")
+        return griddata((x, y), metric_values, (x_grid, y_grid), method="nearest")
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", category=RuntimeWarning)
-        rbf = Rbf(x_arcsec, y_arcsec, metric_values, function="cubic")
+        rbf = Rbf(x, y, metric_values, function="cubic")
         return rbf(x_grid, y_grid)
 
 
@@ -759,8 +758,8 @@ def _add_metric_contours(
 
 def _add_source_markers(
     ax: Axes,
-    r_arcsec: np.ndarray,
-    theta_deg: np.ndarray,
+    r: np.ndarray,
+    theta: np.ndarray,
     *,
     marker: str | MarkerStyle,
     color: str,
@@ -769,12 +768,12 @@ def _add_source_markers(
     linewidth: float,
     label: str,
 ) -> None:
-    if r_arcsec.size == 0:
+    if r.size == 0:
         return
-    x_arcsec, y_arcsec = _polar_to_xy(r_arcsec, theta_deg)
+    x, y = _polar_to_xy(r, theta)
     ax.scatter(
-        x_arcsec,
-        y_arcsec,
+        x,
+        y,
         marker=marker,
         s=size,
         facecolors=color,
@@ -787,14 +786,14 @@ def _add_source_markers(
 
 def _add_ngs_magnitude_labels(
     ax: Axes,
-    r_arcsec: np.ndarray,
-    theta_deg: np.ndarray,
+    r: np.ndarray,
+    theta: np.ndarray,
     magnitudes: np.ndarray,
 ) -> None:
-    if r_arcsec.size == 0:
+    if r.size == 0:
         return
-    x_arcsec, y_arcsec = _polar_to_xy(r_arcsec, theta_deg)
-    for x_value, y_value, magnitude in zip(x_arcsec, y_arcsec, magnitudes):
+    x, y = _polar_to_xy(r, theta)
+    for x_value, y_value, magnitude in zip(x, y, magnitudes):
         ax.annotate(
             f"{magnitude:.1f}",
             (x_value, y_value),
@@ -813,28 +812,28 @@ def _require_ngs_marker_arrays(
     *,
     include_magnitudes: bool,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray | None]:
-    ngs_r = _require_1d_array(options, schema.KEY_OPTION_NGS_R_ARCSEC)
-    ngs_theta = _require_1d_array(options, schema.KEY_OPTION_NGS_THETA_DEG)
+    ngs_r = _require_1d_array(options, schema.KEY_OPTION_NGS_R)
+    ngs_theta = _require_1d_array(options, schema.KEY_OPTION_NGS_THETA)
     if ngs_r.shape != ngs_theta.shape:
         raise ValueError("NGS coordinate arrays must have matching shapes.")
     finite = np.isfinite(ngs_r) & np.isfinite(ngs_theta)
-    ngs_mag = None
+    ngs_magnitude = None
     if include_magnitudes:
-        ngs_mag = _require_1d_array(options, schema.KEY_OPTION_NGS_MAG)
-        if ngs_mag.shape != ngs_r.shape:
+        ngs_magnitude = _require_1d_array(options, schema.KEY_OPTION_NGS_MAGNITUDE)
+        if ngs_magnitude.shape != ngs_r.shape:
             raise ValueError("NGS coordinate and magnitude arrays must have matching shapes.")
-        finite &= np.isfinite(ngs_mag)
-        ngs_mag = ngs_mag[finite]
-    return ngs_r[finite], ngs_theta[finite], ngs_mag
+        finite &= np.isfinite(ngs_magnitude)
+        ngs_magnitude = ngs_magnitude[finite]
+    return ngs_r[finite], ngs_theta[finite], ngs_magnitude
 
 
 def _require_science_field_coordinates(simulation: AnalysisSimulation) -> tuple[np.ndarray, np.ndarray]:
     setup = simulation.config["setup"]
-    r_arcsec = _require_1d_array(setup, schema.KEY_SETUP_SCI_R_ARCSEC)
-    theta_deg = _require_1d_array(setup, schema.KEY_SETUP_SCI_THETA_DEG)
-    if r_arcsec.shape != theta_deg.shape:
+    r = _require_1d_array(setup, schema.KEY_SETUP_SCI_R)
+    theta = _require_1d_array(setup, schema.KEY_SETUP_SCI_THETA)
+    if r.shape != theta.shape:
         raise ValueError("Science coordinate arrays must have matching shapes.")
-    return r_arcsec, theta_deg
+    return r, theta
 
 
 def _require_metric_field_values(
@@ -870,14 +869,14 @@ def plot_psf(
     """Plot one science PSF from a loaded analysis simulation.
 
     The plot reads ``simulation.psfs[psf_index]`` and uses the persisted
-    native pixel scale from ``simulation.meta["pixel_scale_mas"]`` to label
+    native pixel scale from ``simulation.meta["pixel_scale"]`` to label
     both axes in milliarcseconds. By default the displayed image is
     ``log10`` intensity clipped at a small positive floor. The helper returns
     the owning, unshown Matplotlib figure.
 
     Args:
         simulation: Loaded analysis simulation with a 3D PSF cube and
-            ``pixel_scale_mas`` metadata.
+            ``pixel_scale`` metadata.
         psf_index: Zero-based PSF index within ``simulation.psfs``.
         ax: Optional target axes. When omitted, a new figure and axes are
             created.
@@ -901,17 +900,17 @@ def plot_psf(
     Raises:
         TypeError: If ``psf_index`` is not an integer.
         ValueError: If PSFs are unavailable, the PSF cube has the wrong shape,
-            ``psf_index`` is out of range, or ``pixel_scale_mas`` is missing
+            ``psf_index`` is out of range, or ``pixel_scale`` is missing
             or invalid.
     """
 
     psf = _select_psf(simulation, psf_index)
-    pixel_scale_mas = _require_positive_scalar(simulation.meta, schema.KEY_META_PIXEL_SCALE_MAS)
+    pixel_scale = _require_positive_scalar(simulation.meta, schema.KEY_META_PIXEL_SCALE)
     values = np.log10(np.clip(psf, _MIN_LOG_VALUE, None)) if log10 else psf
     fig, ax = _figure_and_axis(ax)
     im = ax.imshow(
         values,
-        extent=_psf_extent(psf, pixel_scale_mas),
+        extent=_psf_extent(psf, pixel_scale),
         origin="lower",
         cmap=cmap,
         vmin=vmin,
@@ -1042,8 +1041,8 @@ def plot_metric_field(
 ) -> Figure:
     """Plot one metric over science field coordinates for a single simulation.
 
-    Science coordinates are read from ``setup["sci_r_arcsec"]`` and
-    ``setup["sci_theta_deg"]`` and converted to Cartesian arcsecond axes.
+    Science coordinates are read from ``setup["sci_r"]`` and
+    ``setup["sci_theta"]`` and converted to Cartesian arcsecond axes.
     Metric values are read from ``simulation.stats[metric_name]``. For
     multidimensional metric arrays, trailing dimensions are flattened and
     ``value_index`` selects one value per science point. The selected metric is
@@ -1128,19 +1127,19 @@ def plot_metric_field(
     metric_name = resolve_metric_name(metric_name)
     metric_name_location = _require_metric_name_location(metric_name_location)
     interpolation = _require_metric_interpolation(interpolation)
-    r_arcsec, theta_deg = _require_science_field_coordinates(simulation)
+    r, theta = _require_science_field_coordinates(simulation)
     metric_values = _require_metric_field_values(
         simulation,
         metric_name,
         value_index,
-        num_science_points=r_arcsec.shape[0],
+        num_science_points=r.shape[0],
     )
-    x_arcsec, y_arcsec = _polar_to_xy(r_arcsec, theta_deg)
-    radius = _field_radius(r_arcsec)
+    x, y = _polar_to_xy(r, theta)
+    radius = _field_radius(r)
     xi, yi, x_grid, y_grid, field_mask = _field_grid(radius, grid_size)
     values_grid = _interpolate_metric_field(
-        x_arcsec,
-        y_arcsec,
+        x,
+        y,
         metric_values,
         x_grid,
         y_grid,
@@ -1189,8 +1188,8 @@ def plot_metric_field(
         setup = simulation.config["setup"]
         lgs_r, lgs_theta = _require_source_coordinate_arrays(
             setup,
-            BaseSimulation.KEY_SETUP_LGS_R_ARCSEC,
-            BaseSimulation.KEY_SETUP_LGS_THETA_DEG,
+            BaseSimulation.KEY_SETUP_LGS_R,
+            BaseSimulation.KEY_SETUP_LGS_THETA,
             label="LGS",
         )
         _add_source_markers(
@@ -1206,7 +1205,7 @@ def plot_metric_field(
         )
     if show_ngs or show_ngs_mags:
         options = simulation.config["options"]
-        ngs_r, ngs_theta, ngs_mag = _require_ngs_marker_arrays(
+        ngs_r, ngs_theta, ngs_magnitude = _require_ngs_marker_arrays(
             options,
             include_magnitudes=show_ngs_mags,
         )
@@ -1221,8 +1220,8 @@ def plot_metric_field(
             linewidth=source_marker_linewidth,
             label="NGS",
         )
-        if ngs_mag is not None:
-            _add_ngs_magnitude_labels(ax, ngs_r, ngs_theta, ngs_mag)
+        if ngs_magnitude is not None:
+            _add_ngs_magnitude_labels(ax, ngs_r, ngs_theta, ngs_magnitude)
     if add_colorbar:
         if colorbar_label is None and metric_name_location == _METRIC_NAME_LOCATION_COLORBAR:
             colorbar_label = display_label

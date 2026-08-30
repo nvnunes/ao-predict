@@ -9,16 +9,18 @@ from typing import Any, Generic, TypeVar, cast
 
 import h5py
 import numpy as np
+from astropy import units as u
 
+from .._units import UNITS_ATTRIBUTE, quantity_from_value
 from ..simulation import schema
-from ._immutability import freeze_array, freeze_mapping
+from ._immutability import freeze_mapping, freeze_value
 
 
 # Constants
 
 _PSFS_FIELD = "psfs"
 _MISSING = object()
-_PER_SIM_META_FIELDS = (schema.KEY_META_PIXEL_SCALE_MAS,)
+_PER_SIM_META_FIELDS = (schema.KEY_META_PIXEL_SCALE,)
 AnalysisSimulationT = TypeVar("AnalysisSimulationT", bound="AnalysisSimulation")
 AnalysisDatasetT = TypeVar("AnalysisDatasetT", bound="AnalysisDataset[Any]")
 LazyFieldLoader = Callable[[], Any]
@@ -45,7 +47,7 @@ class AnalysisLoadContext:
             return path in f
 
     def read_dataset_value(self, path: str) -> Any:
-        """Read any persisted node at ``path`` into plain Python objects."""
+        """Read a persisted node, reconstructing quantities when declared."""
         with h5py.File(self.path, "r") as f:
             if path not in f:
                 raise ValueError(f"Missing required dataset '{path}'.")
@@ -57,16 +59,16 @@ class AnalysisLoadContext:
             ds = _require_dataset(f, path)
             return _read_simulation_dataset_row(ds, sim_index, path=path)
 
-    def read_array(self, path: str) -> np.ndarray:
-        """Read a dataset at ``path`` as a standalone NumPy array."""
+    def read_array(self, path: str) -> np.ndarray | u.Quantity:
+        """Read an array, retaining a persisted unit when present."""
         with h5py.File(self.path, "r") as f:
             ds = _require_dataset(f, path)
-            return np.asarray(ds[...]).copy()
+            return _read_dataset(ds, ds[...])
 
-    def read_sim_array(self, path: str, sim_index: int) -> np.ndarray:
-        """Read one per-simulation array row from a dataset at ``path``."""
+    def read_sim_array(self, path: str, sim_index: int) -> np.ndarray | u.Quantity:
+        """Read one array row, retaining a persisted unit when present."""
         value = self.read_sim_value(path, sim_index)
-        return np.asarray(value).copy()
+        return value.copy()
 
 
 @dataclass(frozen=True)
@@ -501,15 +503,7 @@ class AnalysisDataset(Generic[AnalysisSimulationT]):
 
 def _freeze_loaded_value(value: Any) -> Any:
     """Freeze one eager/lazy loaded value for read-only public exposure."""
-    if isinstance(value, np.ndarray):
-        return freeze_array(value)
-    if isinstance(value, Mapping):
-        return freeze_mapping(dict(value))
-    if isinstance(value, list):
-        return tuple(_freeze_loaded_value(item) for item in value)
-    if isinstance(value, tuple):
-        return tuple(_freeze_loaded_value(item) for item in value)
-    return value
+    return freeze_value(value)
 
 
 def _validate_dataset_size(
@@ -596,15 +590,21 @@ def _slice_per_sim_value(value: Any, sim_idx: int) -> Any:
 
 
 def _read_node(node: h5py.Group | h5py.Dataset) -> Any:
-    """Read an HDF5 node recursively into plain Python objects."""
+    """Read an HDF5 node into Python values, reconstructing quantities."""
     if isinstance(node, h5py.Group):
         return {key: _read_node(node[key]) for key in node.keys()}
 
-    data = node[()]
+    return _read_dataset(node, node[()])
+
+
+def _read_dataset(node: h5py.Dataset, data: Any) -> Any:
+    """Decode one HDF5 dataset value and reconstruct its unit."""
     if isinstance(data, bytes):
         return data.decode("utf-8")
     if isinstance(data, np.ndarray) and data.dtype.kind in {"S", "O"}:
         return data.astype(str)
+    if UNITS_ATTRIBUTE in node.attrs:
+        return quantity_from_value(np.asarray(data).copy(), u.Unit(node.attrs[UNITS_ATTRIBUTE]))
     return data
 
 
@@ -627,9 +627,4 @@ def _read_simulation_dataset_row(ds: h5py.Dataset, sim_idx: int, *, path: str) -
         raise ValueError(f"{path} must be per-simulation with first dim N.")
     if idx >= ds.shape[0]:
         raise IndexError(f"sim_idx {idx} out of range for {path} shape {ds.shape}")
-    value = ds[idx]
-    if isinstance(value, bytes):
-        return value.decode("utf-8")
-    if isinstance(value, np.ndarray) and value.dtype.kind in {"S", "O"}:
-        return value.astype(str)
-    return value
+    return _read_dataset(ds, ds[idx])

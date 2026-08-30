@@ -10,6 +10,7 @@ import contourpy
 import h5py
 import numpy as np
 import pytest
+from astropy import units as u
 
 from ao_predict.persistence import SimulationStore
 from ao_predict.simulation.helpers import normalize_psf_pixel_sum
@@ -44,15 +45,33 @@ from mock_simulation import (
 _GIRMOS_AOSTATS = None
 
 
-def _simulation(*, extra_stat_names: tuple[str, ...] = (), meta_field_names: tuple[str, ...] = ()) -> dict:
+def _simulation(
+    *,
+    extra_stat_fields: Mapping[str, u.UnitBase] | None = None,
+    meta_fields: Mapping[str, u.UnitBase | None] | None = None,
+) -> dict:
     return {
         "name": "ao_predict.simulation.tiptop:TiptopSimulation",
         "version": "x.y",
-        "extra_stat_names": np.asarray(extra_stat_names, dtype=str),
+        "extra_stat_fields": {
+            name: "1" if unit == u.dimensionless_unscaled else unit.to_string(format="generic")
+            for name, unit in (extra_stat_fields or {}).items()
+        },
         schema.KEY_SIMULATION_NGS_MAG_STANDARD: schema.DEFAULT_NGS_MAG_STANDARD,
         **(
-            {schema.KEY_SIMULATION_META_FIELDS: np.asarray(meta_field_names, dtype=str)}
-            if meta_field_names
+            {
+                schema.KEY_SIMULATION_META_FIELDS: {
+                    name: (
+                        ""
+                        if unit is None
+                        else "1"
+                        if unit == u.dimensionless_unscaled
+                        else unit.to_string(format="generic")
+                    )
+                    for name, unit in meta_fields.items()
+                }
+            }
+            if meta_fields
             else {}
         ),
         "base_config": "[section]\nvalue=1\n",
@@ -62,13 +81,15 @@ def _simulation(*, extra_stat_names: tuple[str, ...] = (), meta_field_names: tup
 def _mock_simulation(
     simulation_cls: type[MockSimulation] = MockSimulation,
     *,
-    extra_stat_names: tuple[str, ...] = (),
+    extra_stat_fields: Mapping[str, u.UnitBase] | None = None,
     specific_fields: Mapping[str, object] | None = None,
 ) -> dict:
     payload = {
         "name": f"{simulation_cls.__module__}:{simulation_cls.__name__}",
         "version": simulation_cls._VERSION,
-        "extra_stat_names": np.asarray(extra_stat_names, dtype=str),
+        "extra_stat_fields": {
+            name: unit.to_string() for name, unit in (extra_stat_fields or {}).items()
+        },
         schema.KEY_SIMULATION_NGS_MAG_STANDARD: simulation_cls().ngs_mag_standard,
     }
     payload.update(dict(specific_fields or {}))
@@ -77,25 +98,25 @@ def _mock_simulation(
 
 def _setup() -> dict:
     return {
-        "ee_apertures_mas": np.array([50.0, 100.0], dtype=float),
+        "ee_apertures": np.array([50.0, 100.0], dtype=float) * u.mas,
         "sr_method": schema.DEFAULT_SETUP_SR_METHOD,
         "fwhm_summary": schema.DEFAULT_SETUP_FWHM_SUMMARY,
         "ee_geometry": schema.DEFAULT_SETUP_EE_GEOMETRY,
-        "atm_wavelength_um": 0.5,
-        "ngs_mag_zeropoint": 3.0e10,
-        "sci_r_arcsec": np.array([0.0, 10.0, 20.0], dtype=float),
-        "sci_theta_deg": np.array([0.0, 90.0, 180.0], dtype=float),
-        "lgs_r_arcsec": np.array([30.0, 30.0, 30.0, 30.0], dtype=float),
-        "lgs_theta_deg": np.array([45.0, 135.0, 225.0, 315.0], dtype=float),
+        "atm_wavelength": 0.5 * u.um,
+        "ngs_magnitude_zeropoint": 3.0e10 * u.photon / u.s,
+        "sci_r": np.array([0.0, 10.0, 20.0], dtype=float) * u.arcsec,
+        "sci_theta": np.array([0.0, 90.0, 180.0], dtype=float) * u.deg,
+        "lgs_r": np.array([30.0, 30.0, 30.0, 30.0], dtype=float) * u.arcsec,
+        "lgs_theta": np.array([45.0, 135.0, 225.0, 315.0], dtype=float) * u.deg,
         "atm_profiles": {
             "0": {
                 "name": "default",
-                "r0_m": 0.16,
-                "L0_m": 25.0,
-                "cn2_heights_m": np.array([0.0, 5000.0], dtype=float),
-                "cn2_weights": np.array([0.6, 0.4], dtype=float),
-                "wind_speed_mps": np.array([5.0, 10.0], dtype=float),
-                "wind_direction_deg": np.array([0.0, 90.0], dtype=float),
+                "r0": 0.16 * u.m,
+                "L0": 25.0 * u.m,
+                "cn2_heights": np.array([0.0, 5000.0], dtype=float) * u.m,
+                "cn2_weights": np.array([0.6, 0.4], dtype=float) * u.dimensionless_unscaled,
+                "wind_speed": np.array([5.0, 10.0], dtype=float) * u.m / u.s,
+                "wind_direction": np.array([0.0, 90.0], dtype=float) * u.deg,
             }
         },
     }
@@ -103,46 +124,50 @@ def _setup() -> dict:
 
 def _options(num_sims: int = 3, max_ngs: int = 3) -> dict:
     return {
-        "wavelength_um": np.full((num_sims,), 1.65, dtype=float),
+        "wavelength": np.full((num_sims,), 1.65, dtype=float) * u.um,
         "atm_profile_id": np.zeros((num_sims,), dtype=np.int32),
-        "zenith_angle_deg": np.full((num_sims,), 20.0, dtype=float),
-        "r0_m": np.full((num_sims,), 0.16, dtype=float),
-        "ngs_r_arcsec": np.ones((num_sims, max_ngs), dtype=float),
-        "ngs_theta_deg": np.zeros((num_sims, max_ngs), dtype=float),
-        "ngs_mag": np.full((num_sims, max_ngs), 15.0, dtype=float),
+        "zenith_angle": np.full((num_sims,), 20.0, dtype=float) * u.deg,
+        "r0": np.full((num_sims,), 0.16, dtype=float) * u.m,
+        "ngs_r": np.ones((num_sims, max_ngs), dtype=float) * u.arcsec,
+        "ngs_theta": np.zeros((num_sims, max_ngs), dtype=float) * u.deg,
+        "ngs_magnitude": np.full((num_sims, max_ngs), 15.0, dtype=float) * u.mag,
     }
 
 
 def _options_row(index: int = 0) -> dict:
     options = _options()
-    return {key: np.asarray(value)[index].copy() for key, value in options.items()}
+    return {key: value[index].copy() for key, value in options.items()}
 
 
-def _stats_meta(pixel_scale_mas: float = 4.0) -> dict:
+def _stats_meta(pixel_scale: float = 4.0) -> dict:
     return {
-        schema.KEY_META_PIXEL_SCALE_MAS: float(pixel_scale_mas),
-        schema.KEY_META_TEL_DIAMETER_M: 8.0,
-        schema.KEY_META_TEL_PUPIL: np.ones((6, 6), dtype=np.float32),
+        schema.KEY_META_PIXEL_SCALE: float(pixel_scale) * u.mas,
+        schema.KEY_META_TEL_DIAMETER: 8.0 * u.m,
+        schema.KEY_META_TEL_PUPIL: np.ones((6, 6), dtype=np.float32) * u.dimensionless_unscaled,
     }
 
 
 def _psf_metadata(
     *,
-    wavelength_um: float | np.ndarray = 1.65,
-    pixel_scale_mas: float | np.ndarray = 4.0,
-    tel_diameter_m: float | np.ndarray = 8.0,
+    wavelength: float | np.ndarray = 1.65,
+    pixel_scale: float | np.ndarray = 4.0,
+    tel_diameter: float | np.ndarray = 8.0,
     tel_pupil: np.ndarray | None = None,
 ) -> PsfMetadata:
     return PsfMetadata(
-        wavelength_um=wavelength_um,
-        pixel_scale_mas=pixel_scale_mas,
-        tel_diameter_m=tel_diameter_m,
-        tel_pupil=np.ones((6, 6), dtype=np.float32) if tel_pupil is None else tel_pupil,
+        wavelength=u.Quantity(np.asarray(wavelength), u.um, copy=False),
+        pixel_scale=u.Quantity(np.asarray(pixel_scale), u.mas, copy=False),
+        tel_diameter=u.Quantity(np.asarray(tel_diameter), u.m, copy=False),
+        tel_pupil=u.Quantity(
+            np.ones((6, 6), dtype=np.float32) if tel_pupil is None else tel_pupil,
+            u.dimensionless_unscaled,
+            copy=False,
+        ),
     )
 
 
-def _stats_ee_apertures() -> np.ndarray:
-    return np.array([50.0, 100.0], dtype=np.float32)
+def _stats_ee_apertures() -> u.Quantity:
+    return np.array([50.0, 100.0], dtype=np.float32) * u.mas
 
 
 def _success_result(
@@ -158,16 +183,16 @@ def _success_result(
     stats: dict[str, np.ndarray] = {}
     if populate_stats:
         stats = {
-            "sr": np.linspace(0.1, 0.3, m, dtype=np.float32),
-            "ee": np.full((m, a), 0.5, dtype=np.float32),
-            "fwhm_mas": np.full((m,), 60.0, dtype=np.float32),
+            "sr": np.linspace(0.1, 0.3, m, dtype=np.float32) * u.dimensionless_unscaled,
+            "ee": np.full((m, a), 0.5, dtype=np.float32) * u.dimensionless_unscaled,
+            "fwhm": np.full((m,), 60.0, dtype=np.float32) * u.mas,
         }
         if extra_stats:
             stats.update(extra_stats)
     result_meta = {
-        "pixel_scale_mas": 4.0,
-        "tel_diameter_m": 8.0,
-        "tel_pupil": np.ones((6, 6), dtype=np.float32),
+        "pixel_scale": 4.0 * u.mas,
+        "tel_diameter": 8.0 * u.m,
+        "tel_pupil": np.ones((6, 6), dtype=np.float32) * u.dimensionless_unscaled,
     }
     result_meta.update(dict(meta or {}))
     return SimulationResult(
@@ -182,14 +207,14 @@ def _success_result_missing_required_outputs(m: int = 3, a: int = 2) -> Simulati
     return SimulationResult(
         state=SimulationState.SUCCEEDED,
         stats={
-            "sr": np.linspace(0.1, 0.3, m, dtype=np.float32),
-            "ee": np.full((m, a), 0.5, dtype=np.float32),
-            "fwhm_mas": np.full((m,), 60.0, dtype=np.float32),
+            "sr": np.linspace(0.1, 0.3, m, dtype=np.float32) * u.dimensionless_unscaled,
+            "ee": np.full((m, a), 0.5, dtype=np.float32) * u.dimensionless_unscaled,
+            "fwhm": np.full((m,), 60.0, dtype=np.float32) * u.mas,
         },
         meta={
-            "pixel_scale_mas": 4.0,
-            "tel_diameter_m": 8.0,
-            "tel_pupil": np.ones((6, 6), dtype=np.float32),
+            "pixel_scale": 4.0 * u.mas,
+            "tel_diameter": 8.0 * u.m,
+            "tel_pupil": np.ones((6, 6), dtype=np.float32) * u.dimensionless_unscaled,
         },
         psfs=None,
     )
@@ -198,16 +223,16 @@ def _success_result_missing_required_outputs(m: int = 3, a: int = 2) -> Simulati
 def _setup_obj() -> SimulationSetup:
     setup = _setup()
     return SimulationSetup(
-        ee_apertures_mas=np.asarray(setup["ee_apertures_mas"], dtype=float).reshape(-1),
+        ee_apertures=setup["ee_apertures"],
         sr_method=str(setup["sr_method"]),
         fwhm_summary=str(setup["fwhm_summary"]),
         ee_geometry=str(setup["ee_geometry"]),
-        atm_wavelength_um=float(setup["atm_wavelength_um"]),
+        atm_wavelength=setup["atm_wavelength"],
         atm_profiles=dict(setup["atm_profiles"]),
-        lgs_r_arcsec=np.asarray(setup["lgs_r_arcsec"], dtype=float).reshape(-1),
-        lgs_theta_deg=np.asarray(setup["lgs_theta_deg"], dtype=float).reshape(-1),
-        sci_r_arcsec=np.asarray(setup["sci_r_arcsec"], dtype=float).reshape(-1),
-        sci_theta_deg=np.asarray(setup["sci_theta_deg"], dtype=float).reshape(-1),
+        lgs_r=setup["lgs_r"],
+        lgs_theta=setup["lgs_theta"],
+        sci_r=setup["sci_r"],
+        sci_theta=setup["sci_theta"],
     )
 
 
@@ -304,13 +329,17 @@ class _ExtraStatsSimulation(Simulation):
     _NAME = "ao_predict.simulation.tiptop:TiptopSimulation"
     _VERSION = "x.y"
 
-    def __init__(self, extra_stats: Mapping[str, object], extra_stat_names: tuple[str, ...] = ()):
+    def __init__(
+        self,
+        extra_stats: Mapping[str, object],
+        extra_stat_fields: Mapping[str, u.UnitBase] | None = None,
+    ):
         self._extra_stats = dict(extra_stats)
-        self._extra_stat_names = tuple(extra_stat_names)
+        self._extra_stat_fields = dict(extra_stat_fields or {})
 
     @property
-    def extra_stat_names(self) -> tuple[str, ...]:
-        return self._extra_stat_names
+    def extra_stat_fields(self) -> Mapping[str, u.UnitBase]:
+        return self._extra_stat_fields
 
     def prepare_simulation_payload(self, base_simulation_payload, simulation_cfg):
         del simulation_cfg
@@ -365,14 +394,16 @@ def test_validate_success_result_accepts_valid_success_result():
 
 def test_validate_success_result_accepts_nan_fwhm():
     result = _success_result()
-    result.stats[schema.KEY_STATS_FWHM_MAS] = np.full((3,), np.nan, dtype=np.float32)
+    result.stats[schema.KEY_STATS_FWHM] = np.full((3,), np.nan, dtype=np.float32) * u.mas
     validate_successful_result(result, 3, 2, require_psfs=True)
 
 
 def test_validate_success_result_requires_declared_extra_stats():
     result = _success_result()
-    with pytest.raises(ValueError, match="missing declared extra stats: halo_mas"):
-        validate_successful_result(result, 3, 2, extra_stat_names=("halo_mas",), require_psfs=True)
+    with pytest.raises(ValueError, match="missing declared extra stats: halo"):
+        validate_successful_result(
+            result, 3, 2, extra_stat_fields={"halo": u.mas}, require_psfs=True
+        )
 
 
 def test_validate_success_result_rejects_psf_science_dimension_mismatch():
@@ -385,28 +416,24 @@ def test_validate_success_result_rejects_psf_science_dimension_mismatch():
 def test_validate_success_result_rejects_missing_tel_pupil():
     result = _success_result()
     result.meta.pop(schema.KEY_META_TEL_PUPIL)
-    with pytest.raises(ValueError, match="result.meta must include pixel_scale_mas, tel_diameter_m, and tel_pupil"):
+    with pytest.raises(ValueError, match="result.meta must include pixel_scale, tel_diameter, and tel_pupil"):
         validate_successful_result(result, 3, 2, require_psfs=True)
 
 
 def test_validate_success_result_rejects_non_2d_tel_pupil():
     result = _success_result()
-    result.meta[schema.KEY_META_TEL_PUPIL] = np.ones((6,), dtype=np.float32)
+    result.meta[schema.KEY_META_TEL_PUPIL] = np.ones((6,), dtype=np.float32) * u.dimensionless_unscaled
     with pytest.raises(ValueError, match=r"result\.meta\.tel_pupil must be 2D \[Ny, Nx\]\."):
         validate_successful_result(result, 3, 2, require_psfs=True)
 
 
 def test_populate_result_stats_rejects_simulation_provided_core_stats():
     context = SimulationContext(index=0, setup=_setup_obj(), options=_options_row())
-    context.runtime["extra_stat_names"] = ()
+    context.runtime["extra_stat_fields"] = {}
     context.result = SimulationResult(
         state=SimulationState.SUCCEEDED,
         psfs=np.full((3, 4, 4), 0.1, dtype=np.float32),
-        meta={
-            "pixel_scale_mas": 4.0,
-            "tel_diameter_m": 8.0,
-            "tel_pupil": np.ones((6, 6), dtype=np.float32),
-        },
+        meta=_stats_meta(),
     )
     simulation = _ExtraStatsSimulation(
         {schema.KEY_STATS_SR: np.full((3,), 0.2, dtype=np.float32)},
@@ -421,16 +448,12 @@ def test_populate_result_stats_rejects_simulation_provided_core_stats():
 
 def test_populate_result_stats_rejects_direct_result_stats_population():
     context = SimulationContext(index=0, setup=_setup_obj(), options=_options_row())
-    context.runtime["extra_stat_names"] = ()
+    context.runtime["extra_stat_fields"] = {}
     context.result = SimulationResult(
         state=SimulationState.SUCCEEDED,
         psfs=np.full((3, 4, 4), 0.1, dtype=np.float32),
-        meta={
-            "pixel_scale_mas": 4.0,
-            "tel_diameter_m": 8.0,
-            "tel_pupil": np.ones((6, 6), dtype=np.float32),
-        },
-        stats={"halo_mas": np.full((3,), 0.2, dtype=np.float32)},
+        meta=_stats_meta(),
+        stats={"halo": np.full((3,), 0.2, dtype=np.float32) * u.mas},
     )
     simulation = _ExtraStatsSimulation({})
 
@@ -443,51 +466,45 @@ def test_populate_result_stats_rejects_direct_result_stats_population():
 
 def test_populate_result_stats_rejects_undeclared_extra_stats():
     context = SimulationContext(index=0, setup=_setup_obj(), options=_options_row())
-    context.runtime["extra_stat_names"] = ()
+    context.runtime["extra_stat_fields"] = {}
     context.result = SimulationResult(
         state=SimulationState.SUCCEEDED,
         psfs=np.full((3, 4, 4), 0.1, dtype=np.float32),
-        meta={
-            "pixel_scale_mas": 4.0,
-            "tel_diameter_m": 8.0,
-            "tel_pupil": np.ones((6, 6), dtype=np.float32),
-        },
+        meta=_stats_meta(),
     )
-    simulation = _ExtraStatsSimulation({"halo_mas": np.full((3,), 0.2, dtype=np.float32)})
+    simulation = _ExtraStatsSimulation(
+        {"halo": np.full((3,), 0.2, dtype=np.float32) * u.mas}
+    )
 
-    with pytest.raises(ValueError, match=r"Simulation built undeclared extra stats in build_extra_stats\(\): halo_mas"):
+    with pytest.raises(ValueError, match=r"Simulation built undeclared extra stats in build_extra_stats\(\): halo"):
         _populate_result_stats(simulation, context)
 
 
 def test_populate_result_stats_passes_runtime_options_to_stats(monkeypatch):
     observed_options: list[dict[str, object]] = []
     context = SimulationContext(index=0, setup=_setup_obj(), options=_options_row())
-    context.runtime["extra_stat_names"] = ()
+    context.runtime["extra_stat_fields"] = {}
     context.result = SimulationResult(
         state=SimulationState.SUCCEEDED,
         psfs=np.full((3, 4, 4), 0.1, dtype=np.float32),
-        meta={
-            "pixel_scale_mas": 4.0,
-            "tel_diameter_m": 8.0,
-            "tel_pupil": np.ones((6, 6), dtype=np.float32),
-        },
+        meta=_stats_meta(),
     )
 
     def _compute(
         psfs,
         metadata,
         *,
-        ee_apertures_mas,
+        ee_apertures,
         sr_method,
         fwhm_summary,
         ee_geometry,
         preprocess=None,
         **kwargs,
     ):
-        del psfs, ee_apertures_mas, sr_method, fwhm_summary, preprocess, kwargs
+        del psfs, ee_apertures, sr_method, fwhm_summary, preprocess, kwargs
         observed_options.append(
             {
-                schema.KEY_OPTION_WAVELENGTH_UM: metadata.wavelength_um,
+                schema.KEY_OPTION_WAVELENGTH: metadata.wavelength,
                 schema.KEY_SETUP_EE_GEOMETRY: ee_geometry,
             }
         )
@@ -502,12 +519,12 @@ def test_populate_result_stats_passes_runtime_options_to_stats(monkeypatch):
     _populate_result_stats(_ExtraStatsSimulation({}), context)
 
     assert len(observed_options) == 1
-    assert float(observed_options[0][schema.KEY_OPTION_WAVELENGTH_UM]) == pytest.approx(1.65)
+    assert observed_options[0][schema.KEY_OPTION_WAVELENGTH].to_value(u.um) == pytest.approx(1.65)
     assert observed_options[0][schema.KEY_SETUP_EE_GEOMETRY] == schema.DEFAULT_SETUP_EE_GEOMETRY
 
 
 def test_compute_psf_stats_rejects_missing_ee_apertures():
-    with pytest.raises(ValueError, match="ee_apertures_mas is required when computing EE"):
+    with pytest.raises(ValueError, match="ee_apertures is required when computing EE"):
         compute_psf_stats(
             np.zeros((3, 4, 4), dtype=np.float32),
             _psf_metadata(),
@@ -521,8 +538,8 @@ def test_compute_psf_stats_fwhm_metric_does_not_require_ee_apertures_or_compute_
     def _compute_enclosed_energy(*args, **kwargs):
         raise AssertionError("EE should not be computed")
 
-    def _measure(psfs, pixel_scale_mas):
-        del pixel_scale_mas
+    def _measure(psfs, pixel_scale):
+        del pixel_scale
         return (
             np.full((psfs.shape[0],), 4.0, dtype=np.float32),
             np.full((psfs.shape[0],), 9.0, dtype=np.float32),
@@ -535,11 +552,13 @@ def test_compute_psf_stats_fwhm_metric_does_not_require_ee_apertures_or_compute_
     result = compute_psf_stats(
         np.zeros((2, 4, 4), dtype=np.float32),
         _psf_metadata(),
-        metrics=("fwhm_mas",),
+        metrics=("fwhm",),
     )
 
     assert len(result) == 1
-    np.testing.assert_allclose(result[0], np.full((2,), 6.0, dtype=np.float32))
+    np.testing.assert_allclose(
+        result[0], np.full((2,), 6.0, dtype=np.float32) * u.mas
+    )
 
 
 def test_compute_psf_stats_ee_metric_uses_peak_locations_without_computing_sr(monkeypatch):
@@ -550,10 +569,10 @@ def test_compute_psf_stats_ee_metric_uses_peak_locations_without_computing_sr(mo
         del sr_method
         return np.full((psfs.shape[0], 2), 1.0, dtype=np.float32)
 
-    def _ee(psfs, ee_apertures_mas, pixel_scale_mas, peak_locations_yx=None, *, ee_geometry="ensquared"):
-        del pixel_scale_mas, ee_geometry
+    def _ee(psfs, ee_apertures, pixel_scale, peak_locations_yx=None, *, ee_geometry="ensquared"):
+        del pixel_scale, ee_geometry
         np.testing.assert_allclose(peak_locations_yx, np.full((psfs.shape[0], 2), 1.0, dtype=np.float32))
-        return np.full((psfs.shape[0], ee_apertures_mas.shape[0]), 0.25, dtype=np.float32)
+        return np.full((psfs.shape[0], ee_apertures.shape[0]), 0.25, dtype=np.float32)
 
     monkeypatch.setattr(stats_module, "_compute_strehl", _compute_strehl)
     monkeypatch.setattr(stats_module, "_compute_peak_locations", _peak_locations)
@@ -562,7 +581,7 @@ def test_compute_psf_stats_ee_metric_uses_peak_locations_without_computing_sr(mo
     result = compute_psf_stats(
         np.zeros((2, 4, 4), dtype=np.float32),
         _psf_metadata(),
-        ee_apertures_mas=_stats_ee_apertures(),
+        ee_apertures=_stats_ee_apertures(),
         metrics=("ee",),
     )
 
@@ -575,25 +594,25 @@ def test_compute_psf_stats_rejects_invalid_metric_names():
         compute_psf_stats(
             np.zeros((2, 4, 4), dtype=np.float32),
             _psf_metadata(),
-            metrics=("fwhm",),
+            metrics=("unknown",),
         )
 
 
 def test_compute_psf_metric_wrappers_return_single_metric(monkeypatch):
-    def _compute_strehl(psfs, sr_method, pixel_scale_mas, wavelength_um, tel_diameter_m, tel_pupil):
-        del sr_method, pixel_scale_mas, wavelength_um, tel_diameter_m, tel_pupil
+    def _compute_strehl(psfs, sr_method, pixel_scale, wavelength, tel_diameter, tel_pupil):
+        del sr_method, pixel_scale, wavelength, tel_diameter, tel_pupil
         return np.full((psfs.shape[0],), 0.5, dtype=np.float32), np.zeros((psfs.shape[0], 2), dtype=np.float32)
 
     def _peak_locations(psfs, sr_method):
         del sr_method
         return np.zeros((psfs.shape[0], 2), dtype=np.float32)
 
-    def _ee(psfs, ee_apertures_mas, pixel_scale_mas, peak_locations_yx=None, *, ee_geometry="ensquared"):
-        del pixel_scale_mas, peak_locations_yx, ee_geometry
-        return np.full((psfs.shape[0], ee_apertures_mas.shape[0]), 0.25, dtype=np.float32)
+    def _ee(psfs, ee_apertures, pixel_scale, peak_locations_yx=None, *, ee_geometry="ensquared"):
+        del pixel_scale, peak_locations_yx, ee_geometry
+        return np.full((psfs.shape[0], ee_apertures.shape[0]), 0.25, dtype=np.float32)
 
-    def _measure(psfs, pixel_scale_mas):
-        del pixel_scale_mas
+    def _measure(psfs, pixel_scale):
+        del pixel_scale
         return (
             np.full((psfs.shape[0],), 4.0, dtype=np.float32),
             np.full((psfs.shape[0],), 9.0, dtype=np.float32),
@@ -607,10 +626,13 @@ def test_compute_psf_metric_wrappers_return_single_metric(monkeypatch):
     psfs = np.zeros((2, 4, 4), dtype=np.float32)
     np.testing.assert_allclose(compute_psf_sr(psfs, _psf_metadata()), np.full((2,), 0.5, dtype=np.float32))
     np.testing.assert_allclose(
-        compute_psf_ee(psfs, _psf_metadata(), ee_apertures_mas=_stats_ee_apertures()),
+        compute_psf_ee(psfs, _psf_metadata(), ee_apertures=_stats_ee_apertures()),
         np.full((2, 2), 0.25, dtype=np.float32),
     )
-    np.testing.assert_allclose(compute_psf_fwhm(psfs, _psf_metadata()), np.full((2,), 6.0, dtype=np.float32))
+    np.testing.assert_allclose(
+        compute_psf_fwhm(psfs, _psf_metadata()),
+        np.full((2,), 6.0, dtype=np.float32) * u.mas,
+    )
 
 
 def test_compute_psf_stats_rejects_invalid_sr_method():
@@ -618,7 +640,7 @@ def test_compute_psf_stats_rejects_invalid_sr_method():
         compute_psf_stats(
             np.zeros((3, 4, 4), dtype=np.float32),
             _psf_metadata(),
-            ee_apertures_mas=_stats_ee_apertures(),
+            ee_apertures=_stats_ee_apertures(),
             sr_method="invalid",
         )
 
@@ -628,35 +650,35 @@ def test_compute_psf_stats_rejects_invalid_fwhm_summary():
         compute_psf_stats(
             np.zeros((3, 4, 4), dtype=np.float32),
             _psf_metadata(),
-            ee_apertures_mas=_stats_ee_apertures(),
+            ee_apertures=_stats_ee_apertures(),
             fwhm_summary="invalid",
         )
 
 
 def test_compute_psf_stats_rejects_invalid_per_psf_wavelength_length():
-    with pytest.raises(ValueError, match="metadata.wavelength_um per-PSF vector length must match the PSF cube length 3"):
+    with pytest.raises(ValueError, match="metadata.wavelength per-PSF vector length must match the PSF cube length 3"):
         compute_psf_stats(
             np.zeros((3, 4, 4), dtype=np.float32),
-            _psf_metadata(wavelength_um=np.array([1.6, 1.7], dtype=np.float32)),
-            ee_apertures_mas=_stats_ee_apertures(),
+            _psf_metadata(wavelength=np.array([1.6, 1.7], dtype=np.float32)),
+            ee_apertures=_stats_ee_apertures(),
         )
 
 
 def test_compute_psf_stats_rejects_invalid_per_psf_pixel_scale_length():
-    with pytest.raises(ValueError, match="metadata.pixel_scale_mas per-PSF vector length must match the PSF cube length 3"):
+    with pytest.raises(ValueError, match="metadata.pixel_scale per-PSF vector length must match the PSF cube length 3"):
         compute_psf_stats(
             np.zeros((3, 4, 4), dtype=np.float32),
-            _psf_metadata(pixel_scale_mas=np.array([4.0, 4.1], dtype=np.float32)),
-            ee_apertures_mas=_stats_ee_apertures(),
+            _psf_metadata(pixel_scale=np.array([4.0, 4.1], dtype=np.float32)),
+            ee_apertures=_stats_ee_apertures(),
         )
 
 
 def test_compute_psf_stats_rejects_non_scalar_telescope_diameter():
-    with pytest.raises(ValueError, match="metadata.tel_diameter_m must be a scalar"):
+    with pytest.raises(ValueError, match="metadata.tel_diameter must be a scalar"):
         compute_psf_stats(
             np.zeros((3, 4, 4), dtype=np.float32),
-            _psf_metadata(tel_diameter_m=np.array([8.0, 8.1], dtype=np.float32)),
-            ee_apertures_mas=_stats_ee_apertures(),
+            _psf_metadata(tel_diameter=np.array([8.0, 8.1], dtype=np.float32)),
+            ee_apertures=_stats_ee_apertures(),
         )
 
 
@@ -665,32 +687,32 @@ def test_compute_psf_stats_rejects_non_2d_telescope_pupil():
         compute_psf_stats(
             np.zeros((3, 4, 4), dtype=np.float32),
             _psf_metadata(tel_pupil=np.ones((3, 6, 6), dtype=np.float32)),
-            ee_apertures_mas=_stats_ee_apertures(),
+            ee_apertures=_stats_ee_apertures(),
         )
 
 
 def test_compute_psf_stats_rejects_invalid_per_psf_ee_aperture_length():
-    with pytest.raises(ValueError, match="ee_apertures_mas per-PSF leading dimension must match the PSF cube length 3"):
+    with pytest.raises(ValueError, match="ee_apertures per-PSF leading dimension must match the PSF cube length 3"):
         compute_psf_stats(
             np.zeros((3, 4, 4), dtype=np.float32),
             _psf_metadata(),
-            ee_apertures_mas=np.ones((2, 1), dtype=np.float32),
+            ee_apertures=np.ones((2, 1), dtype=np.float32) * u.mas,
         )
 
 
 def test_compute_psf_stats_dispatches_selected_strehl_method(monkeypatch):
     calls: list[str] = []
 
-    def _pixel_fit(psfs, pixel_scale_mas, wavelength_um, tel_diameter_m, tel_pupil):
-        del pixel_scale_mas, wavelength_um, tel_diameter_m, tel_pupil
+    def _pixel_fit(psfs, pixel_scale, wavelength, tel_diameter, tel_pupil):
+        del pixel_scale, wavelength, tel_diameter, tel_pupil
         calls.append(schema.STATS_SR_METHOD_PIXEL_FIT)
         return (
             np.zeros((psfs.shape[0],), dtype=np.float32),
             np.zeros((psfs.shape[0], 2), dtype=np.float32),
         )
 
-    def _pixel_max(psfs, pixel_scale_mas, wavelength_um, tel_diameter_m, tel_pupil):
-        del pixel_scale_mas, wavelength_um, tel_diameter_m, tel_pupil
+    def _pixel_max(psfs, pixel_scale, wavelength, tel_diameter, tel_pupil):
+        del pixel_scale, wavelength, tel_diameter, tel_pupil
         calls.append(schema.STATS_SR_METHOD_PIXEL_MAX)
         return (
             np.zeros((psfs.shape[0],), dtype=np.float32),
@@ -703,7 +725,7 @@ def test_compute_psf_stats_dispatches_selected_strehl_method(monkeypatch):
     compute_psf_stats(
         np.zeros((3, 4, 4), dtype=np.float32),
         _psf_metadata(),
-        ee_apertures_mas=_stats_ee_apertures(),
+        ee_apertures=_stats_ee_apertures(),
         sr_method=schema.STATS_SR_METHOD_PIXEL_MAX,
     )
 
@@ -713,7 +735,7 @@ def test_compute_psf_stats_dispatches_selected_strehl_method(monkeypatch):
     compute_psf_stats(
         np.zeros((2, 4, 4), dtype=np.float32),
         _psf_metadata(),
-        ee_apertures_mas=_stats_ee_apertures(),
+        ee_apertures=_stats_ee_apertures(),
         sr_method=schema.STATS_SR_METHOD_PIXEL_FIT,
     )
 
@@ -724,15 +746,15 @@ def test_compute_psf_stats_reuses_fit_peak_locations_for_ee(monkeypatch):
     ee_peak_locations: list[np.ndarray | None] = []
     ee_geometries: list[str] = []
 
-    def _pixel_fit(psfs, pixel_scale_mas, wavelength_um, tel_diameter_m, tel_pupil):
-        del pixel_scale_mas, wavelength_um, tel_diameter_m, tel_pupil
+    def _pixel_fit(psfs, pixel_scale, wavelength, tel_diameter, tel_pupil):
+        del pixel_scale, wavelength, tel_diameter, tel_pupil
         return (
             np.zeros((psfs.shape[0],), dtype=np.float32),
             np.full((psfs.shape[0], 2), 1.5, dtype=np.float32),
         )
 
-    def _pixel_max(psfs, pixel_scale_mas, wavelength_um, tel_diameter_m, tel_pupil):
-        del pixel_scale_mas, wavelength_um, tel_diameter_m, tel_pupil
+    def _pixel_max(psfs, pixel_scale, wavelength, tel_diameter, tel_pupil):
+        del pixel_scale, wavelength, tel_diameter, tel_pupil
         return (
             np.zeros((psfs.shape[0],), dtype=np.float32),
             np.full((psfs.shape[0], 2), 2.5, dtype=np.float32),
@@ -740,16 +762,16 @@ def test_compute_psf_stats_reuses_fit_peak_locations_for_ee(monkeypatch):
 
     def _ee(
         psfs,
-        ee_apertures_mas,
-        pixel_scale_mas,
+        ee_apertures,
+        pixel_scale,
         peak_locations_xy=None,
         *,
         ee_geometry="ensquared",
     ):
-        del pixel_scale_mas
+        del pixel_scale
         ee_peak_locations.append(None if peak_locations_xy is None else np.asarray(peak_locations_xy, dtype=np.float32))
         ee_geometries.append(ee_geometry)
-        return np.zeros((psfs.shape[0], ee_apertures_mas.shape[0]), dtype=np.float32)
+        return np.zeros((psfs.shape[0], ee_apertures.shape[0]), dtype=np.float32)
 
     monkeypatch.setattr(stats_module, "_compute_strehl_pixel_fit", _pixel_fit)
     monkeypatch.setattr(stats_module, "_compute_strehl_pixel_max", _pixel_max)
@@ -758,7 +780,7 @@ def test_compute_psf_stats_reuses_fit_peak_locations_for_ee(monkeypatch):
     compute_psf_stats(
         np.zeros((2, 4, 4), dtype=np.float32),
         _psf_metadata(),
-        ee_apertures_mas=_stats_ee_apertures(),
+        ee_apertures=_stats_ee_apertures(),
         sr_method=schema.STATS_SR_METHOD_PIXEL_FIT,
     )
 
@@ -771,7 +793,7 @@ def test_compute_psf_stats_reuses_fit_peak_locations_for_ee(monkeypatch):
     compute_psf_stats(
         np.zeros((2, 4, 4), dtype=np.float32),
         _psf_metadata(),
-        ee_apertures_mas=_stats_ee_apertures(),
+        ee_apertures=_stats_ee_apertures(),
         sr_method=schema.STATS_SR_METHOD_PIXEL_MAX,
     )
 
@@ -785,22 +807,22 @@ def test_compute_psf_stats_passes_requested_ee_geometry(monkeypatch):
 
     def _ee(
         psfs,
-        ee_apertures_mas,
-        pixel_scale_mas,
+        ee_apertures,
+        pixel_scale,
         peak_locations_yx=None,
         *,
         ee_geometry="ensquared",
     ):
-        del pixel_scale_mas, peak_locations_yx
+        del pixel_scale, peak_locations_yx
         requested.append(ee_geometry)
-        return np.zeros((psfs.shape[0], ee_apertures_mas.shape[0]), dtype=np.float32)
+        return np.zeros((psfs.shape[0], ee_apertures.shape[0]), dtype=np.float32)
 
     monkeypatch.setattr(stats_module, "_compute_enclosed_energy", _ee)
 
     compute_psf_stats(
         np.zeros((2, 4, 4), dtype=np.float32),
         _psf_metadata(),
-        ee_apertures_mas=_stats_ee_apertures(),
+        ee_apertures=_stats_ee_apertures(),
         ee_geometry="encircled",
     )
 
@@ -808,8 +830,8 @@ def test_compute_psf_stats_passes_requested_ee_geometry(monkeypatch):
 
 
 def test_compute_psf_stats_rejects_invalid_ee_geometry(monkeypatch):
-    def _compute_strehl(psfs, sr_method, pixel_scale_mas, wavelength_um, tel_diameter_m, tel_pupil):
-        del sr_method, pixel_scale_mas, wavelength_um, tel_diameter_m, tel_pupil
+    def _compute_strehl(psfs, sr_method, pixel_scale, wavelength, tel_diameter, tel_pupil):
+        del sr_method, pixel_scale, wavelength, tel_diameter, tel_pupil
         return np.zeros((psfs.shape[0],), dtype=np.float32), np.full((psfs.shape[0], 2), 2, dtype=np.float32)
 
     monkeypatch.setattr(stats_module, "_compute_strehl", _compute_strehl)
@@ -818,14 +840,14 @@ def test_compute_psf_stats_rejects_invalid_ee_geometry(monkeypatch):
         compute_psf_stats(
             np.zeros((2, 4, 4), dtype=np.float32),
             _psf_metadata(),
-            ee_apertures_mas=_stats_ee_apertures(),
+            ee_apertures=_stats_ee_apertures(),
             ee_geometry="triangle",
         )
 
 
 def test_compute_psf_stats_computes_encircled_energy(monkeypatch):
-    def _compute_strehl(psfs, sr_method, pixel_scale_mas, wavelength_um, tel_diameter_m, tel_pupil):
-        del sr_method, pixel_scale_mas, wavelength_um, tel_diameter_m, tel_pupil
+    def _compute_strehl(psfs, sr_method, pixel_scale, wavelength, tel_diameter, tel_pupil):
+        del sr_method, pixel_scale, wavelength, tel_diameter, tel_pupil
         return np.zeros((psfs.shape[0],), dtype=np.float32), np.full((psfs.shape[0], 2), 2, dtype=np.float32)
 
     monkeypatch.setattr(stats_module, "_compute_strehl", _compute_strehl)
@@ -836,7 +858,7 @@ def test_compute_psf_stats_computes_encircled_energy(monkeypatch):
     _sr, ee, _fwhm = compute_psf_stats(
         psfs,
         _psf_metadata(),
-        ee_apertures_mas=_stats_ee_apertures(),
+        ee_apertures=_stats_ee_apertures(),
         ee_geometry="encircled",
     )
 
@@ -848,8 +870,8 @@ def test_compute_psf_stats_selects_requested_fwhm_summary(monkeypatch):
     requested: list[str] = []
     select_impl = stats_module._compute_fwhm_summary
 
-    def _measure(psfs, pixel_scale_mas):
-        del pixel_scale_mas
+    def _measure(psfs, pixel_scale):
+        del pixel_scale
         return (
             np.full((psfs.shape[0],), 4.0, dtype=np.float32),
             np.full((psfs.shape[0],), 3.0, dtype=np.float32),
@@ -865,28 +887,30 @@ def test_compute_psf_stats_selects_requested_fwhm_summary(monkeypatch):
     _sr, _ee, fwhm = compute_psf_stats(
         np.zeros((2, 4, 4), dtype=np.float32),
         _psf_metadata(),
-        ee_apertures_mas=_stats_ee_apertures(),
+        ee_apertures=_stats_ee_apertures(),
         fwhm_summary=schema.STATS_FWHM_SUMMARY_MAX,
     )
 
     assert requested == [schema.STATS_FWHM_SUMMARY_MAX]
-    np.testing.assert_allclose(fwhm, np.full((2,), 3.0, dtype=np.float32))
+    np.testing.assert_allclose(
+        fwhm, np.full((2,), 3.0, dtype=np.float32) * u.mas
+    )
 
 
 def test_compute_psf_stats_uses_per_psf_wavelength(monkeypatch):
     observed_wavelengths: list[float] = []
 
-    def _compute_strehl(psfs, sr_method, pixel_scale_mas, wavelength_um, tel_diameter_m, tel_pupil):
-        del sr_method, pixel_scale_mas, tel_diameter_m, tel_pupil
-        observed_wavelengths.append(float(wavelength_um))
+    def _compute_strehl(psfs, sr_method, pixel_scale, wavelength, tel_diameter, tel_pupil):
+        del sr_method, pixel_scale, tel_diameter, tel_pupil
+        observed_wavelengths.append(float(wavelength))
         return np.zeros((psfs.shape[0],), dtype=np.float32), np.zeros((psfs.shape[0], 2), dtype=np.float32)
 
     monkeypatch.setattr(stats_module, "_compute_strehl", _compute_strehl)
 
     compute_psf_stats(
         np.zeros((2, 4, 4), dtype=np.float32),
-        _psf_metadata(wavelength_um=np.array([1.2, 1.8], dtype=np.float32)),
-        ee_apertures_mas=_stats_ee_apertures(),
+        _psf_metadata(wavelength=np.array([1.2, 1.8], dtype=np.float32)),
+        ee_apertures=_stats_ee_apertures(),
     )
 
     np.testing.assert_allclose(observed_wavelengths, [1.2, 1.8])
@@ -895,17 +919,17 @@ def test_compute_psf_stats_uses_per_psf_wavelength(monkeypatch):
 def test_compute_psf_stats_uses_per_psf_pixel_scale(monkeypatch):
     observed_pixel_scales: list[float] = []
 
-    def _compute_strehl(psfs, sr_method, pixel_scale_mas, wavelength_um, tel_diameter_m, tel_pupil):
-        del sr_method, wavelength_um, tel_diameter_m, tel_pupil
-        observed_pixel_scales.append(float(pixel_scale_mas))
+    def _compute_strehl(psfs, sr_method, pixel_scale, wavelength, tel_diameter, tel_pupil):
+        del sr_method, wavelength, tel_diameter, tel_pupil
+        observed_pixel_scales.append(float(pixel_scale))
         return np.zeros((psfs.shape[0],), dtype=np.float32), np.zeros((psfs.shape[0], 2), dtype=np.float32)
 
     monkeypatch.setattr(stats_module, "_compute_strehl", _compute_strehl)
 
     compute_psf_stats(
         np.zeros((2, 4, 4), dtype=np.float32),
-        _psf_metadata(pixel_scale_mas=np.array([3.5, 4.5], dtype=np.float32)),
-        ee_apertures_mas=_stats_ee_apertures(),
+        _psf_metadata(pixel_scale=np.array([3.5, 4.5], dtype=np.float32)),
+        ee_apertures=_stats_ee_apertures(),
     )
 
     np.testing.assert_allclose(observed_pixel_scales, [3.5, 4.5])
@@ -914,17 +938,17 @@ def test_compute_psf_stats_uses_per_psf_pixel_scale(monkeypatch):
 def test_compute_psf_stats_uses_per_psf_ee_apertures(monkeypatch):
     observed_apertures: list[np.ndarray] = []
 
-    def _ee(psfs, ee_apertures_mas, pixel_scale_mas, peak_locations_yx=None, *, ee_geometry="ensquared"):
-        del pixel_scale_mas, peak_locations_yx, ee_geometry
-        observed_apertures.append(np.asarray(ee_apertures_mas, dtype=np.float32))
-        return np.zeros((psfs.shape[0], ee_apertures_mas.shape[0]), dtype=np.float32)
+    def _ee(psfs, ee_apertures, pixel_scale, peak_locations_yx=None, *, ee_geometry="ensquared"):
+        del pixel_scale, peak_locations_yx, ee_geometry
+        observed_apertures.append(np.asarray(ee_apertures, dtype=np.float32))
+        return np.zeros((psfs.shape[0], ee_apertures.shape[0]), dtype=np.float32)
 
     monkeypatch.setattr(stats_module, "_compute_enclosed_energy", _ee)
 
     _sr, ee, _fwhm = compute_psf_stats(
         np.zeros((2, 4, 4), dtype=np.float32),
         _psf_metadata(),
-        ee_apertures_mas=np.array([[10.0], [20.0]], dtype=np.float32),
+        ee_apertures=np.array([[10.0], [20.0]], dtype=np.float32) * u.mas,
     )
 
     assert ee.shape == (2, 1)
@@ -936,8 +960,8 @@ def test_compute_psf_stats_uses_per_psf_ee_apertures(monkeypatch):
 def test_compute_psf_stats_default_preprocess_shortcut_clips_and_normalizes(monkeypatch):
     observed_psfs: list[np.ndarray] = []
 
-    def _compute_strehl(psfs, sr_method, pixel_scale_mas, wavelength_um, tel_diameter_m, tel_pupil):
-        del sr_method, pixel_scale_mas, wavelength_um, tel_diameter_m, tel_pupil
+    def _compute_strehl(psfs, sr_method, pixel_scale, wavelength, tel_diameter, tel_pupil):
+        del sr_method, pixel_scale, wavelength, tel_diameter, tel_pupil
         observed_psfs.append(np.asarray(psfs, dtype=np.float32))
         return np.zeros((psfs.shape[0],), dtype=np.float32), np.zeros((psfs.shape[0], 2), dtype=np.float32)
 
@@ -946,7 +970,7 @@ def test_compute_psf_stats_default_preprocess_shortcut_clips_and_normalizes(monk
     compute_psf_stats(
         np.array([[[-1.0, 3.0], [1.0, 0.0]]], dtype=np.float32),
         _psf_metadata(),
-        ee_apertures_mas=np.array([50.0], dtype=np.float32),
+        ee_apertures=np.array([50.0], dtype=np.float32) * u.mas,
         preprocess="default",
     )
 
@@ -962,7 +986,7 @@ def test_compute_psf_stats_rejects_unknown_preprocess_string():
         compute_psf_stats(
             np.zeros((2, 4, 4), dtype=np.float32),
             _psf_metadata(),
-            ee_apertures_mas=_stats_ee_apertures(),
+            ee_apertures=_stats_ee_apertures(),
             preprocess="runner",
         )
 
@@ -973,8 +997,8 @@ def test_compute_psf_stats_uses_preprocess_callable(monkeypatch):
     def _preprocess(psfs):
         return np.asarray(psfs, dtype=np.float32) + 2.0
 
-    def _compute_strehl(psfs, sr_method, pixel_scale_mas, wavelength_um, tel_diameter_m, tel_pupil):
-        del sr_method, pixel_scale_mas, wavelength_um, tel_diameter_m, tel_pupil
+    def _compute_strehl(psfs, sr_method, pixel_scale, wavelength, tel_diameter, tel_pupil):
+        del sr_method, pixel_scale, wavelength, tel_diameter, tel_pupil
         observed_psfs.append(np.asarray(psfs, dtype=np.float32))
         return np.zeros((psfs.shape[0],), dtype=np.float32), np.zeros((psfs.shape[0], 2), dtype=np.float32)
 
@@ -983,7 +1007,7 @@ def test_compute_psf_stats_uses_preprocess_callable(monkeypatch):
     compute_psf_stats(
         np.zeros((2, 4, 4), dtype=np.float32),
         _psf_metadata(),
-        ee_apertures_mas=_stats_ee_apertures(),
+        ee_apertures=_stats_ee_apertures(),
         preprocess=_preprocess,
     )
 
@@ -1148,7 +1172,7 @@ def test_measure_peak_centered_ensquared_energy_curves_applies_radius_factor():
         np.array([10], dtype=np.int64),
         np.array([10], dtype=np.int64),
         max_radius=4,
-        pixel_scale_mas=1.0,
+        pixel_scale=1.0,
     )
 
     assert curves.shape == (1, 5)
@@ -1252,10 +1276,10 @@ def test_compute_psf_stats_matches_girmos_aopredict_regression(sr_method, fwhm_s
         ],
         axis=0,
     ).astype(np.float32)
-    options = {schema.KEY_OPTION_WAVELENGTH_UM: np.float32(1.65)}
-    meta = _stats_meta(pixel_scale_mas=4.0)
+    options = {schema.KEY_OPTION_WAVELENGTH: np.float32(1.65)}
+    meta = _stats_meta(pixel_scale=4.0)
     setup = {
-        schema.KEY_SETUP_EE_APERTURES_MAS: np.array([12.0, 28.0, 44.0], dtype=float),
+        schema.KEY_SETUP_EE_APERTURES: np.array([12.0, 28.0, 44.0], dtype=float),
         schema.KEY_SETUP_SR_METHOD: sr_method,
         schema.KEY_SETUP_FWHM_SUMMARY: fwhm_summary,
     }
@@ -1263,12 +1287,12 @@ def test_compute_psf_stats_matches_girmos_aopredict_regression(sr_method, fwhm_s
     sr, ee, fwhm = compute_psf_stats(
         psfs,
         PsfMetadata(
-            wavelength_um=options[schema.KEY_OPTION_WAVELENGTH_UM],
-            pixel_scale_mas=meta[schema.KEY_META_PIXEL_SCALE_MAS],
-            tel_diameter_m=meta[schema.KEY_META_TEL_DIAMETER_M],
+            wavelength=options[schema.KEY_OPTION_WAVELENGTH],
+            pixel_scale=meta[schema.KEY_META_PIXEL_SCALE],
+            tel_diameter=meta[schema.KEY_META_TEL_DIAMETER],
             tel_pupil=meta[schema.KEY_META_TEL_PUPIL],
         ),
-        ee_apertures_mas=setup[schema.KEY_SETUP_EE_APERTURES_MAS],
+        ee_apertures=setup[schema.KEY_SETUP_EE_APERTURES],
         sr_method=sr_method,
         fwhm_summary=fwhm_summary,
         preprocess=lambda cube: simulation.prepare_psfs_for_stats(cube, setup, meta),
@@ -1294,7 +1318,7 @@ def test_compute_psf_stats_matches_girmos_aopredict_regression(sr_method, fwhm_s
         meta[schema.KEY_META_TEL_PUPIL],
         method=upstream.StatsMethod.AOPredict,
         sr_method=sr_method_upstream,
-        ee_apertures_mas=setup[schema.KEY_SETUP_EE_APERTURES_MAS],
+        ee_apertures=setup[schema.KEY_SETUP_EE_APERTURES],
         fwhm_summary=fwhm_summary_upstream,
     )
 
@@ -1340,13 +1364,13 @@ def test_store_create_and_row_writes(tmp_path):
 
         assert f[f"{schema.KEY_STATS_SECTION}/{schema.KEY_STATS_SR}"].shape == (3, 3)
         assert f[f"{schema.KEY_STATS_SECTION}/{schema.KEY_STATS_EE}"].shape == (3, 3, 2)
-        assert f[f"{schema.KEY_STATS_SECTION}/{schema.KEY_STATS_FWHM_MAS}"].shape == (3, 3)
+        assert f[f"{schema.KEY_STATS_SECTION}/{schema.KEY_STATS_FWHM}"].shape == (3, 3)
 
         assert np.all(np.isfinite(f[f"{schema.KEY_STATS_SECTION}/{schema.KEY_STATS_SR}"][0]))
         assert np.all(np.isnan(f[f"{schema.KEY_STATS_SECTION}/{schema.KEY_STATS_SR}"][1]))
 
-        assert f[f"{schema.KEY_META_SECTION}/{schema.KEY_META_PIXEL_SCALE_MAS}"][0] == np.float32(4.0)
-        assert f[f"{schema.KEY_META_SECTION}/{schema.KEY_META_TEL_DIAMETER_M}"][()] == np.float32(8.0)
+        assert f[f"{schema.KEY_META_SECTION}/{schema.KEY_META_PIXEL_SCALE}"][0] == np.float32(4.0)
+        assert f[f"{schema.KEY_META_SECTION}/{schema.KEY_META_TEL_DIAMETER}"][()] == np.float32(8.0)
         assert f[f"{schema.KEY_META_SECTION}/{schema.KEY_META_TEL_PUPIL}"].shape == (6, 6)
 
         assert f[f"{schema.KEY_PSFS_SECTION}/{schema.KEY_PSFS_DATA}"].shape == (3, 3, 4, 4)
@@ -1371,12 +1395,14 @@ def test_store_write_success_rejects_mismatched_dataset_level_telescope_meta(tmp
     store.write_simulation_success(0, _success_result())
 
     bad_result = _success_result()
-    bad_result.meta[schema.KEY_META_TEL_DIAMETER_M] = np.float32(10.0)
-    with pytest.raises(ValueError, match=r"result\.meta\.tel_diameter_m does not match dataset-level /meta/tel_diameter_m\."):
+    bad_result.meta[schema.KEY_META_TEL_DIAMETER] = np.float32(10.0) * u.m
+    with pytest.raises(ValueError, match=r"result\.meta\.tel_diameter does not match dataset-level /meta/tel_diameter\."):
         store.write_simulation_success(1, bad_result)
 
     bad_result = _success_result()
-    bad_result.meta[schema.KEY_META_TEL_PUPIL] = np.full((6, 6), 2.0, dtype=np.float32)
+    bad_result.meta[schema.KEY_META_TEL_PUPIL] = (
+        np.full((6, 6), 2.0, dtype=np.float32) * u.dimensionless_unscaled
+    )
     with pytest.raises(ValueError, match=r"result\.meta\.tel_pupil does not match dataset-level /meta/tel_pupil\."):
         store.write_simulation_success(1, bad_result)
 
@@ -1384,27 +1410,151 @@ def test_store_write_success_rejects_mismatched_dataset_level_telescope_meta(tmp
 def test_store_create_preallocates_declared_extra_stats(tmp_path):
     data_path = tmp_path / "sim_data_extra_stats.h5"
     store = SimulationStore(data_path)
-    store.create(_simulation(extra_stat_names=("halo_mas", "encircled_bg")), _setup(), _options(), save_psfs=False)
+    store.create(_simulation(extra_stat_fields={"halo": u.mas, "encircled_bg": u.dimensionless_unscaled}), _setup(), _options(), save_psfs=False)
 
     with h5py.File(data_path, "r") as f:
-        np.testing.assert_array_equal(
-            f[f"{schema.KEY_SIMULATION_SECTION}/{schema.KEY_SIMULATION_EXTRA_STAT_NAMES}"][:].astype(str),
-            np.array(["halo_mas", "encircled_bg"]),
-        )
-        assert f[f"{schema.KEY_STATS_SECTION}/halo_mas"].shape == (3, 3)
+        assert f[f"{schema.KEY_SIMULATION_SECTION}/{schema.KEY_SIMULATION_EXTRA_STAT_FIELDS}/halo"][()].decode() == "mas"
+        assert f[f"{schema.KEY_SIMULATION_SECTION}/{schema.KEY_SIMULATION_EXTRA_STAT_FIELDS}/encircled_bg"][()].decode() == "1"
+        assert f[f"{schema.KEY_STATS_SECTION}/halo"].shape == (3, 3)
         assert f[f"{schema.KEY_STATS_SECTION}/encircled_bg"].shape == (3, 3)
+        assert f[f"{schema.KEY_STATS_SECTION}/halo"].attrs["units"] == "mas"
+
+
+@pytest.mark.parametrize(
+    ("extra_stat_fields", "error_type", "match"),
+    [
+        ({"halo/value": u.mas}, ValueError, "direct dataset names"),
+        ({1: u.mas}, TypeError, "names must be strings"),
+        ({"halo": u.mas, " halo ": u.mas}, ValueError, "duplicate field name"),
+    ],
+)
+def test_store_create_rejects_invalid_extra_stat_field_names(
+    tmp_path,
+    extra_stat_fields,
+    error_type,
+    match,
+):
+    data_path = tmp_path / "invalid_extra_stat_name.h5"
+    store = SimulationStore(data_path)
+
+    with pytest.raises(error_type, match=match):
+        store.create(
+            _simulation(extra_stat_fields=extra_stat_fields),
+            _setup(),
+            _options(),
+            save_psfs=False,
+        )
+
+    assert not data_path.exists()
+
+
+@pytest.mark.parametrize(
+    ("dataset_path", "expected_issue"),
+    [
+        ("meta/pixel_scale", "/meta/pixel_scale must declare units='mas'."),
+        ("meta/tel_diameter", "/meta/tel_diameter must declare units='m'."),
+        ("meta/tel_pupil", "/meta/tel_pupil must declare units='1'."),
+        ("stats/sr", "/stats/sr must declare units='1'."),
+        ("stats/ee", "/stats/ee must declare units='1'."),
+        ("stats/fwhm", "/stats/fwhm must declare units='mas'."),
+    ],
+)
+def test_store_schema_requires_core_dataset_units(tmp_path, dataset_path, expected_issue):
+    data_path = tmp_path / "sim_data_missing_core_units.h5"
+    store = SimulationStore(data_path)
+    store.create(_simulation(), _setup(), _options(), save_psfs=False)
+
+    with h5py.File(data_path, "r+") as f:
+        del f[dataset_path].attrs["units"]
+
+    assert expected_issue in store.collect_schema_issues()
+
+
+@pytest.mark.parametrize(
+    ("dataset_path", "expected_issue"),
+    [
+        ("setup/ee_apertures", "/setup/ee_apertures must declare units='mas'."),
+        ("setup/atm_wavelength", "/setup/atm_wavelength must declare units='um'."),
+        ("setup/lgs_r", "/setup/lgs_r must declare units='arcsec'."),
+        (
+            "setup/atm_profiles/0/cn2_weights",
+            "/setup/atm_profiles/0/cn2_weights must declare units='1'.",
+        ),
+        ("options/wavelength", "/options/wavelength must declare units='um'."),
+        ("options/ngs_magnitude", "/options/ngs_magnitude must declare units='mag'."),
+    ],
+)
+def test_store_schema_requires_setup_and_option_dataset_units(
+    tmp_path,
+    dataset_path,
+    expected_issue,
+):
+    data_path = tmp_path / "sim_data_missing_input_units.h5"
+    store = SimulationStore(data_path)
+    store.create(_simulation(), _setup(), _options(), save_psfs=False)
+
+    with h5py.File(data_path, "r+") as f:
+        del f[dataset_path].attrs["units"]
+
+    assert expected_issue in store.collect_schema_issues()
+
+
+def test_store_schema_rejects_equivalent_noncanonical_persisted_unit(tmp_path):
+    data_path = tmp_path / "sim_data_noncanonical_units.h5"
+    store = SimulationStore(data_path)
+    store.create(_simulation(), _setup(), _options(), save_psfs=False)
+
+    with h5py.File(data_path, "r+") as f:
+        f["options/wavelength"].attrs["units"] = "nm"
+
+    assert (
+        "/options/wavelength must declare units='um'."
+        in store.collect_schema_issues()
+    )
+
+
+def test_store_schema_requires_declared_diagnostic_units(tmp_path):
+    data_path = tmp_path / "sim_data_missing_diagnostic_units.h5"
+    simulation = _simulation()
+    simulation[schema.KEY_SIMULATION_DIAGNOSTIC_FIELDS] = {
+        "wavefront": {"dtype": "float32", "shape": (), "unit": "nm"}
+    }
+    store = SimulationStore(data_path)
+    store.create(simulation, _setup(), _options(), save_psfs=False)
+
+    with h5py.File(data_path, "r+") as f:
+        del f["diagnostics/wavefront"].attrs["units"]
+
+    assert (
+        "/diagnostics/wavefront must declare units='nm'."
+        in store.collect_schema_issues()
+    )
+
+
+def test_store_reads_one_declared_diagnostic_with_its_unit(tmp_path):
+    data_path = tmp_path / "sim_data_diagnostic_quantity.h5"
+    simulation = _simulation()
+    simulation[schema.KEY_SIMULATION_DIAGNOSTIC_FIELDS] = {
+        "wavefront": {"dtype": "float32", "shape": (), "unit": "nm"}
+    }
+    store = SimulationStore(data_path)
+    store.create(simulation, _setup(), _options(), save_psfs=False)
+    result = _success_result()
+    result.diagnostics = {"wavefront": 12.5 * u.nm}
+    store.write_simulation_success(0, result)
+
+    diagnostics = store.read_simulation_diagnostics(0)
+
+    assert diagnostics["wavefront"] == np.float32(12.5) * u.nm
 
 
 def test_store_create_preallocates_declared_meta_fields(tmp_path):
     data_path = tmp_path / "sim_data_extra_meta.h5"
     store = SimulationStore(data_path)
-    store.create(_simulation(meta_field_names=("norm_correction",)), _setup(), _options(), save_psfs=False)
+    store.create(_simulation(meta_fields={"norm_correction": u.dimensionless_unscaled}), _setup(), _options(), save_psfs=False)
 
     with h5py.File(data_path, "r") as f:
-        np.testing.assert_array_equal(
-            f[f"{schema.KEY_SIMULATION_SECTION}/{schema.KEY_SIMULATION_META_FIELDS}"][:].astype(str),
-            np.array(["norm_correction"]),
-        )
+        assert f[f"{schema.KEY_SIMULATION_SECTION}/{schema.KEY_SIMULATION_META_FIELDS}/norm_correction"][()].decode() == "1"
         assert f[f"{schema.KEY_META_SECTION}/norm_correction"].shape == (3,)
         assert np.all(np.isnan(f[f"{schema.KEY_META_SECTION}/norm_correction"][...]))
 
@@ -1412,9 +1562,14 @@ def test_store_create_preallocates_declared_meta_fields(tmp_path):
 def test_store_write_success_persists_declared_meta_fields(tmp_path):
     data_path = tmp_path / "sim_data_write_extra_meta.h5"
     store = SimulationStore(data_path)
-    store.create(_simulation(meta_field_names=("norm_correction",)), _setup(), _options(), save_psfs=False)
+    store.create(_simulation(meta_fields={"norm_correction": u.dimensionless_unscaled}), _setup(), _options(), save_psfs=False)
 
-    store.write_simulation_success(0, _success_result(meta={"norm_correction": 0.75}))
+    store.write_simulation_success(
+        0,
+        _success_result(
+            meta={"norm_correction": 0.75 * u.dimensionless_unscaled}
+        ),
+    )
 
     with h5py.File(data_path, "r") as f:
         assert f[f"{schema.KEY_META_SECTION}/norm_correction"][0] == np.float32(0.75)
@@ -1426,12 +1581,56 @@ def test_store_write_success_persists_declared_meta_fields(tmp_path):
     assert simulation_meta["norm_correction"] == np.float32(0.75)
 
 
+def test_store_persists_declared_nonphysical_meta_without_units(tmp_path):
+    data_path = tmp_path / "sim_data_count_meta.h5"
+    store = SimulationStore(data_path)
+    store.create(_simulation(meta_fields={"valid_subaps": None}), _setup(), _options(), save_psfs=False)
+
+    store.write_simulation_success(
+        0,
+        _success_result(meta={"valid_subaps": np.float32(68.0)}),
+    )
+
+    with h5py.File(data_path, "r") as f:
+        declaration = f[
+            f"{schema.KEY_SIMULATION_SECTION}/{schema.KEY_SIMULATION_META_FIELDS}/valid_subaps"
+        ]
+        assert declaration[()].decode() == ""
+        dataset = f[f"{schema.KEY_META_SECTION}/valid_subaps"]
+        assert "units" not in dataset.attrs
+        assert dataset[0] == np.float32(68.0)
+
+    analysis_meta = store.read_analysis_meta()
+    assert not isinstance(analysis_meta["valid_subaps"], u.Quantity)
+    np.testing.assert_allclose(
+        analysis_meta["valid_subaps"],
+        np.asarray([68.0, np.nan, np.nan], dtype=np.float32),
+    )
+
+
+def test_store_rejects_quantity_for_declared_nonphysical_meta(tmp_path):
+    data_path = tmp_path / "sim_data_bad_count_meta.h5"
+    store = SimulationStore(data_path)
+    store.create(_simulation(meta_fields={"valid_subaps": None}), _setup(), _options(), save_psfs=False)
+
+    with pytest.raises(TypeError, match="ordinary numeric scalar"):
+        store.write_simulation_success(
+            0,
+            _success_result(meta={"valid_subaps": 68.0 * u.one}),
+        )
+
+
 def test_store_write_failure_clears_declared_meta_fields(tmp_path):
     data_path = tmp_path / "sim_data_clear_extra_meta.h5"
     store = SimulationStore(data_path)
-    store.create(_simulation(meta_field_names=("norm_correction",)), _setup(), _options(), save_psfs=False)
+    store.create(_simulation(meta_fields={"norm_correction": u.dimensionless_unscaled}), _setup(), _options(), save_psfs=False)
 
-    store.write_simulation_success(0, _success_result(meta={"norm_correction": 0.75}))
+    store.write_simulation_success(
+        0,
+        _success_result(
+            meta={"norm_correction": 0.75 * u.dimensionless_unscaled}
+        ),
+    )
     store.reset_to_pending(indexes=[0])
     store.write_simulation_failure(0)
 
@@ -1442,19 +1641,40 @@ def test_store_write_failure_clears_declared_meta_fields(tmp_path):
 def test_store_write_success_rejects_bad_meta_fields(tmp_path):
     data_path = tmp_path / "sim_data_bad_extra_meta.h5"
     store = SimulationStore(data_path)
-    store.create(_simulation(meta_field_names=("norm_correction",)), _setup(), _options(), save_psfs=False)
+    store.create(_simulation(meta_fields={"norm_correction": u.dimensionless_unscaled}), _setup(), _options(), save_psfs=False)
 
     with pytest.raises(ValueError, match="missing declared meta fields"):
         store.write_simulation_success(0, _success_result())
 
     with pytest.raises(ValueError, match="contains undeclared fields"):
-        store.write_simulation_success(0, _success_result(meta={"norm_correction": 1.0, "other": 1.0}))
+        store.write_simulation_success(
+            0,
+            _success_result(
+                meta={
+                    "norm_correction": 1.0 * u.dimensionless_unscaled,
+                    "other": 1.0 * u.dimensionless_unscaled,
+                }
+            ),
+        )
 
     with pytest.raises(ValueError, match="must contain only finite values"):
-        store.write_simulation_success(0, _success_result(meta={"norm_correction": np.nan}))
+        store.write_simulation_success(
+            0,
+            _success_result(
+                meta={"norm_correction": np.nan * u.dimensionless_unscaled}
+            ),
+        )
 
     with pytest.raises(ValueError, match="must be a scalar"):
-        store.write_simulation_success(0, _success_result(meta={"norm_correction": np.asarray([1.0])}))
+        store.write_simulation_success(
+            0,
+            _success_result(
+                meta={
+                    "norm_correction": np.asarray([1.0])
+                    * u.dimensionless_unscaled
+                }
+            ),
+        )
 
 
 @pytest.mark.parametrize(
@@ -1463,8 +1683,8 @@ def test_store_write_success_rejects_bad_meta_fields(tmp_path):
         (schema.KEY_SIMULATION_NAME, "broken.name", "Simulation payload name mismatch"),
         (schema.KEY_SIMULATION_VERSION, "broken.version", "Simulation payload version mismatch"),
         (
-            schema.KEY_SIMULATION_EXTRA_STAT_NAMES,
-            np.asarray(["broken_stat"], dtype=str),
+            schema.KEY_SIMULATION_EXTRA_STAT_FIELDS,
+            {"broken_stat": "mas"},
             "Simulation payload extra stat registry mismatch",
         ),
         (
@@ -1544,21 +1764,11 @@ def test_create_simulation_from_config_rejects_invalid_ngs_mag_standard(
         create_simulation_from_config({"name": "mock_simulation:MockSimulation"})
 
 
-def test_create_simulation_from_payload_accepts_legacy_payload_without_ngs_mag_standard():
+def test_create_simulation_from_payload_rejects_missing_ngs_mag_standard():
     payload = _mock_simulation()
     del payload[schema.KEY_SIMULATION_NGS_MAG_STANDARD]
 
-    simulation = create_simulation_from_payload(payload)
-
-    assert isinstance(simulation, MockSimulation)
-
-
-def test_create_simulation_from_payload_rejects_other_invalid_legacy_fields():
-    payload = _mock_simulation()
-    del payload[schema.KEY_SIMULATION_NGS_MAG_STANDARD]
-    payload[schema.KEY_SIMULATION_VERSION] = "broken.version"
-
-    with pytest.raises(ValueError, match="Simulation payload version mismatch"):
+    with pytest.raises(ValueError, match="Missing required simulation keys"):
         create_simulation_from_payload(payload)
 
 
@@ -1643,30 +1853,30 @@ def test_runner_with_simulation_interface(tmp_path):
 
         def load_setup_payload(self, setup_payload):
             self._setup = SimulationSetup(
-                ee_apertures_mas=np.asarray(setup_payload["ee_apertures_mas"], dtype=float).reshape(-1),
+                ee_apertures=setup_payload["ee_apertures"],
                 sr_method=str(setup_payload["sr_method"]),
                 fwhm_summary=str(setup_payload["fwhm_summary"]),
                 ee_geometry=str(setup_payload["ee_geometry"]),
-                atm_wavelength_um=float(setup_payload["atm_wavelength_um"]),
+                atm_wavelength=setup_payload["atm_wavelength"],
                 atm_profiles=dict(setup_payload["atm_profiles"]),
-                lgs_r_arcsec=np.asarray(setup_payload["lgs_r_arcsec"], dtype=float).reshape(-1),
-                lgs_theta_deg=np.asarray(setup_payload["lgs_theta_deg"], dtype=float).reshape(-1),
-                sci_r_arcsec=np.asarray(setup_payload["sci_r_arcsec"], dtype=float).reshape(-1),
-                sci_theta_deg=np.asarray(setup_payload["sci_theta_deg"], dtype=float).reshape(-1),
+                lgs_r=setup_payload["lgs_r"],
+                lgs_theta=setup_payload["lgs_theta"],
+                sci_r=setup_payload["sci_r"],
+                sci_theta=setup_payload["sci_theta"],
             )
 
         def validate_setup_payload(self, setup_payload):
             _ = SimulationSetup(
-                ee_apertures_mas=np.asarray(setup_payload["ee_apertures_mas"], dtype=float).reshape(-1),
+                ee_apertures=setup_payload["ee_apertures"],
                 sr_method=str(setup_payload["sr_method"]),
                 fwhm_summary=str(setup_payload["fwhm_summary"]),
                 ee_geometry=str(setup_payload["ee_geometry"]),
-                atm_wavelength_um=float(setup_payload["atm_wavelength_um"]),
+                atm_wavelength=setup_payload["atm_wavelength"],
                 atm_profiles=dict(setup_payload["atm_profiles"]),
-                lgs_r_arcsec=np.asarray(setup_payload["lgs_r_arcsec"], dtype=float).reshape(-1),
-                lgs_theta_deg=np.asarray(setup_payload["lgs_theta_deg"], dtype=float).reshape(-1),
-                sci_r_arcsec=np.asarray(setup_payload["sci_r_arcsec"], dtype=float).reshape(-1),
-                sci_theta_deg=np.asarray(setup_payload["sci_theta_deg"], dtype=float).reshape(-1),
+                lgs_r=setup_payload["lgs_r"],
+                lgs_theta=setup_payload["lgs_theta"],
+                sci_r=setup_payload["sci_r"],
+                sci_theta=setup_payload["sci_theta"],
             )
 
         def create(self, index: int, options):
@@ -1745,8 +1955,8 @@ def test_runner_parallel_matches_serial_outputs(tmp_path):
             f"{schema.KEY_STATUS_SECTION}/{schema.KEY_STATUS_STATE}",
             f"{schema.KEY_STATS_SECTION}/{schema.KEY_STATS_SR}",
             f"{schema.KEY_STATS_SECTION}/{schema.KEY_STATS_EE}",
-            f"{schema.KEY_STATS_SECTION}/{schema.KEY_STATS_FWHM_MAS}",
-            f"{schema.KEY_META_SECTION}/{schema.KEY_META_PIXEL_SCALE_MAS}",
+            f"{schema.KEY_STATS_SECTION}/{schema.KEY_STATS_FWHM}",
+            f"{schema.KEY_META_SECTION}/{schema.KEY_META_PIXEL_SCALE}",
             f"{schema.KEY_PSFS_SECTION}/{schema.KEY_PSFS_DATA}",
         ):
             np.testing.assert_allclose(parallel[path][...], serial[path][...], equal_nan=True)
@@ -1807,7 +2017,7 @@ def test_runner_parallel_persists_declared_extra_stats(tmp_path):
     data_path = tmp_path / "parallel_extra_stats.h5"
     store = SimulationStore(data_path)
     store.create(
-        _mock_simulation(ExtraStatsMockSimulation, extra_stat_names=("halo_mas",)),
+        _mock_simulation(ExtraStatsMockSimulation, extra_stat_fields={"halo": u.mas}),
         _setup(),
         _options(),
         save_psfs=False,
@@ -1823,7 +2033,7 @@ def test_runner_parallel_persists_declared_extra_stats(tmp_path):
     assert summary == RunSummary(attempted=3, succeeded=3, failed=0)
     with h5py.File(data_path, "r") as f:
         np.testing.assert_allclose(
-            f[f"{schema.KEY_STATS_SECTION}/halo_mas"][:],
+            f[f"{schema.KEY_STATS_SECTION}/halo"][:],
             np.array(
                 [
                     [10.0, 10.0, 10.0],
@@ -1966,20 +2176,20 @@ def test_runner_with_simulation_interface_filtered_indexes(tmp_path):
 
         def load_setup_payload(self, setup_payload):
             self._setup = SimulationSetup(
-                ee_apertures_mas=np.asarray(setup_payload["ee_apertures_mas"], dtype=float).reshape(-1),
+                ee_apertures=setup_payload["ee_apertures"],
                 sr_method=str(setup_payload["sr_method"]),
                 fwhm_summary=str(setup_payload["fwhm_summary"]),
                 ee_geometry=str(setup_payload["ee_geometry"]),
-                atm_wavelength_um=float(setup_payload["atm_wavelength_um"]),
+                atm_wavelength=setup_payload["atm_wavelength"],
                 atm_profiles=dict(setup_payload["atm_profiles"]),
-                lgs_r_arcsec=np.asarray(setup_payload["lgs_r_arcsec"], dtype=float).reshape(-1),
-                lgs_theta_deg=np.asarray(setup_payload["lgs_theta_deg"], dtype=float).reshape(-1),
-                sci_r_arcsec=np.asarray(setup_payload["sci_r_arcsec"], dtype=float).reshape(-1),
-                sci_theta_deg=np.asarray(setup_payload["sci_theta_deg"], dtype=float).reshape(-1),
+                lgs_r=setup_payload["lgs_r"],
+                lgs_theta=setup_payload["lgs_theta"],
+                sci_r=setup_payload["sci_r"],
+                sci_theta=setup_payload["sci_theta"],
             )
 
         def validate_setup_payload(self, setup_payload):
-            _ = setup_payload["ee_apertures_mas"]
+            _ = setup_payload["ee_apertures"]
 
         def create(self, index: int, options):
             return SimulationContext(index=index, options=dict(options), setup=self._setup)
@@ -2020,7 +2230,7 @@ def test_runner_with_simulation_interface_filtered_indexes(tmp_path):
 def test_runner_persists_declared_extra_stats(tmp_path):
     data_path = tmp_path / "sim_data_declared_extra.h5"
     store = SimulationStore(data_path)
-    store.create(_simulation(extra_stat_names=("halo_mas",)), _setup(), _options(), save_psfs=False)
+    store.create(_simulation(extra_stat_fields={"halo": u.mas}), _setup(), _options(), save_psfs=False)
 
     class TiptopSimulation(Simulation):
         _NAME = "ao_predict.simulation.tiptop:TiptopSimulation"
@@ -2028,8 +2238,8 @@ def test_runner_persists_declared_extra_stats(tmp_path):
         ngs_mag_standard = "R"
 
         @property
-        def extra_stat_names(self) -> tuple[str, ...]:
-            return ("halo_mas",)
+        def extra_stat_fields(self) -> Mapping[str, u.UnitBase]:
+            return {"halo": u.mas}
 
         def prepare_simulation_payload(self, base_simulation_payload, simulation_cfg):
             del simulation_cfg
@@ -2055,20 +2265,20 @@ def test_runner_persists_declared_extra_stats(tmp_path):
 
         def load_setup_payload(self, setup_payload):
             self._setup = SimulationSetup(
-                ee_apertures_mas=np.asarray(setup_payload["ee_apertures_mas"], dtype=float).reshape(-1),
+                ee_apertures=setup_payload["ee_apertures"],
                 sr_method=str(setup_payload["sr_method"]),
                 fwhm_summary=str(setup_payload["fwhm_summary"]),
                 ee_geometry=str(setup_payload["ee_geometry"]),
-                atm_wavelength_um=float(setup_payload["atm_wavelength_um"]),
+                atm_wavelength=setup_payload["atm_wavelength"],
                 atm_profiles=dict(setup_payload["atm_profiles"]),
-                lgs_r_arcsec=np.asarray(setup_payload["lgs_r_arcsec"], dtype=float).reshape(-1),
-                lgs_theta_deg=np.asarray(setup_payload["lgs_theta_deg"], dtype=float).reshape(-1),
-                sci_r_arcsec=np.asarray(setup_payload["sci_r_arcsec"], dtype=float).reshape(-1),
-                sci_theta_deg=np.asarray(setup_payload["sci_theta_deg"], dtype=float).reshape(-1),
+                lgs_r=setup_payload["lgs_r"],
+                lgs_theta=setup_payload["lgs_theta"],
+                sci_r=setup_payload["sci_r"],
+                sci_theta=setup_payload["sci_theta"],
             )
 
         def validate_setup_payload(self, setup_payload):
-            _ = setup_payload["ee_apertures_mas"]
+            _ = setup_payload["ee_apertures"]
 
         def create(self, index: int, options):
             return SimulationContext(index=index, options=dict(options), setup=self._setup)
@@ -2081,7 +2291,7 @@ def test_runner_persists_declared_extra_stats(tmp_path):
 
         def build_extra_stats(self, context: SimulationContext):
             del context
-            return {"halo_mas": np.full((3,), 7.0, dtype=np.float32)}
+            return {"halo": np.full((3,), 7.0, dtype=np.float32) * u.mas}
 
         def prepare_psfs_for_stats(self, psfs, setup, meta):
             del setup, meta
@@ -2098,7 +2308,7 @@ def test_runner_persists_declared_extra_stats(tmp_path):
 
     with h5py.File(data_path, "r") as f:
         np.testing.assert_allclose(
-            f[f"{schema.KEY_STATS_SECTION}/halo_mas"][:],
+            f[f"{schema.KEY_STATS_SECTION}/halo"][:],
             np.full((3, 3), 7.0, dtype=np.float32),
         )
 
@@ -2160,7 +2370,7 @@ def test_store_create_rejects_partial_nan_ngs_triplets(tmp_path):
     data_path = tmp_path / "sim_data_partial_nan.h5"
     store = SimulationStore(data_path)
     options = _options(num_sims=2, max_ngs=3)
-    options["ngs_r_arcsec"][0, 1] = np.nan
+    options["ngs_r"][0, 1] = np.nan
     # theta/mag for [0,1] remain finite -> invalid partial NaN state
     with np.testing.assert_raises(ValueError):
         store.create(_simulation(), _setup(), options, save_psfs=False)
@@ -2170,7 +2380,7 @@ def test_store_create_rejects_options_without_ngs_triplet(tmp_path):
     data_path = tmp_path / "sim_data_no_ngs.h5"
     store = SimulationStore(data_path)
     options = _options()
-    for key in ("ngs_r_arcsec", "ngs_theta_deg", "ngs_mag"):
+    for key in ("ngs_r", "ngs_theta", "ngs_magnitude"):
         options.pop(key)
 
     with np.testing.assert_raises(ValueError):
@@ -2181,7 +2391,7 @@ def test_store_create_rejects_missing_required_option_keys(tmp_path):
     data_path = tmp_path / "sim_data_missing_options.h5"
     store = SimulationStore(data_path)
     options = {
-        "wavelength_um": np.full((3,), 1.65, dtype=float),
+        "wavelength": np.full((3,), 1.65, dtype=float),
     }
     with np.testing.assert_raises(ValueError):
         store.create(_simulation(), _setup(), options, save_psfs=False)
@@ -2191,7 +2401,7 @@ def test_store_create_rejects_unknown_option_keys(tmp_path):
     data_path = tmp_path / "sim_data_bad_options.h5"
     store = SimulationStore(data_path)
     options = {
-        "wavelength_um": np.full((2,), 1.65, dtype=float),
+        "wavelength": np.full((2,), 1.65, dtype=float),
         "bad_option": np.ones((2,), dtype=float),
     }
     with np.testing.assert_raises(ValueError):
@@ -2233,7 +2443,7 @@ def test_store_write_success_clears_optional_outputs_on_rerun(tmp_path):
                 dtype=np.uint8,
             ),
         )
-        assert np.all(np.isfinite(f[f"{schema.KEY_STATS_SECTION}/{schema.KEY_STATS_FWHM_MAS}"][0]))
+        assert np.all(np.isfinite(f[f"{schema.KEY_STATS_SECTION}/{schema.KEY_STATS_FWHM}"][0]))
         assert np.all(np.isfinite(f[f"{schema.KEY_PSFS_SECTION}/{schema.KEY_PSFS_DATA}"][0]))
 
 
@@ -2243,7 +2453,7 @@ def test_store_write_success_accepts_nan_fwhm(tmp_path):
     store.create(_simulation(), _setup(), _options(), save_psfs=True)
 
     result = _success_result()
-    result.stats[schema.KEY_STATS_FWHM_MAS][:] = np.nan
+    result.stats[schema.KEY_STATS_FWHM][:] = np.nan
     store.write_simulation_success(0, result)
 
     with h5py.File(data_path, "r") as f:
@@ -2255,7 +2465,7 @@ def test_store_write_success_accepts_nan_fwhm(tmp_path):
             f[f"{schema.KEY_STATS_SECTION}/{schema.KEY_STATS_EE}"][0],
             result.stats[schema.KEY_STATS_EE],
         )
-        assert np.all(np.isnan(f[f"{schema.KEY_STATS_SECTION}/{schema.KEY_STATS_FWHM_MAS}"][0]))
+        assert np.all(np.isnan(f[f"{schema.KEY_STATS_SECTION}/{schema.KEY_STATS_FWHM}"][0]))
 
 
 def test_store_write_success_rejects_psf_science_dimension_mismatch(tmp_path):
@@ -2292,9 +2502,9 @@ def test_store_write_failure_clears_outputs(tmp_path):
             ),
         )
         assert np.all(np.isnan(f[f"{schema.KEY_STATS_SECTION}/{schema.KEY_STATS_SR}"][0]))
-        assert np.all(np.isnan(f[f"{schema.KEY_STATS_SECTION}/{schema.KEY_STATS_FWHM_MAS}"][0]))
-        assert np.isnan(f[f"{schema.KEY_META_SECTION}/{schema.KEY_META_PIXEL_SCALE_MAS}"][0])
-        assert f[f"{schema.KEY_META_SECTION}/{schema.KEY_META_TEL_DIAMETER_M}"][()] == np.float32(8.0)
+        assert np.all(np.isnan(f[f"{schema.KEY_STATS_SECTION}/{schema.KEY_STATS_FWHM}"][0]))
+        assert np.isnan(f[f"{schema.KEY_META_SECTION}/{schema.KEY_META_PIXEL_SCALE}"][0])
+        assert f[f"{schema.KEY_META_SECTION}/{schema.KEY_META_TEL_DIAMETER}"][()] == np.float32(8.0)
         assert np.all(np.isfinite(f[f"{schema.KEY_META_SECTION}/{schema.KEY_META_TEL_PUPIL}"][...]))
         assert np.all(np.isnan(f[f"{schema.KEY_PSFS_SECTION}/{schema.KEY_PSFS_DATA}"][0]))
 
@@ -2315,9 +2525,9 @@ def test_store_rejects_negative_simulation_indexes(tmp_path):
 def test_store_read_extra_stat_names(tmp_path):
     data_path = tmp_path / "sim_data_read_extra_stats.h5"
     store = SimulationStore(data_path)
-    store.create(_simulation(extra_stat_names=("halo_mas", "encircled_bg")), _setup(), _options(), save_psfs=False)
+    store.create(_simulation(extra_stat_fields={"halo": u.mas, "encircled_bg": u.dimensionless_unscaled}), _setup(), _options(), save_psfs=False)
 
-    assert store.read_extra_stat_names() == ("halo_mas", "encircled_bg")
+    assert store.read_extra_stat_names() == ("halo", "encircled_bg")
 
 
 def test_store_read_simulation_meta_includes_dataset_level_telescope_metadata(tmp_path):
@@ -2328,9 +2538,12 @@ def test_store_read_simulation_meta_includes_dataset_level_telescope_metadata(tm
 
     meta = store.read_simulation_meta(0)
 
-    assert meta[schema.KEY_META_PIXEL_SCALE_MAS] == np.float32(4.0)
-    assert meta[schema.KEY_META_TEL_DIAMETER_M] == np.float32(8.0)
-    np.testing.assert_allclose(meta[schema.KEY_META_TEL_PUPIL], np.ones((6, 6), dtype=np.float32))
+    assert meta[schema.KEY_META_PIXEL_SCALE] == np.float32(4.0) * u.mas
+    assert meta[schema.KEY_META_TEL_DIAMETER] == np.float32(8.0) * u.m
+    np.testing.assert_allclose(
+        meta[schema.KEY_META_TEL_PUPIL],
+        np.ones((6, 6), dtype=np.float32) * u.dimensionless_unscaled,
+    )
 
 
 def test_store_read_simulation_stats_without_declared_extra_stats(tmp_path):
@@ -2345,20 +2558,24 @@ def test_store_read_simulation_stats_without_declared_extra_stats(tmp_path):
     assert tuple(stats.keys()) == schema.CORE_STATS_KEYS
     np.testing.assert_allclose(stats[schema.KEY_STATS_SR], result.stats[schema.KEY_STATS_SR])
     np.testing.assert_allclose(stats[schema.KEY_STATS_EE], result.stats[schema.KEY_STATS_EE])
-    np.testing.assert_allclose(stats[schema.KEY_STATS_FWHM_MAS], result.stats[schema.KEY_STATS_FWHM_MAS])
+    np.testing.assert_allclose(stats[schema.KEY_STATS_FWHM], result.stats[schema.KEY_STATS_FWHM])
 
 
 def test_store_read_simulation_stats_with_declared_extra_stats(tmp_path):
     data_path = tmp_path / "sim_data_read_stats_extra.h5"
     store = SimulationStore(data_path)
-    store.create(_simulation(extra_stat_names=("halo_mas",)), _setup(), _options(), save_psfs=False)
-    result = _success_result(extra_stats={"halo_mas": np.full((3,), 7.0, dtype=np.float32)})
+    store.create(_simulation(extra_stat_fields={"halo": u.mas}), _setup(), _options(), save_psfs=False)
+    result = _success_result(
+        extra_stats={"halo": np.full((3,), 7.0, dtype=np.float32) * u.mas}
+    )
     store.write_simulation_success(0, result)
 
     stats = store.read_simulation_stats(0)
 
-    assert tuple(stats.keys()) == schema.CORE_STATS_KEYS + ("halo_mas",)
-    np.testing.assert_allclose(stats["halo_mas"], np.full((3,), 7.0, dtype=np.float32))
+    assert tuple(stats.keys()) == schema.CORE_STATS_KEYS + ("halo",)
+    np.testing.assert_allclose(
+        stats["halo"], np.full((3,), 7.0, dtype=np.float32) * u.mas
+    )
 
 
 def test_store_read_simulation_psfs(tmp_path):
@@ -2385,12 +2602,12 @@ def test_store_read_simulation_psfs_rejects_missing_psf_dataset(tmp_path):
 def test_store_read_simulation_stats_rejects_missing_declared_extra_stat_dataset(tmp_path):
     data_path = tmp_path / "sim_data_missing_declared_stat.h5"
     store = SimulationStore(data_path)
-    store.create(_simulation(extra_stat_names=("halo_mas",)), _setup(), _options(), save_psfs=False)
+    store.create(_simulation(extra_stat_fields={"halo": u.mas}), _setup(), _options(), save_psfs=False)
 
     with h5py.File(data_path, "r+") as f:
-        del f[f"{schema.KEY_STATS_SECTION}/halo_mas"]
+        del f[f"{schema.KEY_STATS_SECTION}/halo"]
 
-    with pytest.raises(ValueError, match=r"Missing required dataset '/stats/halo_mas'\."):
+    with pytest.raises(ValueError, match=r"Missing required dataset '/stats/halo'\."):
         store.read_simulation_stats(0)
 
 

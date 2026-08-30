@@ -13,13 +13,14 @@ from pathlib import Path
 import numpy as np
 import pytest
 import torch
+from astropy import units as u
 
 from ao_predict import (
     ModelEvaluationResult,
     ModelPredictor,
+    ModelTrainingDataConfig,
     TrainModelRequest,
     load_model_predictor,
-    model_training_data_from_rows,
     train_model,
 )
 from ao_predict._model import build_dense_model, cpu_state_dict
@@ -29,6 +30,18 @@ from ao_predict.training.artifacts import (
     publish_model_package,
     resolve_training_paths,
 )
+
+
+def _training_data_from_rows(
+    features: np.ndarray,
+    targets: np.ndarray,
+    feature_names: tuple[str, ...],
+    target_names: tuple[str, ...],
+) -> ModelTrainingDataConfig:
+    return ModelTrainingDataConfig(
+        features={name: features[:, index] for index, name in enumerate(feature_names)},
+        targets={name: targets[:, index] for index, name in enumerate(target_names)},
+    )
 
 
 def _model_metadata() -> dict[str, object]:
@@ -116,6 +129,16 @@ def _expected(features: np.ndarray) -> np.ndarray:
     ).astype(np.float32)
 
 
+def _prediction_array(prediction: dict[str, u.Quantity]) -> np.ndarray:
+    return np.stack(
+        (
+            prediction["first"].to_value(u.percent),
+            prediction["second"].to_value(u.mas),
+        ),
+        axis=-1,
+    )
+
+
 def test_load_exposes_runtime_and_model_contract_for_both_path_forms(
     tmp_path: Path,
 ) -> None:
@@ -181,12 +204,12 @@ def test_noncontiguous_direct_prediction_is_gathered_by_batch(
 def test_named_prediction_shares_simulation_features_without_repetition(
     predictor: ModelPredictor,
 ) -> None:
-    shared = np.asarray([10, 14], dtype=np.int16)
+    shared = np.asarray([10, 14], dtype=np.int16) * u.m
     related = np.asarray([[20.0, 24.0, 16.0], [28.0, 20.0, 12.0]])
     features = {"related": related, "shared": shared}
     expanded = np.stack(
         (
-            np.repeat(shared[:, None], related.shape[1], axis=1),
+            np.repeat(shared.to_value(u.m)[:, None], related.shape[1], axis=1),
             related,
         ),
         axis=-1,
@@ -195,23 +218,54 @@ def test_named_prediction_shares_simulation_features_without_repetition(
     actual = predictor.predict(features, batch_size=4)
 
     np.testing.assert_allclose(
-        actual, _expected(expanded.reshape(-1, 2)).reshape(2, 3, 2)
+        _prediction_array(actual), _expected(expanded.reshape(-1, 2)).reshape(2, 3, 2)
     )
-    assert actual.shape == (2, 3, 2)
-    assert actual.dtype == np.float32
+    assert tuple(actual) == ("first", "second")
+    assert actual["first"].shape == (2, 3)
+    assert actual["first"].dtype == np.float32
+
+
+def test_named_prediction_converts_equivalent_feature_units(
+    predictor: ModelPredictor,
+) -> None:
+    metres = {
+        "shared": np.asarray([10.0, 12.0]) * u.m,
+        "related": np.asarray([20.0, 24.0]),
+    }
+    centimetres = {
+        "shared": np.asarray([1000.0, 1200.0]) * u.cm,
+        "related": metres["related"],
+    }
+
+    expected = predictor.predict(metres)
+    actual = predictor.predict(centimetres)
+
+    np.testing.assert_allclose(_prediction_array(actual), _prediction_array(expected))
+
+
+def test_named_prediction_rejects_units_on_nonphysical_features(
+    predictor: ModelPredictor,
+) -> None:
+    features = {
+        "shared": np.asarray([10.0, 12.0]) * u.m,
+        "related": np.asarray([20.0, 24.0]) * u.one,
+    }
+
+    with pytest.raises(ValueError, match="related.*nonphysical"):
+        predictor.predict(features)
 
 
 def test_noncontiguous_named_features_preserve_simulation_major_order(
     predictor: ModelPredictor,
 ) -> None:
     shared_storage = np.asarray([10.0, -1.0, 14.0, -1.0])
-    shared = shared_storage[::2]
+    shared = u.Quantity(shared_storage[::2], u.m, copy=False)
     related = np.asarray([[20.0, 28.0], [24.0, 20.0], [16.0, 12.0]]).T
     assert not shared.flags.c_contiguous
     assert not related.flags.c_contiguous
     expanded = np.stack(
         (
-            np.repeat(shared[:, None], related.shape[1], axis=1),
+            np.repeat(shared.to_value(u.m)[:, None], related.shape[1], axis=1),
             related,
         ),
         axis=-1,
@@ -223,7 +277,7 @@ def test_noncontiguous_named_features_preserve_simulation_major_order(
     )
 
     np.testing.assert_allclose(
-        actual,
+        _prediction_array(actual),
         _expected(expanded.reshape(-1, 2)).reshape(2, 3, 2),
     )
 
@@ -231,7 +285,7 @@ def test_noncontiguous_named_features_preserve_simulation_major_order(
 def test_prediction_borrows_named_arrays_only_for_the_call(
     predictor: ModelPredictor,
 ) -> None:
-    shared = np.asarray([10.0, 12.0])
+    shared = np.asarray([10.0, 12.0]) * u.m
     related = np.asarray([20.0, 24.0])
     shared_before = shared.copy()
     related_before = related.copy()
@@ -254,13 +308,15 @@ def test_all_rank_one_named_features_return_simulation_target_matrix(
 ) -> None:
     features = {
         "related": np.asarray([20.0, 24.0]),
-        "shared": np.asarray([10.0, 12.0]),
+        "shared": np.asarray([10.0, 12.0]) * u.m,
     }
 
     actual = predictor.predict(features)
 
-    assert actual.shape == (2, 2)
-    np.testing.assert_allclose(actual, _expected(np.asarray([[10, 20], [12, 24]])))
+    assert actual["first"].shape == (2,)
+    np.testing.assert_allclose(
+        _prediction_array(actual), _expected(np.asarray([[10, 20], [12, 24]]))
+    )
 
 
 def test_predict_one_accepts_positional_and_named_values(
@@ -270,7 +326,8 @@ def test_predict_one_accepts_positional_and_named_values(
     named = predictor.predict_one({"related": np.float64(24), "shared": 12})
 
     np.testing.assert_allclose(positional, _expected(np.asarray([[12, 24]]))[0])
-    np.testing.assert_array_equal(named, positional)
+    assert named["first"] == positional[0] * u.percent
+    assert named["second"] == positional[1] * u.mas
     assert positional.shape == (2,)
     assert positional.dtype == np.float32
 
@@ -281,14 +338,14 @@ def test_empty_prediction_restores_direct_and_structured_shapes(
     direct = predictor.predict(np.empty((0, 2), dtype=np.float32))
     structured = predictor.predict(
         {
-            "shared": np.empty((0,), dtype=np.float32),
+            "shared": np.empty((0,), dtype=np.float32) * u.m,
             "related": np.empty((0, 3), dtype=np.float32),
         }
     )
 
     assert direct.shape == (0, 2)
-    assert structured.shape == (0, 3, 2)
-    assert direct.dtype == structured.dtype == np.float32
+    assert structured["first"].shape == (0, 3)
+    assert direct.dtype == structured["first"].dtype == np.float32
 
 
 def test_evaluate_pools_physical_relative_error_across_all_values(
@@ -323,13 +380,13 @@ def test_evaluate_accepts_independently_named_structured_targets(
     predictor: ModelPredictor,
 ) -> None:
     features = {
-        "shared": np.asarray([10.0, 12.0]),
+        "shared": np.asarray([10.0, 12.0]) * u.m,
         "related": np.asarray([[20.0, 24.0], [16.0, 28.0]]),
     }
     prediction = predictor.predict(features)
     targets = {
-        "second": prediction[..., 1],
-        "first": prediction[..., 0],
+        "second": prediction["second"],
+        "first": prediction["first"],
     }
 
     result = predictor.evaluate(features, targets)
@@ -346,20 +403,20 @@ def test_evaluate_accepts_both_mixed_forms_and_noncontiguous_targets(
     direct_features = np.asarray([[10.0, 20.0], [12.0, 24.0]])
     direct_prediction = predictor.predict(direct_features)
     mapped_targets = {
-        "second": direct_prediction[:, 1],
-        "first": direct_prediction[:, 0],
+        "second": direct_prediction[:, 1] * u.mas,
+        "first": direct_prediction[:, 0] * u.percent,
     }
 
     direct_result = predictor.evaluate(direct_features, mapped_targets)
 
     mapped_features = {
-        "shared": np.asarray([10.0, 12.0]),
+        "shared": np.asarray([10.0, 12.0]) * u.m,
         "related": np.asarray([[20.0, 24.0], [16.0, 28.0]]),
     }
     structured_prediction = predictor.predict(mapped_features)
     target_storage = np.empty((2, 2, 4), dtype=np.float64)
     direct_targets = target_storage[..., ::2]
-    direct_targets[...] = structured_prediction
+    direct_targets[...] = _prediction_array(structured_prediction)
     assert not direct_targets.flags.c_contiguous
 
     structured_result = predictor.evaluate(
@@ -381,13 +438,13 @@ def test_evaluation_matches_trainer_validation_error_semantics(tmp_path: Path) -
         [[2.0, 4.0], [3.0, 3.0], [4.0, 5.0], [5.0, 7.0], [6.0, 8.0]],
         dtype=np.float32,
     )
-    training = model_training_data_from_rows(
+    training = _training_data_from_rows(
         features[:3],
         targets[:3],
         ("a", "b"),
         ("first", "second"),
     )
-    validation = model_training_data_from_rows(
+    validation = _training_data_from_rows(
         features[3:],
         targets[3:],
         ("a", "b"),
@@ -431,13 +488,13 @@ def test_float64_preprocessing_matches_training_for_large_offset_features(
     trained = train_model(
         TrainModelRequest(
             model_path=model_path,
-            training_data=model_training_data_from_rows(
+            training_data=_training_data_from_rows(
                 training_features,
                 training_targets,
                 ("offset",),
                 ("target",),
             ),
-            validation_data=model_training_data_from_rows(
+            validation_data=_training_data_from_rows(
                 validation_features,
                 validation_targets,
                 ("offset",),
@@ -477,7 +534,7 @@ def test_float64_preprocessing_matches_training_for_large_offset_features(
             "names must match",
         ),
         (
-            {"shared": np.ones(2), "related": np.ones((3, 2))},
+            {"shared": np.ones(2) * u.m, "related": np.ones((3, 2))},
             ValueError,
             "simulation count",
         ),
@@ -561,6 +618,22 @@ def test_loading_rejects_invalid_serialized_weights_and_scalers(tmp_path: Path) 
     _replace_package_member(invalid_scaler, "metadata.json", metadata_bytes)
     with pytest.raises(ValueError, match="must be finite"):
         load_model_predictor(invalid_scaler)
+
+
+def test_loading_rejects_invalid_persisted_units(tmp_path: Path) -> None:
+    invalid_unit = _publish_known_model(tmp_path / "invalid-unit")
+    with zipfile.ZipFile(invalid_unit) as archive:
+        metadata = json.loads(archive.read("metadata.json"))
+    metadata["features"][0]["unit"] = "definitely_not_a_unit"
+    metadata_bytes = json.dumps(
+        metadata,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+    _replace_package_member(invalid_unit, "metadata.json", metadata_bytes)
+
+    with pytest.raises(ValueError, match="valid Astropy unit"):
+        load_model_predictor(invalid_unit)
 
 
 def test_loading_enforces_package_version_and_member_integrity(tmp_path: Path) -> None:

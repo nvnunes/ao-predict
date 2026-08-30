@@ -17,6 +17,7 @@ from torch import nn
 
 from ._model import build_dense_model
 from ._standardization import validate_float32_scaler
+from ._units import parse_unit, unit_string
 
 MODEL_PACKAGE_KIND = "ao_predict_dense_regression_model_package"
 MODEL_PACKAGE_VERSION = 1
@@ -160,6 +161,14 @@ def _validate_model_metadata(value: object) -> dict[str, object]:
                 raise ValueError(
                     f"Model metadata {key} units must be non-empty strings or null."
                 )
+            if isinstance(unit, str):
+                canonical_unit = unit_string(
+                    parse_unit(unit, label=f"Model metadata {key} unit")
+                )
+                if unit != canonical_unit:
+                    raise ValueError(
+                        f"Model metadata {key} units must use canonical Astropy unit strings."
+                    )
             mean = definition.get("mean")
             scale = definition.get("scale")
             if (

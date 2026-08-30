@@ -8,6 +8,7 @@ from enum import IntEnum
 from typing import Any, Mapping
 
 import numpy as np
+from astropy import units as u
 
 
 # Status model
@@ -32,28 +33,28 @@ class SimulationSetup:
     rather than optional placeholders.
 
     Attributes:
-        ee_apertures_mas: EE aperture diameters (mas).
+        ee_apertures: EE aperture diameters (mas).
         sr_method: Dataset-level Strehl selector for PSF statistics.
         fwhm_summary: Dataset-level FWHM contour summary selector.
         ee_geometry: Dataset-level EE aperture geometry selector.
-        atm_wavelength_um: Atmospheric reference wavelength (um).
+        atm_wavelength: Atmospheric reference wavelength (um).
         atm_profiles: Atmospheric profile mapping keyed by profile id.
-        lgs_r_arcsec: Invariant LGS radial coordinates (arcsec).
-        lgs_theta_deg: Invariant LGS angular coordinates (deg).
-        sci_r_arcsec: Invariant science radial coordinates (arcsec).
-        sci_theta_deg: Invariant science angular coordinates (deg).
+        lgs_r: Invariant LGS radial coordinates (arcsec).
+        lgs_theta: Invariant LGS angular coordinates (deg).
+        sci_r: Invariant science radial coordinates (arcsec).
+        sci_theta: Invariant science angular coordinates (deg).
     """
 
-    ee_apertures_mas: np.ndarray
+    ee_apertures: u.Quantity
     sr_method: str
     fwhm_summary: str
     ee_geometry: str
-    atm_wavelength_um: float
+    atm_wavelength: u.Quantity
     atm_profiles: dict[int, dict[str, Any]]
-    lgs_r_arcsec: np.ndarray
-    lgs_theta_deg: np.ndarray
-    sci_r_arcsec: np.ndarray
-    sci_theta_deg: np.ndarray
+    lgs_r: u.Quantity
+    lgs_theta: u.Quantity
+    sci_r: u.Quantity
+    sci_theta: u.Quantity
 
 
 # Runtime payloads
@@ -69,7 +70,7 @@ class SimulationResult:
         stats: Final per-simulation persisted stats assembled by ao-predict.
             This field is initialized empty by default. Successful
             simulations should not populate it directly; ao-predict computes
-            the core stats (`sr`, `ee`, and `fwhm_mas`) later from the PSFs
+            the core stats (`sr`, `ee`, and `fwhm`) later from the PSFs
             and merges in simulation-provided declared extra stats returned
             by `build_extra_stats(...)`.
         diagnostics: Optional per-simulation diagnostics persisted only when
@@ -88,7 +89,7 @@ class SimulationResult:
     state: SimulationState
     psfs: np.ndarray | None = None
     meta: dict[str, Any] = field(default_factory=dict)
-    stats: dict[str, np.ndarray] = field(default_factory=dict)
+    stats: dict[str, u.Quantity] = field(default_factory=dict)
     diagnostics: dict[str, Any] = field(default_factory=dict)
     errors: list[str] = field(default_factory=list)
     runtime: dict[str, Any] = field(default_factory=dict)
@@ -106,10 +107,10 @@ class SimulationContext:
             non-persisted fields such as ``ngs_used``.
         result: Populated in ``finalize``.
         runtime: Scratch space shared across lifecycle steps.
-        resolved_sci_r_arcsec: Effective per-simulation science radial
+        resolved_sci_r: Effective per-simulation science radial
             coordinates. ``BaseSimulation`` populates this without changing
             ``setup``.
-        resolved_sci_theta_deg: Effective per-simulation science angular
+        resolved_sci_theta: Effective per-simulation science angular
             coordinates. ``BaseSimulation`` populates this without changing
             ``setup``.
     """
@@ -119,8 +120,8 @@ class SimulationContext:
     options: dict[str, Any]
     result: SimulationResult | None = None
     runtime: dict[str, Any] = field(default_factory=dict)
-    resolved_sci_r_arcsec: np.ndarray | None = None
-    resolved_sci_theta_deg: np.ndarray | None = None
+    resolved_sci_r: u.Quantity | None = None
+    resolved_sci_theta: u.Quantity | None = None
 
 
 # Simulation contract
@@ -167,18 +168,23 @@ class Simulation(ABC):
         return str(type(self)._VERSION)
 
     @property
-    def extra_stat_names(self) -> tuple[str, ...]:
-        """Return simulation-specific extra stat names persisted under ``/stats``.
+    def extra_stat_fields(self) -> Mapping[str, u.UnitBase]:
+        """Return simulation-specific extra-stat units persisted under ``/stats``.
 
-        These names are part of the core `/simulation` payload assembled by
-        ao-predict before `prepare_simulation_payload(...)` is called.
+        Keys must start with a letter or underscore, contain only letters,
+        digits, and underscores, and must not collide with the core ``sr``,
+        ``ee``, or ``fwhm`` statistics. Values are Astropy units, including
+        ``u.dimensionless_unscaled`` for dimensionless scientific statistics.
+        These declarations are part of the core ``/simulation`` payload
+        assembled by ao-predict before ``prepare_simulation_payload(...)`` is
+        called.
         """
-        return ()
+        return {}
 
     @property
     @abstractmethod
     def ngs_mag_standard(self) -> str:
-        """Return the photometric standard of persisted ``/options/ngs_mag``.
+        """Return the photometric standard of persisted ``/options/ngs_magnitude``.
 
         The value is persisted as ``/simulation/ngs_mag_standard`` for newly
         prepared datasets. Direct implementations must return a stable,

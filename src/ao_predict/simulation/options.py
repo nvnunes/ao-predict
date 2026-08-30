@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Mapping, Sequence
 
+from astropy import units as u
+
 from .api import TableOptionsConfig
 
 
@@ -15,11 +17,13 @@ class GeneratedOptions:
     Attributes:
         columns: Ordered option table column names.
         rows: Table rows, one row per simulation.
+        units: Units keyed by physical table column name.
         broadcast: Scalar or structured option defaults applied to every row.
     """
 
     columns: tuple[str, ...]
     rows: tuple[tuple[Any, ...], ...]
+    units: Mapping[str, str | u.UnitBase] = field(default_factory=dict)
     broadcast: Mapping[str, Any] = field(default_factory=dict)
 
     def to_table_options_config(self) -> TableOptionsConfig:
@@ -27,6 +31,7 @@ class GeneratedOptions:
         return TableOptionsConfig(
             broadcast=dict(self.broadcast),
             columns=list(self.columns),
+            units=dict(self.units),
             rows=[list(row) for row in self.rows],
         )
 
@@ -36,6 +41,7 @@ def options_from_rows(
     *,
     broadcast: Mapping[str, Any] | None = None,
     columns: Sequence[str] | None = None,
+    units: Mapping[str, str | u.UnitBase] | None = None,
 ) -> GeneratedOptions:
     """Build generated table options from row mappings.
 
@@ -44,6 +50,7 @@ def options_from_rows(
             unless explicit ``columns`` select the required subset.
         broadcast: Optional defaults applied through ``TableOptionsConfig``.
         columns: Optional explicit column order.
+        units: Units keyed by physical table column name.
 
     Returns:
         Generated table options ready to pass into ``InitDatasetRequest``.
@@ -90,5 +97,6 @@ def options_from_rows(
     return GeneratedOptions(
         columns=column_tuple,
         rows=tuple(output_rows),
+        units=dict(units or {}),
         broadcast=dict(broadcast or {}),
     )

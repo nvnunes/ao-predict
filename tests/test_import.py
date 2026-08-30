@@ -7,13 +7,11 @@ from ao_predict import (
     AnalysisLoadContribution,
     AnalysisSimulation,
     AnalysisSimulationLoadPayload,
-    FeatureConfig,
     HybridSimulation,
     ModelEvaluationResult,
     ModelPredictor,
     ModelTrainingDataConfig,
     ModelTrainingValidationError,
-    TargetConfig,
     TrainingRecoveryMismatchError,
     TrainingTerminationReason,
     TrainingValidationRecord,
@@ -22,7 +20,6 @@ from ao_predict import (
     __version__,
     load_analysis_dataset,
     load_model_predictor,
-    model_training_data_from_rows,
     train_model,
 )
 from ao_predict.simulation import (
@@ -100,16 +97,13 @@ def test_training_root_and_submodule_exports() -> None:
     package = importlib.import_module("ao_predict")
     training = importlib.import_module("ao_predict.training")
     expected = {
-        "FeatureConfig": FeatureConfig,
         "ModelTrainingDataConfig": ModelTrainingDataConfig,
         "ModelTrainingValidationError": ModelTrainingValidationError,
-        "TargetConfig": TargetConfig,
         "TrainingRecoveryMismatchError": TrainingRecoveryMismatchError,
         "TrainingTerminationReason": TrainingTerminationReason,
         "TrainingValidationRecord": TrainingValidationRecord,
         "TrainModelRequest": TrainModelRequest,
         "TrainModelResult": TrainModelResult,
-        "model_training_data_from_rows": model_training_data_from_rows,
         "train_model": train_model,
     }
 

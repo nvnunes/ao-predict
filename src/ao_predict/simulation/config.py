@@ -12,10 +12,12 @@ It also converts table/broadcast options into the canonical columnar
 from __future__ import annotations
 
 import math
-from typing import Any, Mapping
+from typing import Mapping
 
 import numpy as np
+from astropy import units as u
 
+from .._units import parse_unit, quantity_from_value, quantity_value
 from . import schema
 from .helpers import get_num_sci
 from .interfaces import Simulation
@@ -48,6 +50,47 @@ def _to_optional_float(value: object, label: str) -> float:
         return as_float_scalar(value, label=label)
     except Exception as exc:
         raise ValueError(f"Invalid numeric value for {label}: {value!r}") from exc
+
+
+def _to_optional_quantity_float(
+    value: object,
+    unit: u.UnitBase,
+    label: str,
+) -> float:
+    """Parse an optional scalar quantity into one canonical numerical value."""
+    if _is_null_like(value):
+        return float("nan")
+    array = quantity_value(value, unit, label=label)
+    if array.ndim != 0:
+        raise ValueError(f"{label} must be scalar-compatible, got shape {array.shape}.")
+    return float(array)
+
+
+def _option_unit_for_column(name: str) -> u.UnitBase | None:
+    """Return the canonical unit for one scalar or expanded-NGS option name."""
+    if name in schema.OPTION_FIELD_UNITS:
+        return schema.OPTION_FIELD_UNITS[name]
+    match = schema.KEY_OPTION_NGS_COLUMN_RE.match(name)
+    if match is None:
+        return None
+    suffix = match.group(2)
+    return {
+        schema.KEY_OPTION_R_SUFFIX: schema.OPTION_FIELD_UNITS[schema.KEY_OPTION_NGS_R],
+        schema.KEY_OPTION_THETA_SUFFIX: schema.OPTION_FIELD_UNITS[schema.KEY_OPTION_NGS_THETA],
+        schema.KEY_OPTION_MAGNITUDE_SUFFIX: schema.OPTION_FIELD_UNITS[schema.KEY_OPTION_NGS_MAGNITUDE],
+    }[suffix]
+
+
+def _canonical_option_quantities(values: Mapping[str, object]) -> dict[str, object]:
+    """Attach canonical units to prepared numerical option arrays."""
+    return {
+        key: (
+            quantity_from_value(value, schema.OPTION_FIELD_UNITS[key])
+            if key in schema.OPTION_FIELD_UNITS
+            else value
+        )
+        for key, value in values.items()
+    }
 
 
 # Broadcast/table option parsing
@@ -84,28 +127,31 @@ def _parse_broadcast_defaults(
                 raise ValueError(f"{schema.KEY_OPTION_SECTION}.{schema.KEY_CFG_OPTION_NGS}[{i}] must be a mapping/object.")
             require_lowercase_mapping_keys(star, label=f"{schema.KEY_OPTION_SECTION}.{schema.KEY_CFG_OPTION_NGS}[{i}]")
             vals_r.append(
-                _to_optional_float(
-                    star.get(schema.KEY_OPTION_R_ARCSEC_SUFFIX),
-                    f"{schema.KEY_OPTION_SECTION}.{schema.KEY_CFG_OPTION_NGS}[{i}].{schema.KEY_OPTION_R_ARCSEC_SUFFIX}",
+                _to_optional_quantity_float(
+                    star.get(schema.KEY_OPTION_R_SUFFIX),
+                    schema.OPTION_FIELD_UNITS[schema.KEY_OPTION_NGS_R],
+                    f"{schema.KEY_OPTION_SECTION}.{schema.KEY_CFG_OPTION_NGS}[{i}].{schema.KEY_OPTION_R_SUFFIX}",
                 )
             )
             vals_t.append(
-                _to_optional_float(
-                    star.get(schema.KEY_OPTION_THETA_DEG_SUFFIX),
-                    f"{schema.KEY_OPTION_SECTION}.{schema.KEY_CFG_OPTION_NGS}[{i}].{schema.KEY_OPTION_THETA_DEG_SUFFIX}",
+                _to_optional_quantity_float(
+                    star.get(schema.KEY_OPTION_THETA_SUFFIX),
+                    schema.OPTION_FIELD_UNITS[schema.KEY_OPTION_NGS_THETA],
+                    f"{schema.KEY_OPTION_SECTION}.{schema.KEY_CFG_OPTION_NGS}[{i}].{schema.KEY_OPTION_THETA_SUFFIX}",
                 )
             )
             vals_m.append(
-                _to_optional_float(
-                    star.get(schema.KEY_OPTION_MAG_SUFFIX),
-                    f"{schema.KEY_OPTION_SECTION}.{schema.KEY_CFG_OPTION_NGS}[{i}].{schema.KEY_OPTION_MAG_SUFFIX}",
+                _to_optional_quantity_float(
+                    star.get(schema.KEY_OPTION_MAGNITUDE_SUFFIX),
+                    schema.OPTION_FIELD_UNITS[schema.KEY_OPTION_NGS_MAGNITUDE],
+                    f"{schema.KEY_OPTION_SECTION}.{schema.KEY_CFG_OPTION_NGS}[{i}].{schema.KEY_OPTION_MAGNITUDE_SUFFIX}",
                 )
             )
-        broadcast_ngs[schema.KEY_OPTION_NGS_R_ARCSEC] = as_float_vector(vals_r, label=schema.KEY_OPTION_NGS_R_ARCSEC)
-        broadcast_ngs[schema.KEY_OPTION_NGS_THETA_DEG] = as_float_vector(
-            vals_t, label=schema.KEY_OPTION_NGS_THETA_DEG
+        broadcast_ngs[schema.KEY_OPTION_NGS_R] = as_float_vector(vals_r, label=schema.KEY_OPTION_NGS_R)
+        broadcast_ngs[schema.KEY_OPTION_NGS_THETA] = as_float_vector(
+            vals_t, label=schema.KEY_OPTION_NGS_THETA
         )
-        broadcast_ngs[schema.KEY_OPTION_NGS_MAG] = as_float_vector(vals_m, label=schema.KEY_OPTION_NGS_MAG)
+        broadcast_ngs[schema.KEY_OPTION_NGS_MAGNITUDE] = as_float_vector(vals_m, label=schema.KEY_OPTION_NGS_MAGNITUDE)
 
     for key, value in options_broadcast.items():
         if key == schema.KEY_CFG_OPTION_NGS:
@@ -113,7 +159,14 @@ def _parse_broadcast_defaults(
         if key in schema.OPTION_KEYS_1D or key == schema.KEY_OPTION_SEEING:
             if isinstance(value, (list, Mapping)):
                 raise ValueError(f"options.{key} broadcast default must be a scalar.")
-            scalar_defaults[key] = value
+            if key in schema.OPTION_FIELD_UNITS:
+                scalar_defaults[key] = _to_optional_quantity_float(
+                    value,
+                    schema.OPTION_FIELD_UNITS[key],
+                    f"options.{key}",
+                )
+            else:
+                scalar_defaults[key] = value
             continue
 
         m = schema.KEY_OPTION_NGS_COLUMN_RE.match(str(key))
@@ -128,7 +181,13 @@ def _parse_broadcast_defaults(
                 arr = np.full((idx + 1,), np.nan, dtype=float)
             elif arr.size <= idx:
                 arr = np.pad(arr, (0, idx + 1 - arr.size), constant_values=np.nan)
-            arr[idx] = _to_optional_float(value, f"options.{key}")
+            canonical_unit = _option_unit_for_column(str(key))
+            assert canonical_unit is not None
+            arr[idx] = _to_optional_quantity_float(
+                value,
+                canonical_unit,
+                f"options.{key}",
+            )
             broadcast_ngs[map_key] = arr
             continue
 
@@ -137,7 +196,11 @@ def _parse_broadcast_defaults(
     return scalar_defaults, broadcast_ngs
 
 
-def _build_options_from_table(columns: list[str], rows: list[list[object]]) -> tuple[dict[str, np.ndarray], int]:
+def _build_options_from_table(
+    columns: list[str],
+    rows: list[list[object]],
+    units: Mapping[str, object],
+) -> tuple[dict[str, np.ndarray], int]:
     """Convert table-form options into typed per-option arrays.
 
     Args:
@@ -148,6 +211,25 @@ def _build_options_from_table(columns: list[str], rows: list[list[object]]) -> t
         Tuple ``(options_payload, num_sims)``.
     """
     n = len(rows)
+    required_unit_columns = {column for column in columns if _option_unit_for_column(column) is not None}
+    declared_unit_columns = set(units)
+    missing_units = sorted(required_unit_columns - declared_unit_columns)
+    unexpected_units = sorted(declared_unit_columns - set(columns))
+    nonphysical_units = sorted(
+        column for column in declared_unit_columns if _option_unit_for_column(column) is None
+    )
+    if missing_units:
+        raise ValueError(f"options.table.units is missing physical columns: {', '.join(missing_units)}.")
+    if unexpected_units:
+        raise ValueError(f"options.table.units contains absent columns: {', '.join(unexpected_units)}.")
+    if nonphysical_units:
+        raise ValueError(
+            "options.table.units must omit nonphysical columns: " + ", ".join(nonphysical_units) + "."
+        )
+    parsed_units = {
+        name: parse_unit(value, label=f"options.table.units[{name!r}]")
+        for name, value in units.items()
+    }
     raw_scalars: dict[str, np.ndarray] = {}
     ngs_parts: dict[str, dict[int, np.ndarray]] = {key: {} for key in schema.OPTION_KEYS_NGS}
     max_ngs = 0
@@ -194,6 +276,26 @@ def _build_options_from_table(columns: list[str], rows: list[list[object]]) -> t
                 mat[:, idx] = as_float_vector(col_arr, label=f"{key}[{idx}]")
             out[key] = mat
 
+    for column in columns:
+        canonical_unit = _option_unit_for_column(column)
+        if canonical_unit is None:
+            continue
+        declared_unit = parsed_units[column]
+        if not declared_unit.is_equivalent(canonical_unit):
+            raise ValueError(
+                f"options.table.units[{column!r}] must be equivalent to {canonical_unit}."
+            )
+        if column in out:
+            out[column] = np.asarray((out[column] * declared_unit).to_value(canonical_unit))
+            continue
+        match = schema.KEY_OPTION_NGS_COLUMN_RE.match(column)
+        assert match is not None
+        index = int(match.group(1)) - 1
+        key = f"{schema.KEY_OPTION_NGS_PREFIX}{match.group(2)}"
+        out[key][:, index] = np.asarray(
+            (out[key][:, index] * declared_unit).to_value(canonical_unit)
+        )
+
     return out, n
 # Options payload completion and validation
 
@@ -203,19 +305,19 @@ def _derive_ngs_used(options_row: Mapping[str, object]) -> np.ndarray | None:
     Returns ``None`` when one or more NGS option vectors are absent.
     """
     ngs_keys = (
-        schema.KEY_OPTION_NGS_R_ARCSEC,
-        schema.KEY_OPTION_NGS_THETA_DEG,
-        schema.KEY_OPTION_NGS_MAG,
+        schema.KEY_OPTION_NGS_R,
+        schema.KEY_OPTION_NGS_THETA,
+        schema.KEY_OPTION_NGS_MAGNITUDE,
     )
     if not all(k in options_row for k in ngs_keys):
         return None
 
-    ngs_r = as_float_vector(options_row[schema.KEY_OPTION_NGS_R_ARCSEC], label=schema.KEY_OPTION_NGS_R_ARCSEC)
-    ngs_theta = as_float_vector(options_row[schema.KEY_OPTION_NGS_THETA_DEG], label=schema.KEY_OPTION_NGS_THETA_DEG)
-    ngs_mag = as_float_vector(options_row[schema.KEY_OPTION_NGS_MAG], label=schema.KEY_OPTION_NGS_MAG)
-    if ngs_r.shape != ngs_theta.shape or ngs_r.shape != ngs_mag.shape:
-        raise ValueError("ngs_r_arcsec/ngs_theta_deg/ngs_mag option vectors must have identical shape.")
-    return np.isfinite(ngs_r) & np.isfinite(ngs_theta) & np.isfinite(ngs_mag)
+    ngs_r = quantity_value(options_row[schema.KEY_OPTION_NGS_R], u.arcsec, label=schema.KEY_OPTION_NGS_R, dtype=float).reshape(-1)
+    ngs_theta = quantity_value(options_row[schema.KEY_OPTION_NGS_THETA], u.deg, label=schema.KEY_OPTION_NGS_THETA, dtype=float).reshape(-1)
+    ngs_magnitude = quantity_value(options_row[schema.KEY_OPTION_NGS_MAGNITUDE], u.mag, label=schema.KEY_OPTION_NGS_MAGNITUDE, dtype=float).reshape(-1)
+    if ngs_r.shape != ngs_theta.shape or ngs_r.shape != ngs_magnitude.shape:
+        raise ValueError("ngs_r/ngs_theta/ngs_magnitude option vectors must have identical shape.")
+    return np.isfinite(ngs_r) & np.isfinite(ngs_theta) & np.isfinite(ngs_magnitude)
 
 
 def add_runtime_derived_options(options_row: Mapping[str, object]) -> dict[str, object]:
@@ -237,34 +339,34 @@ def add_runtime_derived_options(options_row: Mapping[str, object]) -> dict[str, 
 def replace_seeing_with_r0(
     options_payload: Mapping[str, object],
     *,
-    atm_wavelength_um: float,
+    atm_wavelength: float,
     num_sims: int,
     has_explicit_r0: bool | None = None,
 ) -> dict[str, np.ndarray]:
-    """Normalize ``seeing_arcsec`` input into canonical persisted ``r0_m``.
+    """Normalize ``seeing`` input into canonical persisted ``r0``.
 
     Args:
         options_payload: Candidate options payload.
-        atm_wavelength_um: Atmosphere reference wavelength in microns.
+        atm_wavelength: Atmosphere reference wavelength in microns.
         num_sims: Required number of simulations ``N``.
-        has_explicit_r0: Optional override indicating whether ``r0_m`` was
+        has_explicit_r0: Optional override indicating whether ``r0`` was
             explicitly supplied by the caller.
 
     Returns:
-        Normalized options payload with ``r0_m`` present and ``seeing_arcsec`` removed.
+        Normalized options payload with ``r0`` present and ``seeing`` removed.
     """
     out = as_array_dict(dict(options_payload), copy_arrays=True)
     n = int(num_sims)
     if schema.KEY_OPTION_SEEING not in out:
         return out
 
-    atm_wavelength_um = require_finite_positive_scalar(
-        atm_wavelength_um, label=f"{schema.KEY_SETUP_SECTION}.{schema.KEY_SETUP_ATM_WAVELENGTH_UM}"
+    atm_wavelength = require_finite_positive_scalar(
+        atm_wavelength, label=f"{schema.KEY_SETUP_SECTION}.{schema.KEY_SETUP_ATM_WAVELENGTH}"
     )
     seeing = as_float_vector(out[schema.KEY_OPTION_SEEING], label=schema.KEY_OPTION_SEEING, length=n)
     r0 = as_float_vector(
-        out.get(schema.KEY_OPTION_R0_M, np.full((n,), np.nan)),
-        label=schema.KEY_OPTION_R0_M,
+        out.get(schema.KEY_OPTION_R0, np.full((n,), np.nan)),
+        label=schema.KEY_OPTION_R0,
         length=n,
     )
 
@@ -273,16 +375,16 @@ def replace_seeing_with_r0(
         if np.any(seeing[seeing_present] <= 0.0):
             raise ValueError(f"{schema.KEY_OPTION_SEEING} values must be > 0 when provided.")
         seeing_rad = seeing[seeing_present] * (math.pi / 648000.0)
-        r0_from_seeing = 0.98 * (float(atm_wavelength_um) * 1e-6) / seeing_rad
+        r0_from_seeing = 0.98 * (float(atm_wavelength) * 1e-6) / seeing_rad
         r0_existing = r0[seeing_present]
 
-        explicit_r0 = (schema.KEY_OPTION_R0_M in out) if has_explicit_r0 is None else bool(has_explicit_r0)
+        explicit_r0 = (schema.KEY_OPTION_R0 in out) if has_explicit_r0 is None else bool(has_explicit_r0)
         if explicit_r0:
             r0_finite = np.isfinite(r0_existing)
             if np.any(r0_finite):
                 if not np.allclose(r0_existing[r0_finite], r0_from_seeing[r0_finite], rtol=1e-3, atol=1e-6):
                     raise ValueError(
-                        "Inconsistent per-sim atmospheric inputs: r0_m and seeing_arcsec both provided "
+                        "Inconsistent per-sim atmospheric inputs: r0 and seeing both provided "
                         "but do not match for one or more simulations."
                     )
         else:
@@ -291,7 +393,7 @@ def replace_seeing_with_r0(
         r0_existing[~r0_finite] = r0_from_seeing[~r0_finite]
         r0[seeing_present] = r0_existing
 
-    out[schema.KEY_OPTION_R0_M] = r0
+    out[schema.KEY_OPTION_R0] = r0
     out.pop(schema.KEY_OPTION_SEEING, None)
     return out
 
@@ -300,7 +402,7 @@ def _finalize_options(
     options_arrays: dict[str, np.ndarray],
     *,
     num_sims: int,
-    atm_wavelength_um: float,
+    atm_wavelength: float,
     scalar_defaults: dict[str, object],
     broadcast_ngs: dict[str, np.ndarray],
 ) -> dict[str, np.ndarray]:
@@ -309,7 +411,7 @@ def _finalize_options(
     Args:
         options_arrays: Partially prepared per-option arrays.
         num_sims: Required number of simulations ``N``.
-        atm_wavelength_um: Atmosphere reference wavelength used for seeing->r0 conversion.
+        atm_wavelength: Atmosphere reference wavelength used for seeing->r0 conversion.
         scalar_defaults: Scalar defaults broadcast across simulations.
         broadcast_ngs: Explicit per-star NGS vectors applied uniformly to all
             simulations.
@@ -354,7 +456,7 @@ def _finalize_options(
     if broadcast_ngs:
         missing_broadcast_ngs = [key for key in schema.OPTION_KEYS_NGS if key not in broadcast_ngs]
         if missing_broadcast_ngs:
-            raise ValueError("Explicit broadcast NGS input must provide ngs_r_arcsec, ngs_theta_deg, and ngs_mag together.")
+            raise ValueError("Explicit broadcast NGS input must provide ngs_r, ngs_theta, and ngs_magnitude together.")
         kmax = int(max(as_float_vector(broadcast_ngs[key], label=key).shape[0] for key in schema.OPTION_KEYS_NGS))
         broadcast_values: dict[str, np.ndarray] = {}
         for key in schema.OPTION_KEYS_NGS:
@@ -363,13 +465,13 @@ def _finalize_options(
                 raise ValueError("Explicit broadcast NGS arrays must have identical length Kmax.")
             broadcast_values[key] = values
 
-        finite_r = np.isfinite(broadcast_values[schema.KEY_OPTION_NGS_R_ARCSEC])
-        finite_t = np.isfinite(broadcast_values[schema.KEY_OPTION_NGS_THETA_DEG])
-        finite_m = np.isfinite(broadcast_values[schema.KEY_OPTION_NGS_MAG])
+        finite_r = np.isfinite(broadcast_values[schema.KEY_OPTION_NGS_R])
+        finite_t = np.isfinite(broadcast_values[schema.KEY_OPTION_NGS_THETA])
+        finite_m = np.isfinite(broadcast_values[schema.KEY_OPTION_NGS_MAGNITUDE])
         partial = (finite_r | finite_t | finite_m) & ~(finite_r & finite_t & finite_m)
         if np.any(partial):
             raise ValueError(
-                "Each broadcast NGS slot must be either all finite or all NaN across ngs_r_arcsec/ngs_theta_deg/ngs_mag."
+                "Each broadcast NGS slot must be either all finite or all NaN across ngs_r/ngs_theta/ngs_magnitude."
             )
 
         for key, values in broadcast_values.items():
@@ -377,9 +479,9 @@ def _finalize_options(
 
     out = replace_seeing_with_r0(
         out,
-        atm_wavelength_um=atm_wavelength_um,
+        atm_wavelength=atm_wavelength,
         num_sims=n,
-        has_explicit_r0=(schema.KEY_OPTION_R0_M in options_arrays) or (schema.KEY_OPTION_R0_M in scalar_defaults),
+        has_explicit_r0=(schema.KEY_OPTION_R0 in options_arrays) or (schema.KEY_OPTION_R0 in scalar_defaults),
     )
 
     finalized: dict[str, np.ndarray] = {}
@@ -404,13 +506,13 @@ def _finalize_options(
     if ngs_present:
         missing_ngs_keys = [key for key in schema.OPTION_KEYS_NGS if key not in out]
         if missing_ngs_keys:
-            raise ValueError("Explicit NGS options must provide ngs_r_arcsec, ngs_theta_deg, and ngs_mag together.")
+            raise ValueError("Explicit NGS options must provide ngs_r, ngs_theta, and ngs_magnitude together.")
 
-        ngs_r = np.asarray(out[schema.KEY_OPTION_NGS_R_ARCSEC], dtype=float)
-        ngs_t = np.asarray(out[schema.KEY_OPTION_NGS_THETA_DEG], dtype=float)
-        ngs_m = np.asarray(out[schema.KEY_OPTION_NGS_MAG], dtype=float)
+        ngs_r = np.asarray(out[schema.KEY_OPTION_NGS_R], dtype=float)
+        ngs_t = np.asarray(out[schema.KEY_OPTION_NGS_THETA], dtype=float)
+        ngs_m = np.asarray(out[schema.KEY_OPTION_NGS_MAGNITUDE], dtype=float)
         if ngs_r.shape != ngs_t.shape or ngs_r.shape != ngs_m.shape:
-            raise ValueError("ngs_r_arcsec/ngs_theta_deg/ngs_mag must have identical [N, Kmax] shape.")
+            raise ValueError("ngs_r/ngs_theta/ngs_magnitude must have identical [N, Kmax] shape.")
         if ngs_r.shape[0] != n:
             raise ValueError("NGS option arrays first dimension must match N.")
         if ngs_r.shape[1] == 0:
@@ -421,9 +523,9 @@ def _finalize_options(
         partial = (finite_r | finite_t | finite_m) & ~(finite_r & finite_t & finite_m)
         if np.any(partial):
             raise ValueError("Each NGS slot must be either all finite or all NaN.")
-        finalized[schema.KEY_OPTION_NGS_R_ARCSEC] = ngs_r
-        finalized[schema.KEY_OPTION_NGS_THETA_DEG] = ngs_t
-        finalized[schema.KEY_OPTION_NGS_MAG] = ngs_m
+        finalized[schema.KEY_OPTION_NGS_R] = ngs_r
+        finalized[schema.KEY_OPTION_NGS_THETA] = ngs_t
+        finalized[schema.KEY_OPTION_NGS_MAGNITUDE] = ngs_m
 
     return finalized
 
@@ -532,9 +634,9 @@ def normalize_setup_config(setup: object) -> dict[str, object]:
         return {str(k): v for k, v in dict(setup).items()}
 
     # API dataclass-like path (SetupConfig).
-    if hasattr(setup, schema.KEY_SETUP_EE_APERTURES_MAS):
+    if hasattr(setup, schema.KEY_SETUP_EE_APERTURES):
         out: dict[str, object] = {
-            schema.KEY_SETUP_EE_APERTURES_MAS: getattr(setup, schema.KEY_SETUP_EE_APERTURES_MAS)
+            schema.KEY_SETUP_EE_APERTURES: getattr(setup, schema.KEY_SETUP_EE_APERTURES)
         }
         if hasattr(setup, schema.KEY_SETUP_SR_METHOD):
             sr_method = getattr(setup, schema.KEY_SETUP_SR_METHOD)
@@ -577,49 +679,70 @@ def normalize_table_options_config(raw_options_cfg: Mapping[str, object]) -> dic
     require_lowercase_mapping_keys(raw_options_cfg, label=schema.KEY_OPTION_SECTION)
     options_cfg = {str(k): v for k, v in dict(raw_options_cfg).items()}
     table_cfg = options_cfg.get(schema.KEY_CFG_OPTION_TABLE)
-    table_path_cfg = options_cfg.get(schema.KEY_CFG_OPTION_TABLE_PATH)
-    if table_cfg is not None and table_path_cfg is not None:
-        raise ValueError(
-            f"{schema.KEY_OPTION_SECTION}.{schema.KEY_CFG_OPTION_TABLE_PATH} and {schema.KEY_OPTION_SECTION}.{schema.KEY_CFG_OPTION_TABLE} are mutually exclusive; provide only one."
-        )
-
     columns: list[str] | None = None
     rows: list[list[object]] | None = None
+    units: dict[str, object] = {}
+    table_path: str | None = None
     if table_cfg is not None:
         if not isinstance(table_cfg, Mapping):
             raise ValueError(f"{schema.KEY_OPTION_SECTION}.{schema.KEY_CFG_OPTION_TABLE} must be a mapping/object.")
         require_lowercase_mapping_keys(table_cfg, label=f"{schema.KEY_OPTION_SECTION}.{schema.KEY_CFG_OPTION_TABLE}")
         table = {str(k): v for k, v in dict(table_cfg).items()}
-        columns_raw = table.get(schema.KEY_CFG_OPTION_COLUMNS)
-        rows_raw = table.get(schema.KEY_CFG_OPTION_ROWS)
-        if not isinstance(columns_raw, list) or len(columns_raw) == 0:
+        allowed_table_keys = {
+            schema.KEY_CFG_OPTION_TABLE_PATH,
+            schema.KEY_CFG_OPTION_COLUMNS,
+            schema.KEY_CFG_OPTION_UNITS,
+            schema.KEY_CFG_OPTION_ROWS,
+        }
+        unexpected_table_keys = sorted(set(table) - allowed_table_keys)
+        if unexpected_table_keys:
             raise ValueError(
-                f"{schema.KEY_OPTION_SECTION}.{schema.KEY_CFG_OPTION_TABLE}.{schema.KEY_CFG_OPTION_COLUMNS} must be a non-empty list."
+                f"Unsupported options.table keys: {', '.join(unexpected_table_keys)}."
             )
-        if not all(isinstance(col, str) and col.strip() for col in columns_raw):
+        path_raw = table.get(schema.KEY_CFG_OPTION_TABLE_PATH)
+        columns_raw = table.get(schema.KEY_CFG_OPTION_COLUMNS)
+        units_raw = table.get(schema.KEY_CFG_OPTION_UNITS, {})
+        rows_raw = table.get(schema.KEY_CFG_OPTION_ROWS)
+        if not isinstance(units_raw, Mapping):
+            raise ValueError("options.table.units must be a mapping.")
+        require_lowercase_mapping_keys(units_raw, label="options.table.units")
+        units = {str(key): value for key, value in units_raw.items()}
+        if path_raw is not None:
+            if not isinstance(path_raw, str) or not path_raw.strip():
+                raise ValueError("options.table.path must be a non-empty string.")
+            if columns_raw is not None or rows_raw is not None:
+                raise ValueError("options.table.path is mutually exclusive with columns and rows.")
+            table_path = path_raw
+        else:
+            if not isinstance(columns_raw, list) or len(columns_raw) == 0:
+                raise ValueError(
+                    f"{schema.KEY_OPTION_SECTION}.{schema.KEY_CFG_OPTION_TABLE}.{schema.KEY_CFG_OPTION_COLUMNS} must be a non-empty list."
+                )
+            if not isinstance(rows_raw, list):
+                raise ValueError(
+                    f"{schema.KEY_OPTION_SECTION}.{schema.KEY_CFG_OPTION_TABLE}.{schema.KEY_CFG_OPTION_ROWS} must be a list."
+                )
+        if table_path is not None:
+            columns_raw = None
+            rows_raw = None
+        assert columns_raw is None or isinstance(columns_raw, list)
+        if columns_raw is not None and not all(isinstance(col, str) and col.strip() for col in columns_raw):
             raise ValueError(
                 f"{schema.KEY_OPTION_SECTION}.{schema.KEY_CFG_OPTION_TABLE}.{schema.KEY_CFG_OPTION_COLUMNS} entries must be non-empty strings."
             )
-        if not all(col == col.lower() for col in columns_raw):
+        if columns_raw is not None and not all(col == col.lower() for col in columns_raw):
             raise ValueError(
                 f"{schema.KEY_OPTION_SECTION}.{schema.KEY_CFG_OPTION_TABLE}.{schema.KEY_CFG_OPTION_COLUMNS} entries must be lowercase."
             )
-        if not isinstance(rows_raw, list):
-            raise ValueError(
-                f"{schema.KEY_OPTION_SECTION}.{schema.KEY_CFG_OPTION_TABLE}.{schema.KEY_CFG_OPTION_ROWS} must be a list."
-            )
         parsed_rows: list[list[object]] = []
-        for i, row in enumerate(rows_raw):
+        for i, row in enumerate(rows_raw or []):
             if not isinstance(row, list):
                 raise ValueError(
                     f"{schema.KEY_OPTION_SECTION}.{schema.KEY_CFG_OPTION_TABLE}.{schema.KEY_CFG_OPTION_ROWS}[{i}] must be a list."
                 )
             parsed_rows.append(list(row))
-        columns = [str(col) for col in columns_raw]
-        rows = parsed_rows
-    elif table_path_cfg is not None:
-        if not isinstance(table_path_cfg, str):
-            raise ValueError(f"{schema.KEY_OPTION_SECTION}.{schema.KEY_CFG_OPTION_TABLE_PATH} must be a string path.")
+        columns = None if columns_raw is None else [str(col) for col in columns_raw]
+        rows = None if rows_raw is None else parsed_rows
 
     broadcast_cfg = options_cfg.get(schema.KEY_CFG_OPTION_BROADCAST)
     if broadcast_cfg is None:
@@ -636,7 +759,6 @@ def normalize_table_options_config(raw_options_cfg: Mapping[str, object]) -> dic
         if key in {
             schema.KEY_CFG_OPTION_BROADCAST,
             schema.KEY_CFG_OPTION_TABLE,
-            schema.KEY_CFG_OPTION_TABLE_PATH,
         }:
             continue
         if key in broadcast:
@@ -648,7 +770,9 @@ def normalize_table_options_config(raw_options_cfg: Mapping[str, object]) -> dic
 
     return {
         schema.KEY_CFG_OPTION_BROADCAST: broadcast,
+        schema.KEY_CFG_OPTION_TABLE_PATH: table_path,
         schema.KEY_CFG_OPTION_COLUMNS: columns,
+        schema.KEY_CFG_OPTION_UNITS: units,
         schema.KEY_CFG_OPTION_ROWS: rows,
     }
 
@@ -659,7 +783,7 @@ def prepare_options_payload_from_table(
     simulation: Simulation,
     setup_payload: Mapping[str, object],
     options_input: Mapping[str, object],
-) -> dict[str, np.ndarray]:
+) -> dict[str, np.ndarray | u.Quantity]:
     """Build persisted ``/options`` payload from table/broadcast options input.
 
     Args:
@@ -681,12 +805,14 @@ def prepare_options_payload_from_table(
         normalized = {
             schema.KEY_CFG_OPTION_BROADCAST: dict(options_input.get(schema.KEY_CFG_OPTION_BROADCAST, {})),
             schema.KEY_CFG_OPTION_COLUMNS: options_input.get(schema.KEY_CFG_OPTION_COLUMNS),
+            schema.KEY_CFG_OPTION_UNITS: dict(options_input.get(schema.KEY_CFG_OPTION_UNITS, {})),
             schema.KEY_CFG_OPTION_ROWS: options_input.get(schema.KEY_CFG_OPTION_ROWS),
         }
     else:
         normalized = normalize_table_options_config(options_input)
     table_columns = normalized.get(schema.KEY_CFG_OPTION_COLUMNS)
     table_rows = normalized.get(schema.KEY_CFG_OPTION_ROWS)
+    table_units = normalized.get(schema.KEY_CFG_OPTION_UNITS, {})
     options_broadcast = normalized.get(schema.KEY_CFG_OPTION_BROADCAST, {})
     if not isinstance(options_broadcast, Mapping):
         raise ValueError("options broadcast payload must be a mapping.")
@@ -701,25 +827,36 @@ def prepare_options_payload_from_table(
     if not (columns_empty and rows_empty):
         if not isinstance(table_columns, list) or not isinstance(table_rows, list):
             raise ValueError("columns and rows must both be provided as lists.")
-        options_arrays, num_sims = _build_options_from_table(table_columns, table_rows)
+        if not isinstance(table_units, Mapping):
+            raise ValueError("options table units must be a mapping.")
+        options_arrays, num_sims = _build_options_from_table(table_columns, table_rows, table_units)
 
     if num_sims is None:
         num_sims = 1
 
-    atm_wavelength_um = as_float_scalar(setup_payload[schema.KEY_SETUP_ATM_WAVELENGTH_UM], label="setup.atm_wavelength_um")
+    atm_wavelength = float(
+        quantity_value(
+            setup_payload[schema.KEY_SETUP_ATM_WAVELENGTH],
+            schema.SETUP_FIELD_UNITS[schema.KEY_SETUP_ATM_WAVELENGTH],
+            label="setup.atm_wavelength",
+        )
+    )
     base_options_payload = _finalize_options(
         options_arrays,
         num_sims=num_sims,
-        atm_wavelength_um=atm_wavelength_um,
+        atm_wavelength=atm_wavelength,
         scalar_defaults=scalar_defaults,
         broadcast_ngs=broadcast_ngs,
     )
-    options_payload = simulation.prepare_options_payload(num_sims, setup_payload, base_options_payload)
+    options_payload = simulation.prepare_options_payload(
+        num_sims, setup_payload, _canonical_option_quantities(base_options_payload)
+    )
     options_payload = _normalize_science_offset_options(
         options_payload,
         num_sims=num_sims,
         num_sci=get_num_sci(setup_payload),
     )
+    options_payload = _canonical_option_quantities(options_payload)
     _validate_completed_options_payload(setup_payload, options_payload)
     return options_payload
 
@@ -728,7 +865,7 @@ def prepare_options_payload_from_arrays(
     simulation: Simulation,
     setup_payload: Mapping[str, object],
     option_arrays: Mapping[str, object],
-) -> dict[str, np.ndarray]:
+) -> dict[str, np.ndarray | u.Quantity]:
     """Build persisted ``/options`` payload from explicit per-option arrays.
 
     Args:
@@ -747,10 +884,17 @@ def prepare_options_payload_from_arrays(
     require_lowercase_mapping_keys(option_arrays, label="options.option_arrays")
 
     partial: dict[str, np.ndarray] = {}
-    has_explicit_r0 = schema.KEY_OPTION_R0_M in option_arrays
+    has_explicit_r0 = schema.KEY_OPTION_R0 in option_arrays
     num_sims: int | None = None
     for key, value in option_arrays.items():
-        arr = np.asarray(value)
+        if key in schema.OPTION_FIELD_UNITS:
+            arr = quantity_value(
+                value,
+                schema.OPTION_FIELD_UNITS[key],
+                label=f"options.option_arrays[{key!r}]",
+            )
+        else:
+            arr = np.asarray(value)
         if arr.ndim == 0:
             raise ValueError(f"options.option_arrays['{key}'] must be per-simulation and include first dimension N.")
         if num_sims is None:
@@ -762,13 +906,21 @@ def prepare_options_payload_from_arrays(
         partial[str(key)] = arr
 
     assert num_sims is not None
-    completed = simulation.prepare_options_payload(int(num_sims), setup_payload, partial)
+    completed = simulation.prepare_options_payload(
+        int(num_sims), setup_payload, _canonical_option_quantities(partial)
+    )
     completed_payload = as_array_dict(dict(completed), copy_arrays=False)
 
-    atm_wavelength_um = as_float_scalar(setup_payload[schema.KEY_SETUP_ATM_WAVELENGTH_UM], label="setup.atm_wavelength_um")
+    atm_wavelength = float(
+        quantity_value(
+            setup_payload[schema.KEY_SETUP_ATM_WAVELENGTH],
+            schema.SETUP_FIELD_UNITS[schema.KEY_SETUP_ATM_WAVELENGTH],
+            label="setup.atm_wavelength",
+        )
+    )
     completed_payload = replace_seeing_with_r0(
         completed_payload,
-        atm_wavelength_um=atm_wavelength_um,
+        atm_wavelength=atm_wavelength,
         num_sims=int(num_sims),
         has_explicit_r0=has_explicit_r0,
     )
@@ -778,5 +930,6 @@ def prepare_options_payload_from_arrays(
         num_sci=get_num_sci(setup_payload),
     )
 
-    _validate_completed_options_payload(setup_payload, completed_payload)
-    return completed_payload
+    quantity_payload = _canonical_option_quantities(completed_payload)
+    _validate_completed_options_payload(setup_payload, quantity_payload)
+    return quantity_payload

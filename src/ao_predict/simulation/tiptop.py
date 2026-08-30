@@ -10,20 +10,20 @@ import tempfile
 from typing import Any, Mapping
 
 import numpy as np
+from astropy import units as u
 
 from . import atm
 from . import schema
 from .base import BaseSimulationSetup, PsfParameters
-from .helpers import r0_to_seeing_arcsec
+from .helpers import r0_to_seeing
 from .interfaces import SimulationContext, SimulationSetup
 from .photometry import magnitudes_to_photons_per_frame
 from .tiptop_config_backed import (
-    TiptopBaseConfig,
     TiptopConfigBackedSimulation,
     _format_ini_array,
     _serialize_parser,
 )
-from ..utils import as_float_vector
+from .._units import quantity_value
 
 
 @dataclass(frozen=True)
@@ -119,8 +119,8 @@ class TiptopSimulation(TiptopConfigBackedSimulation):
         setup: TiptopSetup,
     ) -> None:
         """Apply atmosphere/profile/r0 runtime updates."""
-        if schema.KEY_OPTION_ZENITH_ANGLE_DEG in options and parser.has_section("telescope"):
-            parser["telescope"]["ZenithAngle"] = f"{float(options[schema.KEY_OPTION_ZENITH_ANGLE_DEG]):.6g}"
+        if schema.KEY_OPTION_ZENITH_ANGLE in options and parser.has_section("telescope"):
+            parser["telescope"]["ZenithAngle"] = f"{options[schema.KEY_OPTION_ZENITH_ANGLE].to_value(u.deg):.6g}"
 
         if not parser.has_section("atmosphere"):
             return
@@ -132,10 +132,10 @@ class TiptopSimulation(TiptopConfigBackedSimulation):
             atm_profile = atm.select_atm_profile(setup.atm_profiles, atm_profile_id)
             self._write_atmosphere_profile_fields(parser, atm_profile)
 
-        if schema.KEY_OPTION_R0_M in options:
-            r0_m = float(options[schema.KEY_OPTION_R0_M])
-            atm_wavelength_m = self._get_required_atm_wavelength_m(parser, "convert r0_m to Seeing")
-            atmosphere_section["Seeing"] = f"{r0_to_seeing_arcsec(r0_m, atm_wavelength_m):.6g}"
+        if schema.KEY_OPTION_R0 in options:
+            r0 = float(options[schema.KEY_OPTION_R0].to_value(u.m))
+            atm_wavelength_m = self._get_required_atm_wavelength_m(parser, "convert r0 to Seeing")
+            atmosphere_section["Seeing"] = f"{r0_to_seeing(r0 * u.m, atm_wavelength_m * u.m).to_value(u.arcsec):.6g}"
             # TIPTOP runtime input is written as Seeing rather than r0_Value.
             if "r0_Value" in atmosphere_section:
                 del atmosphere_section["r0_Value"]
@@ -147,13 +147,13 @@ class TiptopSimulation(TiptopConfigBackedSimulation):
         setup: TiptopSetup,
     ) -> None:
         """Apply science geometry and science-wavelength updates."""
-        wavelength_um = float(options[schema.KEY_OPTION_WAVELENGTH_UM]) if schema.KEY_OPTION_WAVELENGTH_UM in options else None
-        self._write_science_source_fields(parser, setup.sci_r_arcsec, setup.sci_theta_deg, wavelength_um)
+        wavelength = options.get(schema.KEY_OPTION_WAVELENGTH)
+        self._write_science_source_fields(parser, setup.sci_r, setup.sci_theta, wavelength)
 
     def _update_lgs_in_ini(self, parser: ConfigParser, setup: TiptopSetup) -> None:
         """Apply invariant LGS geometry from setup."""
-        if setup.lgs_r_arcsec.size > 0 and parser.has_section("sources_HO"):
-            self._write_source_geometry_fields(parser, "sources_HO", setup.lgs_r_arcsec, setup.lgs_theta_deg)
+        if setup.lgs_r.size > 0 and parser.has_section("sources_HO"):
+            self._write_source_geometry_fields(parser, "sources_HO", setup.lgs_r, setup.lgs_theta)
 
     def _update_ngs_in_ini(
         self,
@@ -163,9 +163,9 @@ class TiptopSimulation(TiptopConfigBackedSimulation):
     ) -> None:
         """Apply active-NGS geometry and photon updates."""
         required_ngs_keys = (
-            schema.KEY_OPTION_NGS_R_ARCSEC,
-            schema.KEY_OPTION_NGS_THETA_DEG,
-            schema.KEY_OPTION_NGS_MAG,
+            schema.KEY_OPTION_NGS_R,
+            schema.KEY_OPTION_NGS_THETA,
+            schema.KEY_OPTION_NGS_MAGNITUDE,
         )
         if not all(key in options for key in required_ngs_keys):
             return
@@ -175,26 +175,28 @@ class TiptopSimulation(TiptopConfigBackedSimulation):
                 "Call runner.prepare_options_payload(...) (or api.init_dataset(...)) so core derives runtime fields first."
             )
 
-        ngs_mag = np.asarray(options[schema.KEY_OPTION_NGS_MAG], dtype=float).reshape(-1)
+        ngs_magnitude = quantity_value(options[schema.KEY_OPTION_NGS_MAGNITUDE], u.mag, label="options.ngs_magnitude", dtype=float).reshape(-1)
         ngs_used = np.asarray(options[schema.KEY_OPTION_NGS_USED], dtype=bool).reshape(-1)
         if not np.any(ngs_used):
             return
-        photometry = self._get_ngs_photometry_config(parser, setup.ngs_mag_zeropoint)
+        photometry = self._get_ngs_photometry_config(parser, setup.ngs_magnitude_zeropoint)
 
         if parser.has_section("sources_LO"):
             self._write_source_geometry_fields(
                 parser,
                 "sources_LO",
-                as_float_vector(options[schema.KEY_OPTION_NGS_R_ARCSEC], label=schema.KEY_OPTION_NGS_R_ARCSEC)[ngs_used],
-                as_float_vector(options[schema.KEY_OPTION_NGS_THETA_DEG], label=schema.KEY_OPTION_NGS_THETA_DEG)[ngs_used],
+                quantity_value(options[schema.KEY_OPTION_NGS_R], u.arcsec, label=schema.KEY_OPTION_NGS_R)[ngs_used] * u.arcsec,
+                quantity_value(options[schema.KEY_OPTION_NGS_THETA], u.deg, label=schema.KEY_OPTION_NGS_THETA)[ngs_used] * u.deg,
             )
 
         photons_per_frame = magnitudes_to_photons_per_frame(
-            ngs_mag[ngs_used],
+            ngs_magnitude[ngs_used] * u.mag,
             photometry,
         )
         if parser.has_section("sensor_LO"):
-            parser["sensor_LO"]["NumberPhotons"] = _format_ini_array(np.round(photons_per_frame, 0))
+            parser["sensor_LO"]["NumberPhotons"] = _format_ini_array(
+                np.round(photons_per_frame.to_value(u.photon), 0)
+            )
             if "NumberLenslets" in parser["sensor_LO"]:
                 parser["sensor_LO"]["NumberLenslets"] = _format_ini_array(
                     np.full((int(np.sum(ngs_used)),), photometry.n_channels, dtype=float)
@@ -228,10 +230,15 @@ class TiptopSimulation(TiptopConfigBackedSimulation):
         setup = context.setup
         if not isinstance(setup, TiptopSetup):
             raise TypeError("context.setup must be TiptopSetup.")
-        ee_apertures_mas = np.asarray(setup.ee_apertures_mas, dtype=float).reshape(-1)
-        if ee_apertures_mas.size == 0:
-            raise ValueError("ee_apertures_mas must contain at least one value.")
-        ee_radius_mas = float(ee_apertures_mas[0]) * 0.5
+        ee_apertures = quantity_value(
+            setup.ee_apertures,
+            u.mas,
+            label="setup.ee_apertures",
+            dtype=float,
+        ).reshape(-1)
+        if ee_apertures.size == 0:
+            raise ValueError("ee_apertures must contain at least one value.")
+        ee_radius_mas = float(ee_apertures[0]) * 0.5
         ini_text = _serialize_parser(parser)
 
         with tempfile.TemporaryDirectory(prefix="ao_predict_tiptop_") as tmpdir:
@@ -330,16 +337,16 @@ class TiptopSimulation(TiptopConfigBackedSimulation):
             raise TypeError("context.runtime['effective_parser'] must be a ConfigParser. Did create() run?")
 
         if hasattr(simulation, "psInMas"):
-            pixel_scale_mas = float(getattr(simulation, "psInMas"))
+            pixel_scale = float(getattr(simulation, "psInMas"))
         elif parser.has_section("sensor_science") and "PixelScale" in parser["sensor_science"]:
-            pixel_scale_mas = float(parser["sensor_science"]["PixelScale"])
+            pixel_scale = float(parser["sensor_science"]["PixelScale"])
         else:
             raise ValueError("Unable to resolve pixel scale (mas) from TIPTOP outputs or INI.")
 
         if hasattr(simulation, "tel_radius"):
-            tel_diameter_m = float(getattr(simulation, "tel_radius")) * 2.0
+            tel_diameter = float(getattr(simulation, "tel_radius")) * 2.0
         elif parser.has_section("telescope") and "TelescopeDiameter" in parser["telescope"]:
-            tel_diameter_m = float(parser["telescope"]["TelescopeDiameter"])
+            tel_diameter = float(parser["telescope"]["TelescopeDiameter"])
         else:
             raise ValueError("Unable to resolve telescope diameter (m) from TIPTOP outputs or INI.")
 
@@ -349,7 +356,7 @@ class TiptopSimulation(TiptopConfigBackedSimulation):
             raise ValueError("Unable to resolve telescope pupil from TIPTOP output object.") from exc
 
         return PsfParameters(
-            pixel_scale_mas=pixel_scale_mas,
-            tel_diameter_m=tel_diameter_m,
-            tel_pupil=tel_pupil,
+            pixel_scale=pixel_scale * u.mas,
+            tel_diameter=tel_diameter * u.m,
+            tel_pupil=tel_pupil * u.dimensionless_unscaled,
         )

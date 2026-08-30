@@ -4,6 +4,7 @@ This document describes the `ao-predict` command-line interface for simulation
 dataset lifecycle management.
 
 ## Command Structure
+
 ```bash
 ao-predict [--version] <command-family> <subcommand> [options]
 ```
@@ -22,6 +23,7 @@ Simulation subcommands:
 - `check`
 
 ## `simulate init`
+
 Initialize a dataset file from a YAML configuration.
 
 ```bash
@@ -44,6 +46,7 @@ Behavior:
 - Initial status is `SimulationState.PENDING` (`0`) for all simulations.
 
 ## `simulate run`
+
 Run all pending simulations.
 
 ```bash
@@ -64,6 +67,7 @@ Output:
 - `Run summary: attempted=<N> succeeded=<S> failed=<F>`
 
 ## `simulate retry`
+
 Retry failed simulations only.
 
 ```bash
@@ -85,6 +89,7 @@ Output:
 - `Retry summary: attempted=<N> succeeded=<S> failed=<F>`
 
 ## `simulate resume`
+
 Resume an existing dataset.
 
 ```bash
@@ -108,6 +113,7 @@ Output:
 - `Resume summary: attempted=<N> succeeded=<S> failed=<F>`
 
 ## `simulate check`
+
 Validate schema and completion status.
 
 ```bash
@@ -133,6 +139,7 @@ Output examples:
   - issue list lines prefixed with `-`
 
 ## `simulate reset`
+
 Reset all simulations to pending state.
 
 ```bash
@@ -161,6 +168,7 @@ Key casing:
 - Use lowercase keys in examples/specs.
 
 ### `simulation`
+
 Required:
 - `name`: simulation class identifier.
 
@@ -171,27 +179,46 @@ TIPTOP usage:
 Any extra keys in `simulation` are passed through to the simulation implementation.
 
 ### `setup`
+
 Core required key:
-- `ee_apertures_mas`
+- `ee_apertures`
 
 Most simulation-specific setup values are resolved by the simulation implementation (for TIPTOP, usually from INI).
-For `TiptopSimulation`, `setup.ngs_mag_zeropoint` is also required.
+For `TiptopSimulation`, `setup.ngs_magnitude_zeropoint` is also required.
+
+Physical setup values use a `{value, unit}` mapping. Field names remain
+unit-free:
+
+```yaml
+setup:
+  ee_apertures: {value: [50.0, 100.0], unit: mas}
+  ngs_magnitude_zeropoint: {value: 3.0e10, unit: photon / s}
+```
 
 ### `options`
+
 Three supported inputs:
 
 1. Broadcast defaults (single values):
 ```yaml
 options:
-  wavelength_um: 1.65
-  zenith_angle_deg: 20
+  broadcast:
+    wavelength: {value: 1.65, unit: um}
+    zenith_angle: {value: 20, unit: deg}
 ```
 
 2. Inline table:
 ```yaml
 options:
   table:
-    columns: [wavelength_um, zenith_angle_deg, atm_profile_id, r0_m, ngs1_r_arcsec, ngs1_theta_deg, ngs1_mag]
+    columns: [wavelength, zenith_angle, atm_profile_id, r0, ngs1_r, ngs1_theta, ngs1_magnitude]
+    units:
+      wavelength: um
+      zenith_angle: deg
+      r0: m
+      ngs1_r: arcsec
+      ngs1_theta: deg
+      ngs1_magnitude: mag
     rows:
       - [1.65, 20, 0, 0.16, 10.0, 0.0, 14.0]
       - [1.65, 25, 0, 0.14, 12.0, 30.0, 15.0]
@@ -200,14 +227,20 @@ options:
 3. CSV table:
 ```yaml
 options:
-  table_path: path/to/options.csv
+  table:
+    path: path/to/options.csv
+    units:
+      wavelength: um
+      zenith_angle: deg
 ```
 
 Rule:
-- `table` and `table_path` are mutually exclusive.
+- `options.table.path` is mutually exclusive with inline `columns` and `rows`.
+- `options.table.units` must name every physical table column and must omit
+  nonphysical columns such as `atm_profile_id`.
 - CSV column names are lowercased by CLI parsing.
 - The persisted `/options` payload always contains the NGS triplet.
-- If you provide any of `ngs*_r_arcsec`, `ngs*_theta_deg`, or `ngs*_mag`, provide the full triplet.
+- If you provide any of `ngs*_r`, `ngs*_theta`, or `ngs*_magnitude`, provide the full triplet.
 - Unused star slots may be represented with `NaN` after normalization, but each slot must be either all finite or all `NaN` across radius, angle, and magnitude.
 - If you omit the NGS triplet entirely, the selected simulation must supply it during options preparation.
 
@@ -217,12 +250,13 @@ Precedence:
 - simulation completion logic fills remaining required option keys from simulation defaults
 
 Atmospheric input note:
-- `r0_m` is the canonical persisted option in `/options`.
-- `seeing_arcsec` is accepted as an input alias (table/broadcast), converted to `r0_m` using `setup.atm_wavelength_um`, and is not persisted.
-- If both `r0_m` and `seeing_arcsec` are provided for one simulation, they must be consistent.
-- In `setup.atm_profiles`, `seeing_arcsec` is also accepted per profile, normalized to `r0_m`, and not persisted.
+- `r0` is the canonical persisted option in `/options`.
+- `seeing` is accepted as an input alias (table/broadcast), converted to `r0` using `setup.atm_wavelength`, and is not persisted.
+- If both `r0` and `seeing` are provided for one simulation, they must be consistent.
+- In `setup.atm_profiles`, `seeing` is also accepted per profile, normalized to `r0`, and not persisted.
 
 ## Dataset Layout
+
 Top-level groups:
 - `/simulation`
 - `/setup`
@@ -235,10 +269,14 @@ Top-level groups:
 Stats layout:
 - `/stats/sr`: core `[N, M]`
 - `/stats/ee`: core `[N, M, A]`, selected by `/setup/ee_geometry`
-- `/stats/fwhm_mas`: core `[N, M]`, selected by `/setup/fwhm_summary`
-- Successful runs may store `NaN` in `/stats/fwhm_mas` when contour-based FWHM
+- `/stats/fwhm`: core `[N, M]`, selected by `/setup/fwhm_summary`
+- Successful runs may store `NaN` in `/stats/fwhm` when contour-based FWHM
   measurement is unrecoverable.
-- Additional `/stats/*` datasets may appear when declared by the simulation in `/simulation/extra_stat_names`; each extra stat dataset is `[N, M]`.
+- Additional `/stats/*` datasets may appear when declared by the simulation in `/simulation/extra_stat_fields`; each extra stat dataset is `[N, M]`.
+
+Every physical or scientifically dimensionless numerical HDF5 dataset carries
+its canonical generic Astropy unit string in a `units` attribute. The value is
+`1` for dimensionless scientific quantities.
 
 Implemented core metric family:
 - Strehl: image-domain `pixel_fit` (default) or `pixel_max`, selected by `/setup/sr_method`
@@ -251,7 +289,7 @@ Setup-level stats selectors:
 - `/setup/ee_geometry`: dataset-level EE aperture selector, `ensquared` or `encircled`
 
 Stats input note:
-- Per-simulation `/options/wavelength_um` is required at execution time because
+- Per-simulation `/options/wavelength` is required at execution time because
   the Strehl calculation builds a diffraction-limited reference PSF for each
   simulation.
 
@@ -259,8 +297,8 @@ Core state dataset:
 - `/status/state`: `uint8[N]`
 
 Core metadata layout:
-- `/meta/pixel_scale_mas`: per-simulation `[N]`
-- `/meta/tel_diameter_m`: dataset-level scalar
+- `/meta/pixel_scale`: per-simulation `[N]`
+- `/meta/tel_diameter`: dataset-level scalar
 - `/meta/tel_pupil`: dataset-level `[Ny, Nx]`
 
 State values:
@@ -269,6 +307,7 @@ State values:
 - `2`: failed
 
 ## Example Files
+
 - API-driven example script: `examples/simulate_tiptop_api.py`
 - CLI YAML config: `examples/simulate_tiptop_cli_example1.yaml`
 - CLI YAML config with CSV table: `examples/simulate_tiptop_cli_example2.yaml`

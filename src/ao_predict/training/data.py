@@ -6,13 +6,15 @@ import hashlib
 import json
 import math
 import secrets
-from collections.abc import Iterable, Sequence
-from dataclasses import dataclass
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass, replace
 
 import numpy as np
+from astropy import units as u
 
 from .._standardization import standardize_to_float32, validate_float32_scaler
-from .types import FeatureConfig, ModelTrainingDataConfig, TargetConfig
+from .._units import unit_string
+from .types import ModelTrainingDataConfig
 
 _CHECKSUM_ROW_CHUNK = 4_096
 _MOMENT_ROW_CHUNK = 4_096
@@ -23,7 +25,11 @@ class _PreparedModelTrainingData:
     """Validated borrowed arrays and their canonical training identity."""
 
     config: ModelTrainingDataConfig
+    feature_names: tuple[str, ...]
+    feature_units: tuple[str | None, ...]
     feature_values: tuple[np.ndarray, ...]
+    target_names: tuple[str, ...]
+    target_units: tuple[str | None, ...]
     target_values: tuple[np.ndarray, ...]
     target_shape: tuple[int, ...]
     simulation_count: int
@@ -33,11 +39,11 @@ class _PreparedModelTrainingData:
 
     @property
     def feature_schema(self) -> tuple[tuple[str, str | None], ...]:
-        return tuple((item.name, item.unit) for item in self.config.features)
+        return tuple(zip(self.feature_names, self.feature_units, strict=True))
 
     @property
     def target_schema(self) -> tuple[tuple[str, str | None], ...]:
-        return tuple((item.name, item.unit) for item in self.config.targets)
+        return tuple(zip(self.target_names, self.target_units, strict=True))
 
 
 @dataclass(frozen=True)
@@ -153,30 +159,20 @@ class _ExampleSet:
         return features, targets
 
 
-def _validate_name_unit_family(
-    values: Sequence[object],
+def _validate_named_family(
+    values: object,
     label: str,
-    expected_type: type[FeatureConfig | TargetConfig],
     issues: list[str],
-) -> None:
-    names: list[str] = []
-    for index, item in enumerate(values):
-        if not isinstance(item, expected_type):
-            issues.append(f"{label}[{index}] must be a {expected_type.__name__}.")
-            continue
-        name = getattr(item, "name", None)
-        unit = getattr(item, "unit", None)
-        if not isinstance(name, str) or not name.strip():
-            issues.append(f"{label}[{index}].name must be a non-empty string.")
-        else:
-            names.append(name)
-        if unit is not None and (not isinstance(unit, str) or not unit.strip()):
-            issues.append(f"{label}[{index}].unit must be None or a non-empty string.")
-    duplicates = sorted({name for name in names if names.count(name) > 1})
-    if duplicates:
-        issues.append(
-            f"{label} names must be unique; duplicates: {', '.join(duplicates)}."
-        )
+) -> tuple[tuple[str, ...], tuple[object, ...]] | None:
+    if not isinstance(values, Mapping) or not values:
+        issues.append(f"{label} must be a non-empty mapping.")
+        return None
+    names = tuple(values.keys())
+    invalid = [name for name in names if not isinstance(name, str) or not name.strip()]
+    if invalid:
+        issues.append(f"{label} names must be non-empty strings.")
+        return None
+    return names, tuple(values[name] for name in names)
 
 
 def _is_real_numeric_array(value: object) -> bool:
@@ -188,6 +184,13 @@ def _is_real_numeric_array(value: object) -> bool:
         )
         and not np.issubdtype(value.dtype, np.bool_)
     )
+
+
+def _prepare_value(value: object) -> tuple[np.ndarray | None, str | None]:
+    if isinstance(value, u.Quantity):
+        array = np.asarray(value.value)
+        return (array if _is_real_numeric_array(array) else None), unit_string(value.unit)
+    return (value if _is_real_numeric_array(value) else None), None
 
 
 def _array_checksum(array: np.ndarray) -> str:
@@ -205,6 +208,42 @@ def _array_checksum(array: np.ndarray) -> str:
         chunk = np.ascontiguousarray(array[start : start + _CHECKSUM_ROW_CHUNK])
         digest.update(memoryview(chunk).cast("B"))
     return digest.hexdigest()
+
+
+def _prepared_data_checksums(
+    feature_names: tuple[str, ...],
+    feature_units: tuple[str | None, ...],
+    feature_values: tuple[np.ndarray, ...],
+    target_names: tuple[str, ...],
+    target_units: tuple[str | None, ...],
+    target_values: tuple[np.ndarray, ...],
+) -> tuple[tuple[str, ...], str]:
+    """Return component and aggregate identity for normalized prepared data."""
+    component_checksums = tuple(
+        _array_checksum(values) for values in (*feature_values, *target_values)
+    )
+    identity = {
+        "features": [
+            {
+                "name": name,
+                "unit": feature_units[index],
+                "checksum": component_checksums[index],
+            }
+            for index, name in enumerate(feature_names)
+        ],
+        "targets": [
+            {
+                "name": name,
+                "unit": target_units[index],
+                "checksum": component_checksums[len(feature_names) + index],
+            }
+            for index, name in enumerate(target_names)
+        ],
+    }
+    checksum = hashlib.sha256(
+        json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    return component_checksums, checksum
 
 
 def _array_is_finite(array: np.ndarray) -> bool:
@@ -235,34 +274,21 @@ def prepare_model_training_data(
     if not isinstance(config, ModelTrainingDataConfig):
         issues.append(f"{label} must be a ModelTrainingDataConfig.")
         return None
-    if not isinstance(config.features, tuple) or not config.features:
-        issues.append(f"{label}.features must be a non-empty tuple.")
-    if not isinstance(config.targets, tuple) or not config.targets:
-        issues.append(f"{label}.targets must be a non-empty tuple.")
-    if len(issues) != start_issue_count:
+    feature_family = _validate_named_family(config.features, f"{label}.features", issues)
+    target_family = _validate_named_family(config.targets, f"{label}.targets", issues)
+    if feature_family is None or target_family is None:
         return None
-    _validate_name_unit_family(
-        config.features,
-        f"{label}.features",
-        FeatureConfig,
-        issues,
-    )
-    _validate_name_unit_family(
-        config.targets,
-        f"{label}.targets",
-        TargetConfig,
-        issues,
-    )
+    feature_names, raw_feature_values = feature_family
+    target_names, raw_target_values = target_family
 
     target_shape: tuple[int, ...] | None = None
     target_values: list[np.ndarray] = []
-    for index, target in enumerate(config.targets):
-        if not isinstance(target, TargetConfig):
-            continue
-        values = target.values
-        item_label = f"{label}.targets[{index}].values"
-        if not _is_real_numeric_array(values):
-            issues.append(f"{item_label} must be a real numerical NumPy array.")
+    target_units: list[str | None] = []
+    for name, raw_values in zip(target_names, raw_target_values, strict=True):
+        values, unit = _prepare_value(raw_values)
+        item_label = f"{label}.targets[{name!r}]"
+        if values is None:
+            issues.append(f"{item_label} must be a real numerical NumPy array or Astropy Quantity.")
             continue
         if values.ndim not in (1, 2):
             issues.append(f"{item_label} must have one or two dimensions.")
@@ -281,18 +307,18 @@ def prepare_model_training_data(
                 f"{item_label} has shape {values.shape}; expected shared target shape {target_shape}."
             )
         target_values.append(values)
+        target_units.append(unit)
 
     if target_shape is None:
         return None
     simulation_count = target_shape[0]
     feature_values: list[np.ndarray] = []
-    for index, feature in enumerate(config.features):
-        if not isinstance(feature, FeatureConfig):
-            continue
-        values = feature.values
-        item_label = f"{label}.features[{index}].values"
-        if not _is_real_numeric_array(values):
-            issues.append(f"{item_label} must be a real numerical NumPy array.")
+    feature_units: list[str | None] = []
+    for name, raw_values in zip(feature_names, raw_feature_values, strict=True):
+        values, unit = _prepare_value(raw_values)
+        item_label = f"{label}.features[{name!r}]"
+        if values is None:
+            issues.append(f"{item_label} must be a real numerical NumPy array or Astropy Quantity.")
             continue
         allowed_shapes = {(simulation_count,), target_shape}
         if tuple(values.shape) not in allowed_shapes:
@@ -303,37 +329,30 @@ def prepare_model_training_data(
         if not _array_is_finite(values):
             issues.append(f"{item_label} must contain only finite values.")
         feature_values.append(values)
+        feature_units.append(unit)
 
     if len(issues) != start_issue_count:
         return None
-    component_checksums = tuple(
-        _array_checksum(values) for values in (*feature_values, *target_values)
+    prepared_feature_units = tuple(feature_units)
+    prepared_feature_values = tuple(feature_values)
+    prepared_target_units = tuple(target_units)
+    prepared_target_values = tuple(target_values)
+    component_checksums, checksum = _prepared_data_checksums(
+        feature_names,
+        prepared_feature_units,
+        prepared_feature_values,
+        target_names,
+        prepared_target_units,
+        prepared_target_values,
     )
-    identity = {
-        "features": [
-            {
-                "name": item.name,
-                "unit": item.unit,
-                "checksum": component_checksums[index],
-            }
-            for index, item in enumerate(config.features)
-        ],
-        "targets": [
-            {
-                "name": item.name,
-                "unit": item.unit,
-                "checksum": component_checksums[len(config.features) + index],
-            }
-            for index, item in enumerate(config.targets)
-        ],
-    }
-    checksum = hashlib.sha256(
-        json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest()
     return _PreparedModelTrainingData(
         config=config,
-        feature_values=tuple(feature_values),
-        target_values=tuple(target_values),
+        feature_names=feature_names,
+        feature_units=prepared_feature_units,
+        feature_values=prepared_feature_values,
+        target_names=target_names,
+        target_units=prepared_target_units,
+        target_values=prepared_target_values,
         target_shape=target_shape,
         simulation_count=simulation_count,
         examples_per_simulation=1 if len(target_shape) == 1 else target_shape[1],
@@ -346,17 +365,105 @@ def validate_explicit_schema(
     training: _PreparedModelTrainingData,
     validation: _PreparedModelTrainingData,
     issues: list[str],
-) -> None:
-    """Require model-facing names and units to agree across partitions."""
+) -> _PreparedModelTrainingData:
+    """Require matching names and normalize validation values to training units."""
 
-    if training.feature_schema != validation.feature_schema:
+    if training.feature_names != validation.feature_names:
         issues.append(
-            "training_data and validation_data must have identical ordered feature names and units."
+            "training_data and validation_data must have identical ordered feature names."
         )
-    if training.target_schema != validation.target_schema:
+    if training.target_names != validation.target_names:
         issues.append(
-            "training_data and validation_data must have identical ordered target names and units."
+            "training_data and validation_data must have identical ordered target names."
         )
+    converted_features = (
+        _convert_explicit_units(
+            training.feature_units,
+            validation.feature_units,
+            validation.feature_values,
+            "feature",
+            issues,
+        )
+        if training.feature_names == validation.feature_names
+        else None
+    )
+    converted_targets = (
+        _convert_explicit_units(
+            training.target_units,
+            validation.target_units,
+            validation.target_values,
+            "target",
+            issues,
+        )
+        if training.target_names == validation.target_names
+        else None
+    )
+    if converted_features is None or converted_targets is None:
+        return validation
+    if (
+        validation.feature_units == training.feature_units
+        and validation.target_units == training.target_units
+    ):
+        return validation
+    component_checksums, checksum = _prepared_data_checksums(
+        validation.feature_names,
+        training.feature_units,
+        converted_features,
+        validation.target_names,
+        training.target_units,
+        converted_targets,
+    )
+    return replace(
+        validation,
+        feature_units=training.feature_units,
+        feature_values=converted_features,
+        target_units=training.target_units,
+        target_values=converted_targets,
+        component_checksums=component_checksums,
+        checksum=checksum,
+    )
+
+
+def _convert_explicit_units(
+    training_units: tuple[str | None, ...],
+    validation_units: tuple[str | None, ...],
+    values: tuple[np.ndarray, ...],
+    family: str,
+    issues: list[str],
+) -> tuple[np.ndarray, ...] | None:
+    start_issue_count = len(issues)
+    converted: list[np.ndarray] = []
+    for index, (training_unit, validation_unit, array) in enumerate(
+        zip(training_units, validation_units, values, strict=True)
+    ):
+        if training_unit is None or validation_unit is None:
+            if training_unit != validation_unit:
+                issues.append(
+                    f"training_data and validation_data {family} {index} must both be physical quantities or both be nonphysical arrays."
+                )
+            else:
+                converted.append(array)
+            continue
+        training_astropy_unit = u.Unit(training_unit)
+        validation_astropy_unit = u.Unit(validation_unit)
+        if training_astropy_unit == validation_astropy_unit:
+            converted.append(array)
+            continue
+        try:
+            converted.append(
+                np.asarray(
+                    u.Quantity(
+                        array,
+                        unit=validation_astropy_unit,
+                        copy=False,
+                    ).to_value(training_astropy_unit)
+                )
+            )
+        except u.UnitConversionError:
+            issues.append(
+                f"training_data and validation_data {family} {index} units are not equivalent."
+            )
+    return None if len(issues) != start_issue_count else tuple(converted)
 
 
 def resolve_automatic_split(
@@ -592,20 +699,20 @@ def schema_metadata(
 
     features = [
         {
-            "name": item.name,
-            "unit": item.unit,
+            "name": name,
+            "unit": prepared.feature_units[index],
             "mean": state.feature_means[index],
             "scale": state.feature_scales[index],
         }
-        for index, item in enumerate(prepared.config.features)
+        for index, name in enumerate(prepared.feature_names)
     ]
     targets = [
         {
-            "name": item.name,
-            "unit": item.unit,
+            "name": name,
+            "unit": prepared.target_units[index],
             "mean": state.target_means[index],
             "scale": state.target_scales[index],
         }
-        for index, item in enumerate(prepared.config.targets)
+        for index, name in enumerate(prepared.target_names)
     ]
     return features, targets

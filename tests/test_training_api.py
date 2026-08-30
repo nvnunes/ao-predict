@@ -12,14 +12,11 @@ import torch
 from torch import nn
 
 from ao_predict import (
-    FeatureConfig,
     ModelTrainingDataConfig,
     ModelTrainingValidationError,
-    TargetConfig,
     TrainingRecoveryMismatchError,
     TrainingTerminationReason,
     TrainModelRequest,
-    model_training_data_from_rows,
     train_model,
 )
 from ao_predict._model import build_dense_model
@@ -32,6 +29,18 @@ from ao_predict.training.artifacts import (
 training_api = importlib.import_module("ao_predict.training.api")
 
 
+def _training_data_from_rows(
+    features: np.ndarray,
+    targets: np.ndarray,
+    feature_names: tuple[str, ...],
+    target_names: tuple[str, ...],
+) -> ModelTrainingDataConfig:
+    return ModelTrainingDataConfig(
+        features={name: features[:, index] for index, name in enumerate(feature_names)},
+        targets={name: targets[:, index] for index, name in enumerate(target_names)},
+    )
+
+
 def _data(
     count: int,
     *,
@@ -42,7 +51,7 @@ def _data(
     targets = np.column_stack((2.0 + values / 10.0, 4.0 + values / 20.0)).astype(
         np.float32
     )
-    return model_training_data_from_rows(
+    return _training_data_from_rows(
         features,
         targets,
         ("linear", "quadratic"),
@@ -74,8 +83,8 @@ def test_coupled_request_validation_reports_all_relevant_issues(tmp_path: Path) 
     request = TrainModelRequest(
         model_path=tmp_path / "model",
         training_data=ModelTrainingDataConfig(
-            features=(FeatureConfig("", np.asarray([1.0, np.nan])),),
-            targets=(TargetConfig("target", np.asarray([1.0, 0.0])),),
+            features={"feature": np.asarray([1.0, np.nan])},
+            targets={"target": np.asarray([1.0, 0.0])},
         ),
         hidden_widths=(0,),
         batch_size=0,
@@ -95,18 +104,43 @@ def test_coupled_request_validation_reports_all_relevant_issues(tmp_path: Path) 
     assert any("finite" in issue for issue in issues)
 
 
+def test_explicit_validation_width_mismatch_is_reported_as_request_validation(
+    tmp_path: Path,
+) -> None:
+    request = replace(
+        _request(tmp_path / "model"),
+        validation_data=ModelTrainingDataConfig(
+            features={
+                "linear": np.asarray([1.0, 2.0]),
+                "quadratic": np.asarray([1.0, 4.0]),
+                "extra": np.asarray([3.0, 6.0]),
+            },
+            targets={
+                "metric_a": np.asarray([1.0, 2.0]),
+                "metric_b": np.asarray([2.0, 3.0]),
+            },
+        ),
+    )
+
+    with pytest.raises(ModelTrainingValidationError) as captured:
+        train_model(request)
+
+    assert any(
+        "identical ordered feature names" in issue
+        for issue in captured.value.issues
+    )
+
+
 def test_derived_float32_incompatibility_fails_before_stable_outputs(
     tmp_path: Path,
 ) -> None:
     model_path = tmp_path / "underflow"
     data = ModelTrainingDataConfig(
-        features=(FeatureConfig("feature", np.asarray([1.0, 2.0, 3.0, 4.0])),),
-        targets=(
-            TargetConfig(
-                "target",
-                np.asarray([1.0, 2.0, 3.0, 4.0], dtype=np.float64) * 1.0e-50,
-            ),
-        ),
+        features={"feature": np.asarray([1.0, 2.0, 3.0, 4.0])},
+        targets={
+            "target": np.asarray([1.0, 2.0, 3.0, 4.0], dtype=np.float64)
+            * 1.0e-50
+        },
     )
     request = TrainModelRequest(
         model_path=model_path,
@@ -138,13 +172,10 @@ def test_invalid_overwrite_request_preserves_existing_stable_outputs(
     log_path.write_text("existing log\n", encoding="utf-8")
     package_path.write_bytes(b"existing package")
     data = ModelTrainingDataConfig(
-        features=(FeatureConfig("feature", np.asarray([1.0, 2.0, 3.0])),),
-        targets=(
-            TargetConfig(
-                "target",
-                np.asarray([1.0, 2.0, 3.0], dtype=np.float64) * 1.0e-50,
-            ),
-        ),
+        features={"feature": np.asarray([1.0, 2.0, 3.0])},
+        targets={
+            "target": np.asarray([1.0, 2.0, 3.0], dtype=np.float64) * 1.0e-50
+        },
     )
 
     with pytest.raises(ModelTrainingValidationError):
@@ -281,12 +312,8 @@ def test_validation_measurement_uses_complete_physical_partition(
         initialization_seed=0,
     )
     model.load_state_dict(package.weights)
-    feature_rows = np.column_stack(
-        [feature.values for feature in request.validation_data.features]
-    )
-    target_rows = np.column_stack(
-        [target.values for target in request.validation_data.targets]
-    )
+    feature_rows = np.column_stack(list(request.validation_data.features.values()))
+    target_rows = np.column_stack(list(request.validation_data.targets.values()))
     feature_mean = np.asarray(
         [item["mean"] for item in package.metadata["features"]], dtype=np.float64
     )
@@ -421,13 +448,13 @@ def test_changed_data_is_rejected_during_exact_recovery(
         patch.setattr(training_api, "atomic_save_recovery", save_then_interrupt)
         with pytest.raises(RuntimeError, match="stop"):
             train_model(request)
-    changed_values = request.training_data.features[0].values.copy()
+    changed_values = request.training_data.features["linear"].copy()
     changed_values[0] += 1.0
     changed_data = ModelTrainingDataConfig(
-        features=(
-            FeatureConfig("linear", changed_values),
-            request.training_data.features[1],
-        ),
+        features={
+            "linear": changed_values,
+            "quadratic": request.training_data.features["quadratic"],
+        },
         targets=request.training_data.targets,
     )
 
@@ -472,22 +499,16 @@ def test_explicit_partitions_accept_compatible_different_ranks_and_dtypes(
     tmp_path: Path,
 ) -> None:
     training = ModelTrainingDataConfig(
-        features=(FeatureConfig("feature", np.asarray([1, 2, 3], dtype=np.int16)),),
-        targets=(TargetConfig("target", np.asarray([2, 3, 4], dtype=np.float32)),),
+        features={"feature": np.asarray([1, 2, 3], dtype=np.int16)},
+        targets={"target": np.asarray([2, 3, 4], dtype=np.float32)},
     )
     validation = ModelTrainingDataConfig(
-        features=(
-            FeatureConfig(
-                "feature",
-                np.asarray([[4.0, 4.5], [5.0, 5.5]], dtype=np.float64),
-            ),
-        ),
-        targets=(
-            TargetConfig(
-                "target",
-                np.asarray([[5.0, 5.5], [6.0, 6.5]], dtype=np.float64),
-            ),
-        ),
+        features={
+            "feature": np.asarray([[4.0, 4.5], [5.0, 5.5]], dtype=np.float64)
+        },
+        targets={
+            "target": np.asarray([[5.0, 5.5], [6.0, 6.5]], dtype=np.float64)
+        },
     )
     request = TrainModelRequest(
         model_path=tmp_path / "model",
@@ -514,11 +535,8 @@ def test_multiple_related_examples_split_as_complete_simulations(
     shared = np.asarray([1.0, 2.0, 3.0, 4.0], dtype=np.float32)
     positions = np.arange(12, dtype=np.float32).reshape(4, 3) + 1.0
     data = ModelTrainingDataConfig(
-        features=(
-            FeatureConfig("shared", shared),
-            FeatureConfig("position", positions),
-        ),
-        targets=(TargetConfig("metric", positions + shared[:, None]),),
+        features={"shared": shared, "position": positions},
+        targets={"metric": positions + shared[:, None]},
     )
     request = TrainModelRequest(
         model_path=tmp_path / "model",

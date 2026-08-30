@@ -7,6 +7,7 @@ import h5py
 import numpy as np
 import pytest
 import yaml
+from astropy import units as u
 
 import ao_predict.cli as cli
 import ao_predict.simulation.api as sim_api
@@ -38,20 +39,34 @@ def _write_config_yaml(path: Path, ini_path: Path, *, options_cfg: dict[str, obj
         options_cfg = {
             "table": {
                 "columns": [
-                    "wavelength_um",
+                    "wavelength",
                     "atm_profile_id",
-                    "zenith_angle_deg",
-                    "r0_m",
-                    "ngs1_r_arcsec",
-                    "ngs1_theta_deg",
-                    "ngs1_mag",
-                    "ngs2_r_arcsec",
-                    "ngs2_theta_deg",
-                    "ngs2_mag",
-                    "ngs3_r_arcsec",
-                    "ngs3_theta_deg",
-                    "ngs3_mag",
+                    "zenith_angle",
+                    "r0",
+                    "ngs1_r",
+                    "ngs1_theta",
+                    "ngs1_magnitude",
+                    "ngs2_r",
+                    "ngs2_theta",
+                    "ngs2_magnitude",
+                    "ngs3_r",
+                    "ngs3_theta",
+                    "ngs3_magnitude",
                 ],
+                "units": {
+                    "wavelength": "um",
+                    "zenith_angle": "deg",
+                    "r0": "m",
+                    "ngs1_r": "arcsec",
+                    "ngs1_theta": "deg",
+                    "ngs1_magnitude": "mag",
+                    "ngs2_r": "arcsec",
+                    "ngs2_theta": "deg",
+                    "ngs2_magnitude": "mag",
+                    "ngs3_r": "arcsec",
+                    "ngs3_theta": "deg",
+                    "ngs3_magnitude": "mag",
+                },
                 "rows": [
                     [1.65, 0, 20.0, 0.16, 1.0, 0.0, 15.0, 1.0, 0.0, 15.0, 1.0, 0.0, 15.0],
                     [1.65, 0, 20.0, 0.16, 1.0, 0.0, 15.0, 1.0, 0.0, 15.0, 1.0, 0.0, 15.0],
@@ -66,23 +81,23 @@ def _write_config_yaml(path: Path, ini_path: Path, *, options_cfg: dict[str, obj
             "config_path": str(ini_path),
         },
         "setup": {
-            "ee_apertures_mas": [50.0, 100.0],
+            "ee_apertures": {"value": [50.0, 100.0], "unit": "mas"},
             "sr_method": schema.DEFAULT_SETUP_SR_METHOD,
             "fwhm_summary": schema.DEFAULT_SETUP_FWHM_SUMMARY,
-            "ngs_mag_zeropoint": 1.1e13 / 368.0,
-            "sci_r_arcsec": [0.0, 10.0, 20.0],
-            "sci_theta_deg": [0.0, 90.0, 180.0],
-            "lgs_r_arcsec": [30.0, 30.0, 30.0, 30.0],
-            "lgs_theta_deg": [45.0, 135.0, 225.0, 315.0],
+            "ngs_magnitude_zeropoint": {"value": 1.1e13 / 368.0, "unit": "photon / s"},
+            "sci_r": {"value": [0.0, 10.0, 20.0], "unit": "arcsec"},
+            "sci_theta": {"value": [0.0, 90.0, 180.0], "unit": "deg"},
+            "lgs_r": {"value": [30.0, 30.0, 30.0, 30.0], "unit": "arcsec"},
+            "lgs_theta": {"value": [45.0, 135.0, 225.0, 315.0], "unit": "deg"},
             "atm_profiles": {
                 "0": {
                     "name": "default",
-                    "r0_m": 0.16,
-                    "L0_m": 25.0,
-                    "cn2_heights_m": [0.0, 5000.0],
-                    "cn2_weights": [0.6, 0.4],
-                    "wind_speed_mps": [5.0, 10.0],
-                    "wind_direction_deg": [0.0, 90.0],
+                    "r0": {"value": 0.16, "unit": "m"},
+                    "L0": {"value": 25.0, "unit": "m"},
+                    "cn2_heights": {"value": [0.0, 5000.0], "unit": "m"},
+                    "cn2_weights": {"value": [0.6, 0.4], "unit": "1"},
+                    "wind_speed": {"value": [5.0, 10.0], "unit": "m / s"},
+                    "wind_direction": {"value": [0.0, 90.0], "unit": "deg"},
                 }
             },
         },
@@ -111,17 +126,17 @@ def _success_result(m: int = 3, *, with_stats: bool = True, with_psfs: bool = Tr
     result = SimulationResult(
         state=SimulationState.SUCCEEDED,
         meta={
-            "pixel_scale_mas": 4.0,
-            "tel_diameter_m": 8.0,
-            "tel_pupil": np.ones((6, 6), dtype=np.float32),
+            "pixel_scale": 4.0 * u.mas,
+            "tel_diameter": 8.0 * u.m,
+            "tel_pupil": np.ones((6, 6), dtype=np.float32) * u.one,
         },
         psfs=np.zeros((m, 4, 4), dtype=np.float32) if with_psfs else None,
     )
     if with_stats:
         result.stats = {
-            "sr": np.linspace(0.1, 0.3, m, dtype=np.float32),
-            "ee": np.full((m, 2), 0.5, dtype=np.float32),
-            "fwhm_mas": np.full((m,), 60.0, dtype=np.float32),
+            "sr": np.linspace(0.1, 0.3, m, dtype=np.float32) * u.one,
+            "ee": np.full((m, 2), 0.5, dtype=np.float32) * u.one,
+            "fwhm": np.full((m,), 60.0, dtype=np.float32) * u.mas,
         }
     return result
 
@@ -150,21 +165,21 @@ class TiptopSimulation(Simulation):
     def prepare_setup_payload(self, base_setup_payload, setup_cfg):
         merged = dict(setup_cfg)
         merged.update(dict(base_setup_payload))
-        merged["atm_wavelength_um"] = float(merged.get("atm_wavelength_um", 0.5))
+        merged["atm_wavelength"] = merged.get("atm_wavelength", 0.5 * u.um)
         return merged
 
     def prepare_options_payload(self, num_sims, setup_payload, base_options_payload):
         _ = setup_payload
-        out = {str(k): np.asarray(v).copy() for k, v in base_options_payload.items()}
+        out = {str(k): v.copy() if hasattr(v, "copy") else v for k, v in base_options_payload.items()}
         n = int(num_sims)
-        out.setdefault("wavelength_um", np.full((n,), 1.65, dtype=float))
-        out.setdefault("zenith_angle_deg", np.full((n,), 20.0, dtype=float))
+        out.setdefault("wavelength", np.full((n,), 1.65, dtype=float) * u.um)
+        out.setdefault("zenith_angle", np.full((n,), 20.0, dtype=float) * u.deg)
         out.setdefault("atm_profile_id", np.zeros((n,), dtype=np.int32))
-        out.setdefault("r0_m", np.full((n,), 0.16, dtype=float))
-        if not any(key in out for key in ("ngs_r_arcsec", "ngs_theta_deg", "ngs_mag")):
-            out["ngs_r_arcsec"] = np.full((n, 1), 1.0, dtype=float)
-            out["ngs_theta_deg"] = np.full((n, 1), 0.0, dtype=float)
-            out["ngs_mag"] = np.full((n, 1), 15.0, dtype=float)
+        out.setdefault("r0", np.full((n,), 0.16, dtype=float) * u.m)
+        if not any(key in out for key in ("ngs_r", "ngs_theta", "ngs_magnitude")):
+            out["ngs_r"] = np.full((n, 1), 1.0, dtype=float) * u.arcsec
+            out["ngs_theta"] = np.full((n, 1), 0.0, dtype=float) * u.deg
+            out["ngs_magnitude"] = np.full((n, 1), 15.0, dtype=float) * u.mag
         out["atm_profile_id"] = np.asarray(out["atm_profile_id"], dtype=np.int32).reshape(-1)
         return out
 
@@ -174,30 +189,30 @@ class TiptopSimulation(Simulation):
 
     def load_setup_payload(self, setup_payload):
         self._setup = SimulationSetup(
-            ee_apertures_mas=np.asarray(setup_payload["ee_apertures_mas"], dtype=float).reshape(-1),
+            ee_apertures=setup_payload["ee_apertures"],
             sr_method=str(setup_payload["sr_method"]),
             fwhm_summary=str(setup_payload["fwhm_summary"]),
             ee_geometry=str(setup_payload["ee_geometry"]),
-            atm_wavelength_um=float(setup_payload["atm_wavelength_um"]),
+            atm_wavelength=setup_payload["atm_wavelength"],
             atm_profiles=dict(setup_payload["atm_profiles"]),
-            lgs_r_arcsec=np.asarray(setup_payload["lgs_r_arcsec"], dtype=float).reshape(-1),
-            lgs_theta_deg=np.asarray(setup_payload["lgs_theta_deg"], dtype=float).reshape(-1),
-            sci_r_arcsec=np.asarray(setup_payload["sci_r_arcsec"], dtype=float).reshape(-1),
-            sci_theta_deg=np.asarray(setup_payload["sci_theta_deg"], dtype=float).reshape(-1),
+            lgs_r=setup_payload["lgs_r"],
+            lgs_theta=setup_payload["lgs_theta"],
+            sci_r=setup_payload["sci_r"],
+            sci_theta=setup_payload["sci_theta"],
         )
 
     def validate_setup_payload(self, setup_payload):
         _ = SimulationSetup(
-            ee_apertures_mas=np.asarray(setup_payload["ee_apertures_mas"], dtype=float).reshape(-1),
+            ee_apertures=setup_payload["ee_apertures"],
             sr_method=str(setup_payload["sr_method"]),
             fwhm_summary=str(setup_payload["fwhm_summary"]),
             ee_geometry=str(setup_payload["ee_geometry"]),
-            atm_wavelength_um=float(setup_payload["atm_wavelength_um"]),
+            atm_wavelength=setup_payload["atm_wavelength"],
             atm_profiles=dict(setup_payload["atm_profiles"]),
-            lgs_r_arcsec=np.asarray(setup_payload["lgs_r_arcsec"], dtype=float).reshape(-1),
-            lgs_theta_deg=np.asarray(setup_payload["lgs_theta_deg"], dtype=float).reshape(-1),
-            sci_r_arcsec=np.asarray(setup_payload["sci_r_arcsec"], dtype=float).reshape(-1),
-            sci_theta_deg=np.asarray(setup_payload["sci_theta_deg"], dtype=float).reshape(-1),
+            lgs_r=setup_payload["lgs_r"],
+            lgs_theta=setup_payload["lgs_theta"],
+            sci_r=setup_payload["sci_r"],
+            sci_theta=setup_payload["sci_theta"],
         )
 
     def create(self, index: int, options):
@@ -227,7 +242,7 @@ def test_cli_simulate_init_and_run(tmp_path: Path, monkeypatch):
     assert cli.main() == 0
 
     with h5py.File(dataset_path, "r") as f:
-        assert float(f["setup/ngs_mag_zeropoint"][()]) > 0.0
+        assert float(f["setup/ngs_magnitude_zeropoint"][()]) > 0.0
         assert f["setup/sr_method"][()].decode("utf-8") == schema.DEFAULT_SETUP_SR_METHOD
         assert f["setup/fwhm_summary"][()].decode("utf-8") == schema.DEFAULT_SETUP_FWHM_SUMMARY
         assert f["setup/ee_geometry"][()].decode("utf-8") == schema.DEFAULT_SETUP_EE_GEOMETRY
@@ -244,17 +259,24 @@ def test_cli_simulate_init_supports_nested_broadcast(tmp_path: Path, monkeypatch
         ini_path,
         options_cfg={
             "broadcast": {
-                "zenith_angle_deg": 20.0,
+                "zenith_angle": {"value": 20.0, "unit": "deg"},
             },
             "table": {
                 "columns": [
-                    "wavelength_um",
+                    "wavelength",
                     "atm_profile_id",
-                    "r0_m",
-                    "ngs1_r_arcsec",
-                    "ngs1_theta_deg",
-                    "ngs1_mag",
+                    "r0",
+                    "ngs1_r",
+                    "ngs1_theta",
+                    "ngs1_magnitude",
                 ],
+                "units": {
+                    "wavelength": "um",
+                    "r0": "m",
+                    "ngs1_r": "arcsec",
+                    "ngs1_theta": "deg",
+                    "ngs1_magnitude": "mag",
+                },
                 "rows": [
                     [1.654, 0, 0.16, 1.0, 0.0, 15.0],
                     [2.179, 0, 0.16, 1.0, 0.0, 15.0],
@@ -266,8 +288,8 @@ def test_cli_simulate_init_supports_nested_broadcast(tmp_path: Path, monkeypatch
     _cli_init_dataset(monkeypatch, config_yaml, dataset_path)
 
     with h5py.File(dataset_path, "r") as f:
-        np.testing.assert_allclose(f["options/wavelength_um"][:], np.array([1.654, 2.179], dtype=float))
-        np.testing.assert_allclose(f["options/zenith_angle_deg"][:], np.array([20.0, 20.0], dtype=float))
+        np.testing.assert_allclose(f["options/wavelength"][:], np.array([1.654, 2.179], dtype=float))
+        np.testing.assert_allclose(f["options/zenith_angle"][:], np.array([20.0, 20.0], dtype=float))
 
 
 def test_cli_version(monkeypatch, capsys):
@@ -526,7 +548,7 @@ def test_cli_check_with_config_reports_mismatch(tmp_path: Path, monkeypatch, cap
     _cli_init_dataset(monkeypatch, config_yaml, dataset_path)
 
     with h5py.File(dataset_path, "r+") as f:
-        f["setup/ee_apertures_mas"][0] = 75.0
+        f["setup/ee_apertures"][0] = 75.0
 
     monkeypatch.setattr(
         sys,
@@ -535,7 +557,7 @@ def test_cli_check_with_config_reports_mismatch(tmp_path: Path, monkeypatch, cap
     )
     assert cli.main() == 1
     captured = capsys.readouterr()
-    assert "Config mismatch: /setup/ee_apertures_mas" in captured.out
+    assert "Config mismatch: /setup/ee_apertures" in captured.out
 
 
 def test_cli_simulate_requires_subcommand(monkeypatch):
@@ -553,10 +575,14 @@ def test_cli_load_config_normalizes_key_case(tmp_path: Path):
         yaml.safe_dump(
             {
                 "Simulation": {"Name": "ao_predict.simulation.tiptop:TiptopSimulation", "Config_Path": str(ini_path)},
-                "Setup": {"EE_APERTURES_MAS": [50.0, 100.0], "NGS_MAG_ZEROPOINT": 3.0e10},
+                "Setup": {
+                    "EE_APERTURES": {"Value": [50.0, 100.0], "Unit": "mas"},
+                    "NGS_MAGNITUDE_ZEROPOINT": {"Value": 3.0e10, "Unit": "photon / s"},
+                },
                 "Options": {
                     "Table": {
-                        "Columns": ["WAVELENGTH_UM", "ZENITH_ANGLE_DEG"],
+                        "Columns": ["WAVELENGTH", "ZENITH_ANGLE"],
+                        "Units": {"WAVELENGTH": "um", "ZENITH_ANGLE": "deg"},
                         "Rows": [[1.65, 20.0]],
                     }
                 },
@@ -567,5 +593,6 @@ def test_cli_load_config_normalizes_key_case(tmp_path: Path):
 
     simulation_cfg, setup_cfg, options_cfg = cli._load_config(str(cfg_path))
     assert "name" in simulation_cfg and "config_path" in simulation_cfg
-    assert "ee_apertures_mas" in setup_cfg and "ngs_mag_zeropoint" in setup_cfg
-    assert options_cfg["columns"] == ["wavelength_um", "zenith_angle_deg"]
+    assert "ee_apertures" in setup_cfg and "ngs_magnitude_zeropoint" in setup_cfg
+    assert options_cfg["columns"] == ["wavelength", "zenith_angle"]
+    assert options_cfg["units"] == {"wavelength": "um", "zenith_angle": "deg"}

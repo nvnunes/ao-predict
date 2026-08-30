@@ -13,11 +13,13 @@ from typing import cast
 
 import numpy as np
 import torch
+from astropy import units as u
 from torch import nn
 
 from .._model_package import load_model_package
 from .._runtime import select_device
 from .._standardization import standardize_to_float32
+from .._units import quantity_from_value, quantity_value
 from .types import ModelEvaluationResult
 
 _PACKAGE_SUFFIX = ".model.zip"
@@ -178,8 +180,9 @@ class _PreparedTargets:
 
 
 def _prepare_features(
-    values: np.ndarray | Mapping[str, np.ndarray],
+    values: np.ndarray | Mapping[str, np.ndarray | u.Quantity],
     names: tuple[str, ...],
+    units: tuple[u.UnitBase | None, ...],
 ) -> _PreparedFeatures:
     if isinstance(values, np.ndarray):
         direct = _validate_real_array(values, label="features")
@@ -204,8 +207,17 @@ def _prepare_features(
     fields: list[np.ndarray] = []
     rank_two_shape: tuple[int, int] | None = None
     simulation_count: int | None = None
-    for name in names:
-        field = _validate_real_array(values[name], label=f"feature {name!r}")
+    for name, unit in zip(names, units, strict=True):
+        raw_field = values[name]
+        if unit is not None:
+            field = quantity_value(raw_field, unit, label=f"feature {name!r}")
+        else:
+            if isinstance(raw_field, u.Quantity):
+                raise ValueError(
+                    f"feature {name!r} is nonphysical and must not carry units."
+                )
+            field = raw_field
+        field = _validate_real_array(field, label=f"feature {name!r}")
         if field.ndim not in {1, 2}:
             raise ValueError(f"feature {name!r} must have rank one or two.")
         if field.ndim == 2:
@@ -238,8 +250,9 @@ def _prepare_features(
 
 
 def _prepare_targets(
-    values: np.ndarray | Mapping[str, np.ndarray],
+    values: np.ndarray | Mapping[str, np.ndarray | u.Quantity],
     names: tuple[str, ...],
+    units: tuple[u.UnitBase | None, ...],
     example_shape: tuple[int, ...],
 ) -> _PreparedTargets:
     if isinstance(values, np.ndarray):
@@ -254,9 +267,18 @@ def _prepare_targets(
         raise TypeError("targets must be a NumPy array or a mapping of target arrays.")
     _validate_names(values, names, "target")
     fields: list[np.ndarray] = []
-    for name in names:
+    for name, unit in zip(names, units, strict=True):
+        raw_field = values[name]
+        if unit is not None:
+            field = quantity_value(raw_field, unit, label=f"target {name!r}")
+        else:
+            if isinstance(raw_field, u.Quantity):
+                raise ValueError(
+                    f"target {name!r} is nonphysical and must not carry units."
+                )
+            field = raw_field
         field = _validate_real_array(
-            values[name],
+            field,
             label=f"target {name!r}",
             positive=True,
         )
@@ -318,11 +340,13 @@ class ModelPredictor:
         self._batch_size = batch_size
         self._feature_names = tuple(str(item["name"]) for item in feature_definitions)
         self._feature_units = tuple(
-            cast(str | None, item["unit"]) for item in feature_definitions
+            None if item["unit"] is None else u.Unit(cast(str, item["unit"]))
+            for item in feature_definitions
         )
         self._target_names = tuple(str(item["name"]) for item in target_definitions)
         self._target_units = tuple(
-            cast(str | None, item["unit"]) for item in target_definitions
+            None if item["unit"] is None else u.Unit(cast(str, item["unit"]))
+            for item in target_definitions
         )
         self._feature_mean = np.asarray(
             [float(item["mean"]) for item in feature_definitions],
@@ -377,7 +401,7 @@ class ModelPredictor:
         return self._feature_names
 
     @property
-    def feature_units(self) -> tuple[str | None, ...]:
+    def feature_units(self) -> tuple[u.UnitBase | None, ...]:
         """Return feature units in model input order."""
 
         return self._feature_units
@@ -389,7 +413,7 @@ class ModelPredictor:
         return self._target_names
 
     @property
-    def target_units(self) -> tuple[str | None, ...]:
+    def target_units(self) -> tuple[u.UnitBase | None, ...]:
         """Return target units in model output order."""
 
         return self._target_units
@@ -411,10 +435,10 @@ class ModelPredictor:
 
     def predict(
         self,
-        features: np.ndarray | Mapping[str, np.ndarray],
+        features: np.ndarray | Mapping[str, np.ndarray | u.Quantity],
         *,
         batch_size: int | None = None,
-    ) -> np.ndarray:
+    ) -> np.ndarray | dict[str, u.Quantity | np.ndarray]:
         """Predict physical targets for direct or named feature arrays.
 
         Direct input has shape ``(examples, features)``. Named feature arrays
@@ -424,12 +448,15 @@ class ModelPredictor:
 
         Args:
             features: A real finite NumPy matrix in model feature order, or an
-                exact-name mapping of rank-one and rank-two NumPy arrays.
+                exact-name mapping of rank-one and rank-two arrays or
+                quantities.
             batch_size: Optional positive execution-batch override. ``None``
                 uses the predictor's default.
 
         Returns:
-            A physical-unit ``float32`` NumPy array with the target axis last.
+            Direct input returns a model-native ``float32`` NumPy array with
+            the target axis last. Named input returns a target-name mapping;
+            targets with model units are Astropy quantities.
 
         Raises:
             TypeError: If an input is not one of the supported NumPy forms.
@@ -438,7 +465,8 @@ class ModelPredictor:
         """
 
         resolved_batch_size = self._resolve_batch_size(batch_size)
-        prepared = _prepare_features(features, self._feature_names)
+        named_input = isinstance(features, Mapping)
+        prepared = _prepare_features(features, self._feature_names, self._feature_units)
         flat_output = np.empty(
             (prepared.example_count, len(self._target_names)),
             dtype=np.float32,
@@ -448,20 +476,35 @@ class ModelPredictor:
                 stop = min(start + resolved_batch_size, prepared.example_count)
                 prediction = self._predict_batch(prepared.batch(start, stop))
                 flat_output[start:stop] = prediction.detach().cpu().numpy()
-        return flat_output.reshape(*prepared.example_shape, len(self._target_names))
+        output = flat_output.reshape(*prepared.example_shape, len(self._target_names))
+        if not named_input:
+            return output
+        return {
+            name: (
+                output[..., index]
+                if unit is None
+                else quantity_from_value(output[..., index], unit)
+            )
+            for index, (name, unit) in enumerate(
+                zip(self._target_names, self._target_units, strict=True)
+            )
+        }
 
     def predict_one(
         self,
-        features: np.ndarray | Mapping[str, Real],
-    ) -> np.ndarray:
+        features: np.ndarray | Mapping[str, Real | u.Quantity],
+    ) -> np.ndarray | dict[str, Real | u.Quantity]:
         """Predict one physical target vector from positional or named values.
 
         Args:
             features: One real finite NumPy vector in model feature order, or
-                an exact-name mapping of real finite scalar values.
+                an exact-name mapping of real finite scalar values or scalar
+                quantities. Plain named scalars use model-native units.
 
         Returns:
-            One physical-unit ``float32`` vector in model target order.
+            Positional input returns one model-native ``float32`` vector in
+            target order. Named input returns a target-name mapping with
+            scalar quantities for targets that have model units.
 
         Raises:
             TypeError: If the input or a named value has an unsupported type.
@@ -479,8 +522,16 @@ class ModelPredictor:
         elif isinstance(features, Mapping):
             _validate_names(features, self._feature_names, "feature")
             matrix = np.empty((1, len(self._feature_names)), dtype=np.float64)
-            for index, name in enumerate(self._feature_names):
+            for index, (name, unit) in enumerate(
+                zip(self._feature_names, self._feature_units, strict=True)
+            ):
                 value = features[name]
+                if isinstance(value, u.Quantity):
+                    if value.ndim != 0:
+                        raise ValueError(f"feature {name!r} must be scalar.")
+                    if unit is None:
+                        raise ValueError(f"feature {name!r} is nonphysical and must not carry units.")
+                    value = value.to_value(unit)
                 if not isinstance(value, Real) or isinstance(value, (bool, np.bool_)):
                     raise TypeError(f"feature {name!r} must be a real scalar.")
                 try:
@@ -494,12 +545,24 @@ class ModelPredictor:
             raise TypeError("features must be a NumPy vector or a mapping of scalars.")
         with torch.inference_mode():
             prediction = self._predict_batch(matrix)
-        return prediction.detach().cpu().numpy()[0]
+        output = prediction.detach().cpu().numpy()[0]
+        if isinstance(features, np.ndarray):
+            return output
+        return {
+            name: (
+                output[index].item()
+                if unit is None
+                else quantity_from_value(output[index], unit)
+            )
+            for index, (name, unit) in enumerate(
+                zip(self._target_names, self._target_units, strict=True)
+            )
+        }
 
     def evaluate(
         self,
-        features: np.ndarray | Mapping[str, np.ndarray],
-        targets: np.ndarray | Mapping[str, np.ndarray],
+        features: np.ndarray | Mapping[str, np.ndarray | u.Quantity],
+        targets: np.ndarray | Mapping[str, np.ndarray | u.Quantity],
         *,
         batch_size: int | None = None,
     ) -> ModelEvaluationResult:
@@ -508,8 +571,11 @@ class ModelPredictor:
         Args:
             features: Direct or exact-name feature arrays accepted by
                 ``predict()``.
-            targets: A direct array matching the prediction shape, or an
-                exact-name mapping with one full-shape array per target.
+            targets: A direct array matching the prediction shape in model
+                target order and native units, or an exact-name mapping with
+                one full-shape value array per target. Physical named targets
+                must be quantities compatible with the model target units;
+                genuinely nonphysical targets must be plain NumPy arrays.
             batch_size: Optional positive execution-batch override. ``None``
                 uses the predictor's default.
 
@@ -523,12 +589,17 @@ class ModelPredictor:
         """
 
         resolved_batch_size = self._resolve_batch_size(batch_size)
-        prepared_features = _prepare_features(features, self._feature_names)
+        prepared_features = _prepare_features(
+            features,
+            self._feature_names,
+            self._feature_units,
+        )
         if prepared_features.example_count == 0:
             raise ValueError("evaluation requires at least one example.")
         prepared_targets = _prepare_targets(
             targets,
             self._target_names,
+            self._target_units,
             prepared_features.example_shape,
         )
         squared_total = 0.0

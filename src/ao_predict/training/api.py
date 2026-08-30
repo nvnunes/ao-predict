@@ -1611,7 +1611,11 @@ def train_model(request: TrainModelRequest) -> TrainModelResult:
             issues=issues,
         )
     if prepared_training is not None and prepared_validation is not None:
-        validate_explicit_schema(prepared_training, prepared_validation, issues)
+        prepared_validation = validate_explicit_schema(
+            prepared_training,
+            prepared_validation,
+            issues,
+        )
     if prepared_training is not None and request.validation_data is None:
         if (
             request.validation_count is not None

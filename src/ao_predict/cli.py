@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from astropy import units as u
 
 from . import __version__
 from .simulation import schema
@@ -62,6 +63,23 @@ def _lowercase_keys_recursive(value: Any) -> Any:
     return value
 
 
+def _decode_quantity_values(value: Any, *, path: str = "config") -> Any:
+    """Decode YAML ``{value, unit}`` mappings into Astropy quantities."""
+    if isinstance(value, dict):
+        if set(value) == {"value", "unit"}:
+            try:
+                return u.Quantity(value["value"], unit=u.Unit(value["unit"]))
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"{path} must contain a valid quantity value and unit.") from exc
+        return {
+            key: _decode_quantity_values(item, path=f"{path}.{key}")
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_decode_quantity_values(item, path=f"{path}[]") for item in value]
+    return value
+
+
 def _parse_table_from_csv(path: str) -> tuple[list[str], list[list[Any]]]:
     """Parse options table input from a CSV file.
 
@@ -107,7 +125,7 @@ def _prepare_options_config(options_cfg: dict[str, Any], config_dir: Path) -> di
             table_cfg[schema.KEY_CFG_OPTION_COLUMNS] = [str(col).lower() if isinstance(col, str) else col for col in columns]
 
     normalized = normalize_table_options_config(options_cfg)
-    table_path = options_cfg.get(schema.KEY_CFG_OPTION_TABLE_PATH)
+    table_path = table_cfg.get(schema.KEY_CFG_OPTION_TABLE_PATH) if isinstance(table_cfg, dict) else None
     if table_path is not None:
         if not isinstance(table_path, str):
             raise ValueError(f"{schema.KEY_OPTION_SECTION}.{schema.KEY_CFG_OPTION_TABLE_PATH} must be a string path.")
@@ -138,7 +156,7 @@ def _load_config(config_yaml: str) -> tuple[dict[str, Any], dict[str, Any], dict
 
     config_path = Path(config_yaml)
     config_dir = config_path.parent
-    cfg = _lowercase_keys_recursive(_load_yaml(config_yaml))
+    cfg = _decode_quantity_values(_lowercase_keys_recursive(_load_yaml(config_yaml)))
     simulation_cfg = _as_mapping(cfg.get(schema.KEY_SIMULATION_SECTION), schema.KEY_SIMULATION_SECTION)
     simulation_cfg.setdefault(schema.KEY_CFG_SIMULATION_BASE_PATH, str(config_dir))
     setup_cfg = _as_mapping(cfg.get(schema.KEY_SETUP_SECTION), schema.KEY_SETUP_SECTION)
@@ -163,6 +181,7 @@ def _load_init_request(
         options=TableOptionsConfig(
             broadcast=dict(options_cfg.get(schema.KEY_CFG_OPTION_BROADCAST, {})),
             columns=options_cfg.get(schema.KEY_CFG_OPTION_COLUMNS),
+            units=dict(options_cfg.get(schema.KEY_CFG_OPTION_UNITS, {})),
             rows=options_cfg.get(schema.KEY_CFG_OPTION_ROWS),
         ),
         overwrite=overwrite,

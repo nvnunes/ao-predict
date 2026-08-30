@@ -9,7 +9,9 @@ from typing import Any, Type
 
 from joblib import Parallel, delayed
 import numpy as np
+from astropy import units as u
 
+from .._units import quantity_value, unit_string
 from ..persistence import SimulationStore
 from . import schema
 from .config import add_runtime_derived_options
@@ -21,7 +23,6 @@ from .validation import (
 )
 from .interfaces import Simulation, SimulationResult, SimulationState
 from .stats import PsfMetadata, compute_psf_stats
-from ..utils import as_float_vector
 
 
 # Structures
@@ -63,7 +64,7 @@ def _check_simulation_payload(simulation: Simulation, simulation_payload: Mappin
         simulation_payload,
         expected_name=simulation.name,
         expected_version=simulation.version,
-        expected_extra_stat_names=simulation.extra_stat_names,
+        expected_extra_stat_fields=simulation.extra_stat_fields,
         expected_ngs_mag_standard=simulation.ngs_mag_standard,
     )
     simulation.validate_simulation_payload(simulation_payload)
@@ -74,10 +75,9 @@ def _prepare_base_simulation_payload(simulation: Simulation) -> dict[str, Any]:
     return {
         schema.KEY_SIMULATION_NAME: simulation.name,
         schema.KEY_SIMULATION_VERSION: simulation.version,
-        schema.KEY_SIMULATION_EXTRA_STAT_NAMES: np.asarray(
-            simulation.extra_stat_names,
-            dtype=str,
-        ),
+        schema.KEY_SIMULATION_EXTRA_STAT_FIELDS: {
+            name: unit_string(unit) for name, unit in simulation.extra_stat_fields.items()
+        },
         schema.KEY_SIMULATION_NGS_MAG_STANDARD: simulation.ngs_mag_standard,
     }
 
@@ -159,7 +159,7 @@ def create_simulation_from_config(simulation_cfg: Mapping[str, Any]) -> tuple[Si
 
     Notes:
         ao-predict assembles the core persisted ``/simulation`` fields
-        (`name`, `version`, `extra_stat_names`, and `ngs_mag_standard`) before
+        (`name`, `version`, `extra_stat_fields`, and `ngs_mag_standard`) before
         delegating to ``simulation.prepare_simulation_payload(...)`` for
         simulation-specific completion.
 
@@ -204,7 +204,7 @@ def create_simulation_from_payload(simulation_payload: Mapping[str, Any]) -> Sim
         simulation_payload,
         expected_name=simulation.name,
         expected_version=simulation.version,
-        expected_extra_stat_names=simulation.extra_stat_names,
+        expected_extra_stat_fields=simulation.extra_stat_fields,
         expected_ngs_mag_standard=simulation.ngs_mag_standard,
     )
     simulation.validate_simulation_payload(simulation_payload)
@@ -235,8 +235,13 @@ def _prepare_base_setup_payload(base_setup: dict[str, Any]) -> dict[str, Any]:
         Setup mapping with core fields normalized into persistence-ready forms.
     """
     setup = dict(base_setup)
-    if "ee_apertures_mas" in setup:
-        setup["ee_apertures_mas"] = as_float_vector(setup["ee_apertures_mas"], label="setup.ee_apertures_mas")
+    if "ee_apertures" in setup:
+        setup["ee_apertures"] = quantity_value(
+            setup["ee_apertures"],
+            u.mas,
+            label="setup.ee_apertures",
+            dtype=float,
+        ).reshape(-1) * u.mas
     setup.setdefault(schema.KEY_SETUP_SR_METHOD, schema.DEFAULT_SETUP_SR_METHOD)
     setup.setdefault(schema.KEY_SETUP_FWHM_SUMMARY, schema.DEFAULT_SETUP_FWHM_SUMMARY)
     setup.setdefault(schema.KEY_SETUP_EE_GEOMETRY, schema.DEFAULT_SETUP_EE_GEOMETRY)
@@ -341,7 +346,7 @@ def _populate_result_stats(simulation: Simulation, context: Any) -> None:
             "Declared extra stats must be returned from build_extra_stats(...)."
         )
 
-    num_sci = int(as_float_vector(context.setup.sci_r_arcsec, label="setup.sci_r_arcsec").shape[0])
+    num_sci = int(quantity_value(context.setup.sci_r, u.arcsec, label="setup.sci_r").reshape(-1).shape[0])
 
     context.result.psfs = validate_psf_cube(
         context.result.psfs,
@@ -350,15 +355,15 @@ def _populate_result_stats(simulation: Simulation, context: Any) -> None:
     )
 
     psf_metadata = PsfMetadata(
-        wavelength_um=context.options[schema.KEY_OPTION_WAVELENGTH_UM],
-        pixel_scale_mas=context.result.meta[schema.KEY_META_PIXEL_SCALE_MAS],
-        tel_diameter_m=context.result.meta[schema.KEY_META_TEL_DIAMETER_M],
+        wavelength=context.options[schema.KEY_OPTION_WAVELENGTH],
+        pixel_scale=context.result.meta[schema.KEY_META_PIXEL_SCALE],
+        tel_diameter=context.result.meta[schema.KEY_META_TEL_DIAMETER],
         tel_pupil=context.result.meta[schema.KEY_META_TEL_PUPIL],
     )
-    sr, ee, fwhm_mas = compute_psf_stats(
+    sr, ee, fwhm = compute_psf_stats(
         context.result.psfs,
         psf_metadata,
-        ee_apertures_mas=context.setup.ee_apertures_mas,
+        ee_apertures=context.setup.ee_apertures,
         sr_method=context.setup.sr_method,
         fwhm_summary=context.setup.fwhm_summary,
         ee_geometry=context.setup.ee_geometry,
@@ -385,7 +390,8 @@ def _populate_result_stats(simulation: Simulation, context: Any) -> None:
             "Core stats are owned by ao-predict and must not be provided by the simulation."
         )
 
-    expected_extra_stat_names = tuple(context.runtime.get("extra_stat_names", ()))
+    expected_extra_stat_fields = dict(context.runtime.get("extra_stat_fields", {}))
+    expected_extra_stat_names = tuple(expected_extra_stat_fields)
 
     unexpected_extra_stat_names = sorted(set(extra_stat_names) - set(expected_extra_stat_names))
     if unexpected_extra_stat_names:
@@ -402,13 +408,19 @@ def _populate_result_stats(simulation: Simulation, context: Any) -> None:
         )
 
     extra_stats = {
-        name: np.asarray(raw_extra_stats[name], dtype=np.float32) for name in expected_extra_stat_names
+        name: quantity_value(
+            raw_extra_stats[name],
+            expected_extra_stat_fields[name],
+            label=f"extra stat {name!r}",
+            dtype=np.float32,
+        ) * u.Unit(expected_extra_stat_fields[name])
+        for name in expected_extra_stat_names
     }
 
     context.result.stats = {
         schema.KEY_STATS_SR: sr,
         schema.KEY_STATS_EE: ee,
-        schema.KEY_STATS_FWHM_MAS: fwhm_mas,
+        schema.KEY_STATS_FWHM: fwhm,
         **extra_stats,
     }
 
@@ -435,7 +447,7 @@ def _execute_simulation_index(
     """
     try:
         context = simulation.create(int(index), options)
-        context.runtime["extra_stat_names"] = simulation.extra_stat_names
+        context.runtime["extra_stat_fields"] = dict(simulation.extra_stat_fields)
         simulation.run(context)
         simulation.finalize(context)
 

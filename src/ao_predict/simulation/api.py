@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Mapping
 
 import numpy as np
+from astropy import units as u
 
 from ..persistence import SimulationStore
 from .config import (
@@ -29,7 +30,7 @@ from .runner import (
 # Public API type aliases
 
 ConfigMapping = Mapping[str, object]
-OptionArrayLike = np.ndarray | list[object] | tuple[object, ...]
+OptionArrayLike = np.ndarray | u.Quantity
 OptionArrayMapping = Mapping[str, OptionArrayLike]
 
 
@@ -56,7 +57,7 @@ class SetupConfig:
     """Typed setup configuration for code-driven initialization.
 
     Attributes:
-        ee_apertures_mas: Core EE aperture list (mas).
+        ee_apertures: Core EE aperture quantity, canonically stored in mas.
         sr_method: Optional dataset-level Strehl selector. Defaults to
             ``pixel_fit`` when omitted.
         fwhm_summary: Optional dataset-level FWHM contour summary selector.
@@ -66,7 +67,7 @@ class SetupConfig:
         specific_fields: Additional simulation-specific passthrough fields.
     """
 
-    ee_apertures_mas: list[float]
+    ee_apertures: u.Quantity
     sr_method: str | None = None
     fwhm_summary: str | None = None
     ee_geometry: str | None = None
@@ -77,7 +78,7 @@ class SetupConfig:
 class OptionsConfig:
     """Typed columnar per-simulation options.
 
-    The optional ``sci_dx_arcsec`` and ``sci_dy_arcsec`` arrays have shape
+    The optional ``sci_dx`` and ``sci_dy`` arrays have shape
     ``[N, M]``, where ``N`` is the simulation count and ``M`` is the invariant
     science-point count in setup. Each axis may be supplied independently.
     Missing or explicitly all-zero axes are omitted from persistence and mean
@@ -97,11 +98,14 @@ class TableOptionsConfig:
     Attributes:
         broadcast: Scalar/default option values applied to all simulations.
         columns: Optional table column names.
+        units: Input units keyed by physical table column name. Values are
+            converted to AO Predict's canonical units.
         rows: Optional table rows (each row corresponds to one simulation).
     """
 
     broadcast: dict[str, object] = field(default_factory=dict)
     columns: list[str] | None = None
+    units: dict[str, str | u.UnitBase] = field(default_factory=dict)
     rows: list[list[object]] | None = None
 
 
@@ -173,7 +177,7 @@ class _PreparedDatasetPayloads:
 
     simulation: dict[str, object]
     setup: dict[str, object]
-    options: dict[str, np.ndarray]
+    options: dict[str, np.ndarray | u.Quantity]
 
 
 # Payload helpers
@@ -212,7 +216,7 @@ def _prepare_options_payload(
     simulation: Simulation,
     setup_payload: ConfigMapping,
     options: OptionsConfig | TableOptionsConfig | OptionArrayMapping,
-) -> dict[str, np.ndarray]:
+) -> dict[str, np.ndarray | u.Quantity]:
     """Prepare options payload for dataset initialization.
 
     Supports typed ``OptionsConfig``, typed ``TableOptionsConfig``, and
@@ -231,6 +235,7 @@ def _prepare_options_payload(
             {
                 schema.KEY_CFG_OPTION_BROADCAST: dict(options.broadcast),
                 schema.KEY_CFG_OPTION_COLUMNS: options.columns,
+                schema.KEY_CFG_OPTION_UNITS: dict(options.units),
                 schema.KEY_CFG_OPTION_ROWS: options.rows,
             },
         )

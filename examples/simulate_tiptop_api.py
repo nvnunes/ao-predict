@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import numpy as np
+from astropy import units as u
+
 from ao_predict import (
     InitDatasetRequest,
     SetupConfig,
@@ -28,12 +31,13 @@ def main() -> None:
             specific_fields={"config_path": "sample_tiptop.ini"},
         ),
         setup=SetupConfig(
-            ee_apertures_mas=[50.0, 100.0],
-            specific_fields={"ngs_mag_zeropoint": 3.0e10},
+            ee_apertures=np.array([50.0, 100.0]) * u.mas,
+            specific_fields={"ngs_magnitude_zeropoint": 3.0e10 * u.photon / u.s},
         ),
         options=TableOptionsConfig(
-            broadcast={"zenith_angle_deg": 20.0},
-            columns=["wavelength_um"],
+            broadcast={"zenith_angle": 20.0 * u.deg},
+            columns=["wavelength"],
+            units={"wavelength": u.um},
             rows=[[1.654], [2.179]],
         ),
         overwrite=True,

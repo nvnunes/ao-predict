@@ -47,16 +47,13 @@ from .simulation.api import (
 )
 from .simulation.runner import RunSummary
 from .training import (
-    FeatureConfig,
     ModelTrainingDataConfig,
     ModelTrainingValidationError,
-    TargetConfig,
     TrainingRecoveryMismatchError,
     TrainingTerminationReason,
     TrainingValidationRecord,
     TrainModelRequest,
     TrainModelResult,
-    model_training_data_from_rows,
     train_model,
 )
 
@@ -73,7 +70,6 @@ __all__ = [
     "DatasetConfigMismatchError",
     "DatasetStatus",
     "DatasetValidationError",
-    "FeatureConfig",
     "HybridSimulation",
     "InitDatasetRequest",
     "ModelEvaluationResult",
@@ -90,7 +86,6 @@ __all__ = [
     "SimulationResult",
     "SimulationState",
     "TableOptionsConfig",
-    "TargetConfig",
     "TiptopBaseConfig",
     "TiptopSimulation",
     "TrainModelRequest",
@@ -108,7 +103,6 @@ __all__ = [
     "init_dataset",
     "load_analysis_dataset",
     "load_model_predictor",
-    "model_training_data_from_rows",
     "reset_simulations",
     "resume_simulations",
     "run_simulations_by_state",

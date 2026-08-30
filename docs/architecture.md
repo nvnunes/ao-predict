@@ -68,19 +68,45 @@ require a deliberate difference. It should not introduce a second naming
 system or a parallel abstraction for a problem already solved by another AO
 Predict API.
 
+## Physical Unit Contract
+
+Public scientific values carry Astropy units directly. Field names describe
+the quantity (`wavelength`, `zenith_angle`, `fwhm`), not its storage unit.
+Physical values and scientifically dimensionless values use
+`astropy.units.Quantity`; identifiers, counts, booleans, categories, and text
+remain plain values. Equivalent caller units are converted to the contract's
+canonical unit at preparation or execution boundaries.
+
+The CLI expresses standalone quantities as `{value, unit}`. Numeric table and
+CSV cells remain compact, with a sibling `units` mapping keyed by physical
+column name. HDF5 stores quantity datasets in canonical units and records the
+generic Astropy unit string in each quantity dataset's `units` attribute;
+dimensionless scientific values use `1`.
+
+Simulation-owned scalar metadata declarations map each field name to its
+Astropy unit. A declaration value of `None` identifies an ordinary numeric
+scalar such as a count; its `/meta` dataset has no `units` attribute and loads
+as a plain NumPy value. This keeps physical dimensionless quantities distinct
+from nonphysical numbers.
+
+Direct model prediction matrices are the intentional exception: their column
+order and native units are already fixed by the model package, so plain matrix
+values are interpreted in those units. Named prediction values use quantities,
+with plain scalar values additionally accepted by `predict_one()` as
+model-native values.
+
 ## Model Training Lifecycle
 
 `ao_predict.training` owns the dense-regression training lifecycle. Its public
-boundary consists of feature and target configurations,
-`ModelTrainingDataConfig`, `TrainModelRequest`, `train_model()`, the training
-result records, and focused validation and recovery-mismatch errors. Model
-construction, standardized prepared state, partition membership, optimizer and
-scheduler machinery, recovery mappings, locks, and package persistence remain
-private.
+boundary consists of `ModelTrainingDataConfig`, `TrainModelRequest`,
+`train_model()`, the training result records, and focused validation and
+recovery-mismatch errors. Model construction, standardized prepared state,
+partition membership, optimizer and scheduler machinery, recovery mappings,
+locks, and package persistence remain private.
 
 Training follows this ownership sequence:
 
-1. Validate the complete request and borrow caller NumPy arrays without
+1. Validate the complete request and borrow caller arrays and quantities without
    mutation or full-matrix duplication.
 2. Resolve explicit validation or split complete simulations from one pool.
 3. Fit population standardizers on training observations in `float64`,
@@ -266,15 +292,16 @@ Prediction follows this sequence:
    persisted population parameters, convert the standardized batch to
    `float32`, execute it, and reconstruct physical values under model
    evaluation and inference modes.
-6. Restore the caller-visible example shape and return a plain `float32` NumPy
-   array.
+6. Restore the caller-visible example shape and return a `float32` NumPy array
+   for direct matrix input or a target-name mapping of quantities for named
+   input.
 
 Training and prediction deliberately have different public data forms.
 Training defines and persists a feature and target schema, so its public data
-configuration pairs each array with a definition. Prediction consumes values
-against that already-fixed package schema, so callers may provide either one
-positional matrix or an exact-name mapping without repeating definitions or
-units. Internally, both lifecycles preserve simulation-major order, treat the
+configuration is an ordered mapping from each field name to its values.
+Prediction consumes values against that already-fixed package schema, so
+callers may provide either one positional matrix or an exact-name mapping.
+Internally, both lifecycles preserve simulation-major order, treat the
 last partial batch normally, and gather simulation-level features without
 permanently repeating them.
 
@@ -331,19 +358,13 @@ Keep one clear owner per rule:
 Avoid split ownership where builders, validators, and subclasses all partially
 enforce the same persisted rule.
 
-## Persisted Contract Compatibility
+## Current Persisted Contract Only
 
-Newly prepared payloads must satisfy the current persisted contract. Dataset
-creation validates that contract directly and does not apply compatibility
-upgrades.
-
-Payload loading first validates the current contract. When validation fails,
-AO Predict may apply a recognized legacy upgrade to an in-memory copy and then
-validates the current contract again. An upgrade never rewrites the persisted
-dataset, and consumers receive only the validated current-contract payload.
-
-Keep each legacy upgrade explicit, narrow, and idempotent. Do not use an
-upgrade to bypass unrelated validation failures.
+Dataset creation and loading both require the complete current persisted
+contract. AO Predict does not contain compatibility upgrades for older field
+names, missing unit attributes, or earlier interpolator payloads. Contract
+changes therefore require upgrading all owned datasets and interpolators in
+place as part of the same migration.
 
 ## Simulation Lifecycle
 
@@ -367,9 +388,9 @@ follows that lifecycle.
 
 ## Per-Simulation Science Coordinates
 
-The persisted `/setup/sci_r_arcsec` and `/setup/sci_theta_deg` vectors define
+The persisted `/setup/sci_r` and `/setup/sci_theta` vectors define
 the invariant base science grid. Code-driven initialization may additionally
-provide `/options/sci_dx_arcsec` and `/options/sci_dy_arcsec` matrices with
+provide `/options/sci_dx` and `/options/sci_dy` matrices with
 shape `[N, M]`, where `N` is the simulation count and `M` is the base-grid
 point count.
 
@@ -379,8 +400,8 @@ point count.
   normalized away instead of being stored or loaded.
 - Execution resolves one options row against the base grid and records the
   effective polar coordinates in
-  `SimulationContext.resolved_sci_r_arcsec` and
-  `SimulationContext.resolved_sci_theta_deg`.
+  `SimulationContext.resolved_sci_r` and
+  `SimulationContext.resolved_sci_theta`.
 - `SimulationContext.setup`, the bound setup, and persisted `/setup` remain
   invariant.
 - TIPTOP and Hybrid execution consume the effective runtime coordinates.

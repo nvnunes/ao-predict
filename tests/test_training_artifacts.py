@@ -13,10 +13,10 @@ import pytest
 import torch
 
 from ao_predict import (
+    ModelTrainingDataConfig,
     ModelTrainingValidationError,
     TrainingTerminationReason,
     TrainModelRequest,
-    model_training_data_from_rows,
     train_model,
 )
 from ao_predict.training.artifacts import (
@@ -34,16 +34,28 @@ training_artifacts = importlib.import_module("ao_predict.training.artifacts")
 training_api = importlib.import_module("ao_predict.training.api")
 
 
+def _training_data_from_rows(
+    features: np.ndarray,
+    targets: np.ndarray,
+    feature_names: tuple[str, ...],
+    target_names: tuple[str, ...],
+) -> ModelTrainingDataConfig:
+    return ModelTrainingDataConfig(
+        features={name: features[:, index] for index, name in enumerate(feature_names)},
+        targets={name: targets[:, index] for index, name in enumerate(target_names)},
+    )
+
+
 def _request(model_path: Path, *, overwrite: bool = False) -> TrainModelRequest:
     features = np.asarray(
         [[1.0, 2.0], [2.0, 1.0], [3.0, 1.0], [4.0, 2.0]],
         dtype=np.float32,
     )
     targets = np.asarray([[2.0], [3.0], [4.0], [5.0]], dtype=np.float32)
-    training = model_training_data_from_rows(
+    training = _training_data_from_rows(
         features[:3], targets[:3], ("a", "b"), ("metric",)
     )
-    validation = model_training_data_from_rows(
+    validation = _training_data_from_rows(
         features[3:], targets[3:], ("a", "b"), ("metric",)
     )
     return TrainModelRequest(

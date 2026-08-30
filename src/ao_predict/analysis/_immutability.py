@@ -7,6 +7,9 @@ from types import MappingProxyType
 from typing import Any
 
 import numpy as np
+from astropy import units as u
+
+from .._units import freeze_quantity
 
 
 def freeze_array(value: Any) -> np.ndarray:
@@ -18,6 +21,9 @@ def freeze_array(value: Any) -> np.ndarray:
 
 def freeze_value(value: Any) -> Any:
     """Recursively freeze analysis payload values."""
+    if isinstance(value, u.Quantity):
+        return freeze_quantity(value.copy())
+
     if isinstance(value, np.ndarray):
         return freeze_array(value)
 

@@ -7,10 +7,13 @@ from typing import Any, Mapping
 
 import h5py
 import numpy as np
+from astropy import units as u
 
+from .._units import UNITS_ATTRIBUTE, parse_unit, quantity_from_value, quantity_value, unit_string
 from ..simulation import schema
+from ..simulation.atm import ATM_PROFILE_FIELD_UNITS
 from ..simulation.validation import (
-    normalize_meta_field_names,
+    normalize_meta_fields,
     resolve_simulation_payload_for_load,
     validate_atm_profile_ids,
     validate_options_payload_core,
@@ -27,7 +30,9 @@ from ..utils import as_array
 def _write_value(group: h5py.Group, key: str, value: Any) -> None:
     """Write a Python value recursively into an HDF5 group key."""
     if isinstance(value, Mapping):
-        sub = group.require_group(key)
+        sub = group[key] if key in group else group.create_group(key, track_order=True)
+        if not isinstance(sub, h5py.Group):
+            raise TypeError(f"Cannot write mapping over non-group HDF5 key {key!r}.")
         for sub_key, sub_value in value.items():
             _write_value(sub, str(sub_key), sub_value)
         return
@@ -39,29 +44,68 @@ def _write_value(group: h5py.Group, key: str, value: Any) -> None:
         group.create_dataset(key, data=value, dtype=dtype)
         return
 
-    arr = as_array(value)
+    unit: u.UnitBase | None = None
+    if isinstance(value, u.Quantity):
+        unit = value.unit
+        arr = np.asarray(value.value)
+    else:
+        arr = as_array(value)
     if arr.dtype.kind in {"U", "O"}:
         dtype = h5py.string_dtype(encoding="utf-8")
         if key in group:
             del group[key]
-        group.create_dataset(key, data=np.asarray(arr, dtype=object), dtype=dtype)
+        dataset = group.create_dataset(key, data=np.asarray(arr, dtype=object), dtype=dtype)
     else:
         if key in group:
             del group[key]
-        group.create_dataset(key, data=arr)
+        dataset = group.create_dataset(key, data=arr)
+    if unit is not None:
+        dataset.attrs[UNITS_ATTRIBUTE] = unit_string(unit)
 
 
 def _read_node(node: h5py.Group | h5py.Dataset) -> Any:
-    """Read an HDF5 node recursively into plain Python objects."""
+    """Read an HDF5 node into Python values, reconstructing quantities."""
     if isinstance(node, h5py.Group):
         return {k: _read_node(node[k]) for k in node.keys()}
 
-    data = node[()]
+    return _read_dataset_value(node)
+
+
+def _decode_value(data: Any) -> Any:
+    """Decode one numerical or string value read from HDF5."""
     if isinstance(data, bytes):
         return data.decode("utf-8")
     if isinstance(data, np.ndarray) and data.dtype.kind in {"S", "O"}:
         return data.astype(str)
     return data
+
+
+def _with_dataset_unit(ds: h5py.Dataset, value: Any) -> Any:
+    """Reconstruct a quantity when one HDF5 dataset declares ``units``."""
+    value = _decode_value(value)
+    if UNITS_ATTRIBUTE not in ds.attrs:
+        return value
+    return quantity_from_value(value, u.Unit(ds.attrs[UNITS_ATTRIBUTE]))
+
+
+def _set_dataset_unit(ds: h5py.Dataset, unit: u.UnitBase) -> h5py.Dataset:
+    """Attach one canonical unit to a newly allocated HDF5 dataset."""
+    ds.attrs[UNITS_ATTRIBUTE] = unit_string(unit)
+    return ds
+
+
+def _collect_dataset_unit_issue(
+    f: h5py.File,
+    path: str,
+    unit: u.UnitBase,
+    issues: list[str],
+) -> None:
+    """Require one existing quantity dataset to declare its canonical unit."""
+    if path not in f or not isinstance(f[path], h5py.Dataset):
+        return
+    expected = unit_string(unit)
+    if f[path].attrs.get(UNITS_ATTRIBUTE) != expected:
+        issues.append(f"/{path.strip('/')} must declare units={expected!r}.")
 
 
 def _ensure_sim_idx(sim_idx: int) -> int:
@@ -86,25 +130,38 @@ def _ensure_meta_tel_pupil(f: h5py.File, tel_pupil: np.ndarray) -> None:
             raise ValueError(f"/meta/tel_pupil shape mismatch: expected {expected}, got {ds.shape}")
         return
 
-    meta.create_dataset(
-        schema.KEY_META_TEL_PUPIL,
-        data=np.full(expected, np.nan, dtype=np.float32),
+    _set_dataset_unit(
+        meta.create_dataset(
+            schema.KEY_META_TEL_PUPIL,
+            data=np.full(expected, np.nan, dtype=np.float32),
+        ),
+        schema.META_FIELD_UNITS[schema.KEY_META_TEL_PUPIL],
     )
 
 
 def _write_dataset_level_telescope_meta(f: h5py.File, result: SimulationResult) -> None:
     """Persist invariant telescope metadata once and enforce consistency."""
     meta = f[schema.KEY_META_SECTION]
-    tel_diameter = np.asarray(result.meta[schema.KEY_META_TEL_DIAMETER_M], dtype=np.float32)
-    tel_pupil = np.asarray(result.meta[schema.KEY_META_TEL_PUPIL], dtype=np.float32)
+    tel_diameter = quantity_value(
+        result.meta[schema.KEY_META_TEL_DIAMETER],
+        schema.META_FIELD_UNITS[schema.KEY_META_TEL_DIAMETER],
+        label=f"result.meta.{schema.KEY_META_TEL_DIAMETER}",
+        dtype=np.float32,
+    )
+    tel_pupil = quantity_value(
+        result.meta[schema.KEY_META_TEL_PUPIL],
+        schema.META_FIELD_UNITS[schema.KEY_META_TEL_PUPIL],
+        label=f"result.meta.{schema.KEY_META_TEL_PUPIL}",
+        dtype=np.float32,
+    )
 
     tel_diameter_value = np.float32(tel_diameter.item())
-    stored_tel_diameter = np.asarray(meta[schema.KEY_META_TEL_DIAMETER_M][()], dtype=np.float32)
+    stored_tel_diameter = np.asarray(meta[schema.KEY_META_TEL_DIAMETER][()], dtype=np.float32)
     if np.isnan(stored_tel_diameter):
-        meta[schema.KEY_META_TEL_DIAMETER_M][()] = tel_diameter_value
+        meta[schema.KEY_META_TEL_DIAMETER][()] = tel_diameter_value
     elif not np.isclose(float(stored_tel_diameter), float(tel_diameter_value), rtol=0.0, atol=0.0):
         raise ValueError(
-            "result.meta.tel_diameter_m does not match dataset-level /meta/tel_diameter_m."
+            "result.meta.tel_diameter does not match dataset-level /meta/tel_diameter."
         )
 
     _ensure_meta_tel_pupil(f, tel_pupil)
@@ -135,9 +192,12 @@ def _ensure_psfs_data(f: h5py.File, psfs: np.ndarray) -> None:
     grp.create_dataset(schema.KEY_PSFS_DATA, data=np.full(shape, np.nan, dtype=np.float32))
 
 
-def _read_extra_stat_names(simulation: Mapping[str, Any]) -> tuple[str, ...]:
-    """Read declared extra stat names from an already-validated ``/simulation`` payload."""
-    return tuple(str(name) for name in np.asarray(simulation[schema.KEY_SIMULATION_EXTRA_STAT_NAMES]).reshape(-1).tolist())
+def _read_extra_stat_fields(simulation: Mapping[str, Any]) -> dict[str, u.UnitBase]:
+    """Read declared extra-stat units from a validated simulation payload."""
+    fields = simulation[schema.KEY_SIMULATION_EXTRA_STAT_FIELDS]
+    if not isinstance(fields, Mapping):
+        raise TypeError(f"simulation['{schema.KEY_SIMULATION_EXTRA_STAT_FIELDS}'] must be a mapping.")
+    return {str(name): parse_unit(unit, label=f"extra stat {name!r}") for name, unit in fields.items()}
 
 
 def _read_diagnostic_field_specs(simulation: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
@@ -205,13 +265,25 @@ def _read_diagnostic_field_specs(simulation: Mapping[str, Any]) -> dict[str, dic
                 raise ValueError(f"diagnostic field '{name}' shape values must be positive.")
             else:
                 normalized_shape.append(int(value))
-        specs[name] = {"dtype": dtype, "shape": tuple(normalized_shape)}
+        spec = {"dtype": dtype, "shape": tuple(normalized_shape)}
+        if dtype in {"float32", "float64"}:
+            if "unit" not in raw_spec:
+                raise ValueError(f"diagnostic field '{name}' must declare a unit.")
+            spec["unit"] = unit_string(parse_unit(raw_spec["unit"], label=f"diagnostic field {name!r} unit"))
+        elif "unit" in raw_spec:
+            raise ValueError(f"non-floating diagnostic field '{name}' must not declare a unit.")
+        specs[name] = spec
     return specs
 
 
 def _read_declared_extra_stat_names(f: h5py.File) -> tuple[str, ...]:
     """Read declared extra stat names from the persisted ``/simulation`` payload."""
-    return _read_extra_stat_names(_read_node(f[schema.KEY_SIMULATION_SECTION]))
+    return tuple(_read_extra_stat_fields(_read_node(f[schema.KEY_SIMULATION_SECTION])))
+
+
+def _read_declared_extra_stat_fields(f: h5py.File) -> dict[str, u.UnitBase]:
+    """Read declared extra-stat units from the persisted simulation payload."""
+    return _read_extra_stat_fields(_read_node(f[schema.KEY_SIMULATION_SECTION]))
 
 
 def _read_declared_diagnostic_field_specs(f: h5py.File) -> dict[str, dict[str, Any]]:
@@ -219,10 +291,17 @@ def _read_declared_diagnostic_field_specs(f: h5py.File) -> dict[str, dict[str, A
     return _read_diagnostic_field_specs(_read_node(f[schema.KEY_SIMULATION_SECTION]))
 
 
-def _read_declared_meta_field_names(f: h5py.File) -> tuple[str, ...]:
-    """Read declared extra scalar meta field names from ``/simulation``."""
+def _read_declared_meta_fields(f: h5py.File) -> dict[str, u.UnitBase | None]:
+    """Read declared extra scalar metadata units from ``/simulation``."""
     simulation = _read_node(f[schema.KEY_SIMULATION_SECTION])
-    return normalize_meta_field_names(simulation.get(schema.KEY_SIMULATION_META_FIELDS, ()))
+    return {
+        name: None if unit is None else u.Unit(unit)
+        for name, unit in normalize_meta_fields(simulation.get(schema.KEY_SIMULATION_META_FIELDS, {})).items()
+    }
+
+
+def _read_declared_meta_field_names(f: h5py.File) -> tuple[str, ...]:
+    return tuple(_read_declared_meta_fields(f))
 
 
 def _read_declared_stat_names(f: h5py.File) -> tuple[str, ...]:
@@ -254,30 +333,24 @@ def _read_simulation_dataset_row(ds: h5py.Dataset, sim_idx: int, *, path: str) -
         raise ValueError(f"{path} must be per-simulation with first dim N.")
     if sim_idx >= ds.shape[0]:
         raise IndexError(f"sim_idx {sim_idx} out of range for {path} shape {ds.shape}")
-    return ds[sim_idx]
+    return _with_dataset_unit(ds, ds[sim_idx])
 
 
 def _read_dataset_value(ds: h5py.Dataset) -> Any:
-    """Read one dataset into plain Python/NumPy values preserving array shape."""
-    data = ds[()]
-    if isinstance(data, bytes):
-        return data.decode("utf-8")
-    if isinstance(data, np.ndarray) and data.dtype.kind in {"S", "O"}:
-        return data.astype(str)
-    return data
+    """Read one dataset, reconstructing a quantity when units are declared."""
+    return _with_dataset_unit(ds, ds[()])
 
 
 def _read_meta_values(f: h5py.File) -> dict[str, Any]:
     """Read the full analysis-level ``/meta`` view including declared extras."""
-    meta = f[schema.KEY_META_SECTION]
-    pixel_scale_path = f"/{schema.KEY_META_SECTION}/{schema.KEY_META_PIXEL_SCALE_MAS}"
-    tel_diameter_path = f"/{schema.KEY_META_SECTION}/{schema.KEY_META_TEL_DIAMETER_M}"
+    pixel_scale_path = f"/{schema.KEY_META_SECTION}/{schema.KEY_META_PIXEL_SCALE}"
+    tel_diameter_path = f"/{schema.KEY_META_SECTION}/{schema.KEY_META_TEL_DIAMETER}"
     tel_pupil_path = f"/{schema.KEY_META_SECTION}/{schema.KEY_META_TEL_PUPIL}"
     values = {
-        schema.KEY_META_PIXEL_SCALE_MAS: _read_dataset_value(
+        schema.KEY_META_PIXEL_SCALE: _read_dataset_value(
             _require_dataset_ndim(_require_dataset(f, pixel_scale_path), path=pixel_scale_path, ndim=1)
         ),
-        schema.KEY_META_TEL_DIAMETER_M: _read_dataset_value(
+        schema.KEY_META_TEL_DIAMETER: _read_dataset_value(
             _require_dataset_ndim(_require_dataset(f, tel_diameter_path), path=tel_diameter_path, ndim=0)
         ),
         schema.KEY_META_TEL_PUPIL: _read_dataset_value(
@@ -293,23 +366,12 @@ def _read_meta_values(f: h5py.File) -> dict[str, Any]:
 def _write_result_meta_fields(f: h5py.File, sim_idx: int, result: SimulationResult) -> None:
     """Persist declared scalar per-simulation meta fields."""
     meta = f[schema.KEY_META_SECTION]
-    for name in _read_declared_meta_field_names(f):
-        value = np.asarray(result.meta[name], dtype=np.float32)
+    for name, unit in _read_declared_meta_fields(f).items():
+        if unit is None:
+            value = np.asarray(result.meta[name], dtype=np.float32)
+        else:
+            value = quantity_value(result.meta[name], unit, label=f"result.meta.{name}", dtype=np.float32)
         meta[name][sim_idx] = np.float32(value.item())
-
-
-def _decode_dataset_value(data: Any) -> Any:
-    """Decode one already-read HDF5 value into plain Python/NumPy values.
-
-    This mirrors ``_read_dataset_value()`` for values that have already been
-    sliced out of a dataset, including per-simulation diagnostic string rows
-    returned by h5py as ``bytes``.
-    """
-    if isinstance(data, bytes):
-        return data.decode("utf-8")
-    if isinstance(data, np.ndarray) and data.dtype.kind in {"S", "O"}:
-        return data.astype(str)
-    return data
 
 
 def _clear_simulation_outputs(f: h5py.File, sim_idx: int) -> None:
@@ -320,7 +382,7 @@ def _clear_simulation_outputs(f: h5py.File, sim_idx: int) -> None:
     for key in _read_declared_stat_names(f):
         stats[key][sim_idx, ...] = np.nan
 
-    meta[schema.KEY_META_PIXEL_SCALE_MAS][sim_idx] = np.nan
+    meta[schema.KEY_META_PIXEL_SCALE][sim_idx] = np.nan
     for key in _read_declared_meta_field_names(f):
         meta[key][sim_idx] = np.nan
 
@@ -366,9 +428,9 @@ def _diagnostic_dtype(dtype_name: str) -> Any:
 
 def _num_ngs_slots(options: Mapping[str, Any]) -> int:
     """Return the configured NGS slot count from persisted options."""
-    if schema.KEY_OPTION_NGS_R_ARCSEC not in options:
+    if schema.KEY_OPTION_NGS_R not in options:
         return 0
-    arr = np.asarray(options[schema.KEY_OPTION_NGS_R_ARCSEC])
+    arr = np.asarray(options[schema.KEY_OPTION_NGS_R])
     if arr.ndim <= 1:
         return 1
     return int(arr.shape[1])
@@ -450,10 +512,12 @@ def _create_diagnostic_dataset(
     dtype = _diagnostic_dtype(dtype_name)
     shape = (int(num_sims),) + _resolve_diagnostic_shape(spec, setup, options)
     if dtype_name == "str":
-        parent.create_dataset(name, shape=shape, dtype=dtype, fillvalue="")
+        dataset = parent.create_dataset(name, shape=shape, dtype=dtype, fillvalue="")
     else:
         fill_value = _diagnostic_fill_value(np.dtype(dtype))
-        parent.create_dataset(name, data=np.full(shape, fill_value, dtype=dtype))
+        dataset = parent.create_dataset(name, data=np.full(shape, fill_value, dtype=dtype))
+    if "unit" in spec:
+        _set_dataset_unit(dataset, u.Unit(spec["unit"]))
 
 
 def _flatten_mapping(mapping: Mapping[str, Any], *, prefix: str = "") -> dict[str, Any]:
@@ -524,7 +588,15 @@ def _write_result_diagnostics(f: h5py.File, sim_idx: int, result: SimulationResu
             else:
                 arr = str(value)
         else:
-            arr = np.asarray(value, dtype=ds.dtype)
+            if UNITS_ATTRIBUTE in ds.attrs:
+                arr = quantity_value(
+                    value,
+                    u.Unit(ds.attrs[UNITS_ATTRIBUTE]),
+                    label=f"result.diagnostics['{name}']",
+                    dtype=ds.dtype,
+                )
+            else:
+                arr = np.asarray(value, dtype=ds.dtype)
             if arr.shape != ds.shape[1:]:
                 raise ValueError(
                     f"result.diagnostics['{name}'] must have shape {ds.shape[1:]}, got {arr.shape}."
@@ -535,11 +607,11 @@ def _write_result_diagnostics(f: h5py.File, sim_idx: int, result: SimulationResu
 def _read_diagnostics_group(node: h5py.Group | h5py.Dataset, sim_idx: int | None = None, path: str = "") -> Any:
     """Read full-analysis or one-row diagnostics recursively.
 
-    HDF5 groups are returned as nested dictionaries. Dataset values are decoded
-    to the same plain Python/NumPy conventions as other store readers: scalar
-    UTF-8 strings are returned as ``str`` and string arrays are converted to
-    NumPy string arrays. When ``sim_idx`` is provided, only that row/slice is
-    read from each diagnostic dataset.
+    HDF5 groups are returned as nested dictionaries. Dataset values follow the
+    same conventions as other store readers: scalar UTF-8 strings become
+    ``str``, string arrays become NumPy string arrays, and numerical datasets
+    with unit metadata become quantities. When ``sim_idx`` is provided, only
+    that row or slice is read from each diagnostic dataset.
 
     Args:
         node: ``/diagnostics`` group or one dataset within it.
@@ -557,7 +629,10 @@ def _read_diagnostics_group(node: h5py.Group | h5py.Dataset, sim_idx: int | None
         return {key: _read_diagnostics_group(node[key], sim_idx=sim_idx, path=f"{path}/{key}") for key in node.keys()}
     if sim_idx is None:
         return _read_dataset_value(node)
-    return _decode_dataset_value(_read_simulation_dataset_row(node, sim_idx, path=path))
+    return _with_dataset_unit(
+        node,
+        _read_simulation_dataset_row(node, sim_idx, path=path),
+    )
 
 
 # Store implementation
@@ -624,9 +699,21 @@ class SimulationStore:
         m_sci = get_num_sci(setup)
         num_sims = validate_options_payload_core(options, expected_num_sci=m_sci)
         validate_atm_profile_ids(setup, options)
-        extra_stat_names = _read_extra_stat_names(simulation)
-        meta_field_names = normalize_meta_field_names(simulation.get(schema.KEY_SIMULATION_META_FIELDS, ()))
+        extra_stat_fields = _read_extra_stat_fields(simulation)
+        meta_fields = {
+            name: None if unit is None else u.Unit(unit)
+            for name, unit in normalize_meta_fields(simulation.get(schema.KEY_SIMULATION_META_FIELDS, {})).items()
+        }
         diagnostic_field_specs = _read_diagnostic_field_specs(simulation)
+        simulation = dict(simulation)
+        simulation[schema.KEY_SIMULATION_EXTRA_STAT_FIELDS] = {
+            name: unit_string(unit) for name, unit in extra_stat_fields.items()
+        }
+        if meta_fields:
+            simulation[schema.KEY_SIMULATION_META_FIELDS] = {
+                name: "" if unit is None else unit_string(unit)
+                for name, unit in meta_fields.items()
+            }
 
         ee = get_ee_apertures(setup)
 
@@ -658,25 +745,46 @@ class SimulationStore:
                 data=np.full((num_sims,), int(SimulationState.PENDING), dtype=np.uint8),
             )
 
-            g_meta.create_dataset(schema.KEY_META_PIXEL_SCALE_MAS, data=np.full((num_sims,), np.nan, dtype=np.float32))
-            g_meta.create_dataset(schema.KEY_META_TEL_DIAMETER_M, data=np.float32(np.nan))
-            g_meta.create_dataset(
+            _set_dataset_unit(
+                g_meta.create_dataset(schema.KEY_META_PIXEL_SCALE, data=np.full((num_sims,), np.nan, dtype=np.float32)),
+                schema.META_FIELD_UNITS[schema.KEY_META_PIXEL_SCALE],
+            )
+            _set_dataset_unit(
+                g_meta.create_dataset(schema.KEY_META_TEL_DIAMETER, data=np.float32(np.nan)),
+                schema.META_FIELD_UNITS[schema.KEY_META_TEL_DIAMETER],
+            )
+            tel_pupil_dataset = g_meta.create_dataset(
                 schema.KEY_META_TEL_PUPIL,
                 shape=(0, 0),
                 maxshape=(None, None),
                 chunks=True,
                 dtype=np.float32,
             )
-            for name in meta_field_names:
-                g_meta.create_dataset(name, data=np.full((num_sims,), np.nan, dtype=np.float32))
+            _set_dataset_unit(tel_pupil_dataset, schema.META_FIELD_UNITS[schema.KEY_META_TEL_PUPIL])
+            for name, unit in meta_fields.items():
+                dataset = g_meta.create_dataset(name, data=np.full((num_sims,), np.nan, dtype=np.float32))
+                if unit is not None:
+                    _set_dataset_unit(dataset, unit)
 
-            g_stats.create_dataset(schema.KEY_STATS_SR, data=np.full((num_sims, m_sci), np.nan, dtype=np.float32))
-            g_stats.create_dataset(
-                schema.KEY_STATS_EE, data=np.full((num_sims, m_sci, ee.shape[0]), np.nan, dtype=np.float32)
+            _set_dataset_unit(
+                g_stats.create_dataset(schema.KEY_STATS_SR, data=np.full((num_sims, m_sci), np.nan, dtype=np.float32)),
+                schema.STATS_FIELD_UNITS[schema.KEY_STATS_SR],
             )
-            g_stats.create_dataset(schema.KEY_STATS_FWHM_MAS, data=np.full((num_sims, m_sci), np.nan, dtype=np.float32))
-            for name in extra_stat_names:
-                g_stats.create_dataset(name, data=np.full((num_sims, m_sci), np.nan, dtype=np.float32))
+            _set_dataset_unit(
+                g_stats.create_dataset(
+                    schema.KEY_STATS_EE, data=np.full((num_sims, m_sci, ee.shape[0]), np.nan, dtype=np.float32)
+                ),
+                schema.STATS_FIELD_UNITS[schema.KEY_STATS_EE],
+            )
+            _set_dataset_unit(
+                g_stats.create_dataset(schema.KEY_STATS_FWHM, data=np.full((num_sims, m_sci), np.nan, dtype=np.float32)),
+                schema.STATS_FIELD_UNITS[schema.KEY_STATS_FWHM],
+            )
+            for name, unit in extra_stat_fields.items():
+                _set_dataset_unit(
+                    g_stats.create_dataset(name, data=np.full((num_sims, m_sci), np.nan, dtype=np.float32)),
+                    unit,
+                )
             if g_diagnostics is not None:
                 for name, spec in diagnostic_field_specs.items():
                     _create_diagnostic_dataset(
@@ -709,10 +817,7 @@ class SimulationStore:
             return _read_node(f[schema.KEY_SETUP_SECTION])
 
     def read_simulation(self) -> dict[str, Any]:
-        """Read ``/simulation`` as a validated current-contract payload.
-
-        Recognized legacy payloads are upgraded in memory and the dataset is
-        not rewritten.
+        """Read ``/simulation`` as a validated final-contract payload.
 
         Returns:
             Current-contract mapping decoded from ``/simulation``.
@@ -814,28 +919,28 @@ class SimulationStore:
         """Read one simulation's persisted meta view."""
 
         with h5py.File(self.path, "r") as f:
-            pixel_scale_path = f"/{schema.KEY_META_SECTION}/{schema.KEY_META_PIXEL_SCALE_MAS}"
-            tel_diameter_path = f"/{schema.KEY_META_SECTION}/{schema.KEY_META_TEL_DIAMETER_M}"
+            pixel_scale_path = f"/{schema.KEY_META_SECTION}/{schema.KEY_META_PIXEL_SCALE}"
+            tel_diameter_path = f"/{schema.KEY_META_SECTION}/{schema.KEY_META_TEL_DIAMETER}"
             tel_pupil_path = f"/{schema.KEY_META_SECTION}/{schema.KEY_META_TEL_PUPIL}"
 
-            pixel_scale_mas = _read_simulation_dataset_row(
+            pixel_scale = _read_simulation_dataset_row(
                 _require_dataset_ndim(_require_dataset(f, pixel_scale_path), path=pixel_scale_path, ndim=1),
                 sim_idx,
                 path=pixel_scale_path,
             )
-            tel_diameter_m = _require_dataset_ndim(
+            tel_diameter = _read_dataset_value(_require_dataset_ndim(
                 _require_dataset(f, tel_diameter_path),
                 path=tel_diameter_path,
                 ndim=0,
-            )[()]
-            tel_pupil = _require_dataset_ndim(
+            ))
+            tel_pupil = _read_dataset_value(_require_dataset_ndim(
                 _require_dataset(f, tel_pupil_path),
                 path=tel_pupil_path,
                 ndim=2,
-            )[...,]
+            ))
             meta = {
-                schema.KEY_META_PIXEL_SCALE_MAS: pixel_scale_mas,
-                schema.KEY_META_TEL_DIAMETER_M: tel_diameter_m,
+                schema.KEY_META_PIXEL_SCALE: pixel_scale,
+                schema.KEY_META_TEL_DIAMETER: tel_diameter,
                 schema.KEY_META_TEL_PUPIL: tel_pupil,
             }
             for name in _read_declared_meta_field_names(f):
@@ -1066,15 +1171,22 @@ class SimulationStore:
             try:
                 simulation_data = _read_node(f[schema.KEY_SIMULATION_SECTION])
                 simulation_data = resolve_simulation_payload_for_load(simulation_data)
-                extra_stat_names = _read_extra_stat_names(simulation_data)
-                meta_field_names = normalize_meta_field_names(
-                    simulation_data.get(schema.KEY_SIMULATION_META_FIELDS, ())
-                )
+                extra_stat_fields = _read_extra_stat_fields(simulation_data)
+                extra_stat_names = tuple(extra_stat_fields)
+                meta_fields = {
+                    name: None if unit is None else u.Unit(unit)
+                    for name, unit in normalize_meta_fields(
+                        simulation_data.get(schema.KEY_SIMULATION_META_FIELDS, {})
+                    ).items()
+                }
+                meta_field_names = tuple(meta_fields)
                 diagnostic_field_specs = _read_diagnostic_field_specs(simulation_data)
             except Exception as exc:
                 issues.append(f"Invalid /simulation payload: {exc}")
                 extra_stat_names = ()
+                extra_stat_fields = {}
                 meta_field_names = ()
+                meta_fields = {}
                 diagnostic_field_specs = {}
 
             try:
@@ -1096,8 +1208,39 @@ class SimulationStore:
             except Exception as exc:
                 issues.append(f"Invalid /options payload: {exc}")
 
-            pixel_scale_mas_data = f[f"{schema.KEY_META_SECTION}/{schema.KEY_META_PIXEL_SCALE_MAS}"]
-            tel_diameter_m_data = f[f"{schema.KEY_META_SECTION}/{schema.KEY_META_TEL_DIAMETER_M}"]
+            for name, unit in schema.SETUP_FIELD_UNITS.items():
+                _collect_dataset_unit_issue(
+                    f,
+                    f"{schema.KEY_SETUP_SECTION}/{name}",
+                    unit,
+                    issues,
+                )
+            profiles_path = (
+                f"{schema.KEY_SETUP_SECTION}/{schema.KEY_SETUP_ATM_PROFILES}"
+            )
+            if profiles_path in f and isinstance(f[profiles_path], h5py.Group):
+                for profile_id, profile_node in f[profiles_path].items():
+                    if not isinstance(profile_node, h5py.Group):
+                        continue
+                    for name, unit in ATM_PROFILE_FIELD_UNITS.items():
+                        _collect_dataset_unit_issue(
+                            f,
+                            f"{profiles_path}/{profile_id}/{name}",
+                            unit,
+                            issues,
+                        )
+            for name, unit in schema.OPTION_FIELD_UNITS.items():
+                if name == schema.KEY_OPTION_SEEING:
+                    continue
+                _collect_dataset_unit_issue(
+                    f,
+                    f"{schema.KEY_OPTION_SECTION}/{name}",
+                    unit,
+                    issues,
+                )
+
+            pixel_scale_mas_data = f[f"{schema.KEY_META_SECTION}/{schema.KEY_META_PIXEL_SCALE}"]
+            tel_diameter_m_data = f[f"{schema.KEY_META_SECTION}/{schema.KEY_META_TEL_DIAMETER}"]
             tel_pupil_data = f[f"{schema.KEY_META_SECTION}/{schema.KEY_META_TEL_PUPIL}"]
             extra_meta_data = {
                 name: f[f"{schema.KEY_META_SECTION}/{name}"]
@@ -1107,33 +1250,66 @@ class SimulationStore:
 
             sr_data = f[f"{schema.KEY_STATS_SECTION}/{schema.KEY_STATS_SR}"]
             ee_data = f[f"{schema.KEY_STATS_SECTION}/{schema.KEY_STATS_EE}"]
-            fwhm_mas_data = f[f"{schema.KEY_STATS_SECTION}/{schema.KEY_STATS_FWHM_MAS}"]
+            fwhm_mas_data = f[f"{schema.KEY_STATS_SECTION}/{schema.KEY_STATS_FWHM}"]
             extra_stat_data = {
                 name: f[f"{schema.KEY_STATS_SECTION}/{name}"]
                 for name in extra_stat_names
                 if name in stats_group
             }
 
+            core_meta_data = {
+                schema.KEY_META_PIXEL_SCALE: pixel_scale_mas_data,
+                schema.KEY_META_TEL_DIAMETER: tel_diameter_m_data,
+                schema.KEY_META_TEL_PUPIL: tel_pupil_data,
+            }
+            for name, dataset in core_meta_data.items():
+                expected_unit = unit_string(schema.META_FIELD_UNITS[name])
+                if dataset.attrs.get(UNITS_ATTRIBUTE) != expected_unit:
+                    issues.append(
+                        f"/meta/{name} must declare units={expected_unit!r}."
+                    )
+
+            core_stat_data = {
+                schema.KEY_STATS_SR: sr_data,
+                schema.KEY_STATS_EE: ee_data,
+                schema.KEY_STATS_FWHM: fwhm_mas_data,
+            }
+            for name, dataset in core_stat_data.items():
+                expected_unit = unit_string(schema.STATS_FIELD_UNITS[name])
+                if dataset.attrs.get(UNITS_ATTRIBUTE) != expected_unit:
+                    issues.append(
+                        f"/stats/{name} must declare units={expected_unit!r}."
+                    )
+
             if sr_data.ndim != 2:
                 issues.append("/stats/sr must be 2D [N, M].")
             if ee_data.ndim != 3:
                 issues.append("/stats/ee must be 3D [N, M, A].")
             if fwhm_mas_data.ndim != 2:
-                issues.append("/stats/fwhm_mas must be 2D [N, M].")
+                issues.append("/stats/fwhm must be 2D [N, M].")
             for name in extra_stat_names:
                 if name not in stats_group:
                     issues.append(f"Missing declared extra stats dataset '/stats/{name}'.")
                 elif stats_group[name].ndim != 2:
                     issues.append(f"/stats/{name} must be 2D [N, M].")
+                elif stats_group[name].attrs.get(UNITS_ATTRIBUTE) != unit_string(extra_stat_fields[name]):
+                    issues.append(f"/stats/{name} must declare units={unit_string(extra_stat_fields[name])!r}.")
             for name in meta_field_names:
                 if name not in extra_meta_data:
                     issues.append(f"Missing declared meta dataset '/meta/{name}'.")
                 elif extra_meta_data[name].ndim != 1:
                     issues.append(f"/meta/{name} must be 1D [N].")
+                elif meta_fields[name] is None and UNITS_ATTRIBUTE in extra_meta_data[name].attrs:
+                    issues.append(f"/meta/{name} must not declare units.")
+                elif (
+                    meta_fields[name] is not None
+                    and extra_meta_data[name].attrs.get(UNITS_ATTRIBUTE) != unit_string(meta_fields[name])
+                ):
+                    issues.append(f"/meta/{name} must declare units={unit_string(meta_fields[name])!r}.")
             if pixel_scale_mas_data.ndim != 1:
-                issues.append("/meta/pixel_scale_mas must be 1D [N].")
+                issues.append("/meta/pixel_scale must be 1D [N].")
             if tel_diameter_m_data.ndim != 0:
-                issues.append("/meta/tel_diameter_m must be a scalar.")
+                issues.append("/meta/tel_diameter must be a scalar.")
             if tel_pupil_data.ndim != 2:
                 issues.append("/meta/tel_pupil must be 2D [Ny, Nx].")
 
@@ -1157,7 +1333,7 @@ class SimulationStore:
                     if ds.shape[0] != n:
                         issues.append(f"/stats/{name} first dimension must match /status/state length.")
                 if pixel_scale_mas_data.shape[0] != n:
-                    issues.append("/meta/pixel_scale_mas first dimension must match /status/state length.")
+                    issues.append("/meta/pixel_scale first dimension must match /status/state length.")
                 for name, ds in extra_meta_data.items():
                     if ds.shape[0] != n:
                         issues.append(f"/meta/{name} first dimension must match /status/state length.")
@@ -1165,7 +1341,7 @@ class SimulationStore:
                     sr_data.shape[1] != ee_data.shape[1]
                     or sr_data.shape[1] != fwhm_mas_data.shape[1]
                 ):
-                    issues.append("Stats M dimension mismatch between sr/ee/fwhm_mas.")
+                    issues.append("Stats M dimension mismatch between sr/ee/fwhm.")
                 for name, ds in extra_stat_data.items():
                     if sr_data.shape[1] != ds.shape[1]:
                         issues.append(f"Stats M dimension mismatch between sr and {name}.")
@@ -1194,6 +1370,17 @@ class SimulationStore:
                                 expected_shape = (n,) + _resolve_diagnostic_shape(spec, setup_data, options_data)
                             if ds.shape != expected_shape:
                                 issues.append(f"/diagnostics/{name} shape mismatch: expected {expected_shape}, got {ds.shape}.")
+                            expected_unit = spec.get("unit")
+                            actual_unit = ds.attrs.get(UNITS_ATTRIBUTE)
+                            if expected_unit is None:
+                                if actual_unit is not None:
+                                    issues.append(
+                                        f"/diagnostics/{name} must not declare units."
+                                    )
+                            elif actual_unit != expected_unit:
+                                issues.append(
+                                    f"/diagnostics/{name} must declare units={expected_unit!r}."
+                                )
                         except Exception as exc:
                             issues.append(str(exc))
             elif schema.KEY_DIAGNOSTICS_SECTION in f:
@@ -1246,38 +1433,44 @@ class SimulationStore:
             if ee_ds.ndim != 3:
                 raise ValueError("/stats/ee must be 3D [N, M, A].")
             num_ee = int(ee_ds.shape[2])
-            extra_stat_names = _read_declared_extra_stat_names(f)
-            meta_field_names = _read_declared_meta_field_names(f)
+            extra_stat_fields = _read_declared_extra_stat_fields(f)
+            extra_stat_names = tuple(extra_stat_fields)
+            meta_fields = _read_declared_meta_fields(f)
             require_psfs = schema.KEY_PSFS_SECTION in f
 
             validate_successful_result(
                 result,
                 num_sci,
                 num_ee,
-                extra_stat_names=extra_stat_names,
-                meta_field_names=meta_field_names,
+                extra_stat_fields=extra_stat_fields,
+                meta_fields=meta_fields,
                 require_psfs=require_psfs,
             )
 
             # Persist meta values.
             meta = f[schema.KEY_META_SECTION]
-            pixel_scale = np.asarray(result.meta[schema.KEY_META_PIXEL_SCALE_MAS], dtype=np.float32)
-            meta[schema.KEY_META_PIXEL_SCALE_MAS][sim_idx] = np.float32(pixel_scale.item())
+            pixel_scale = quantity_value(
+                result.meta[schema.KEY_META_PIXEL_SCALE],
+                schema.META_FIELD_UNITS[schema.KEY_META_PIXEL_SCALE],
+                label="result.meta.pixel_scale",
+                dtype=np.float32,
+            )
+            meta[schema.KEY_META_PIXEL_SCALE][sim_idx] = np.float32(pixel_scale.item())
             _write_dataset_level_telescope_meta(f, result)
             _write_result_meta_fields(f, sim_idx, result)
 
             # Persist stats arrays.
-            sr = np.asarray(result.stats[schema.KEY_STATS_SR], dtype=np.float32)
-            ee = np.asarray(result.stats[schema.KEY_STATS_EE], dtype=np.float32)
-            fwhm = np.asarray(result.stats[schema.KEY_STATS_FWHM_MAS], dtype=np.float32)
+            sr = quantity_value(result.stats[schema.KEY_STATS_SR], schema.STATS_FIELD_UNITS[schema.KEY_STATS_SR], label="result.stats.sr", dtype=np.float32)
+            ee = quantity_value(result.stats[schema.KEY_STATS_EE], schema.STATS_FIELD_UNITS[schema.KEY_STATS_EE], label="result.stats.ee", dtype=np.float32)
+            fwhm = quantity_value(result.stats[schema.KEY_STATS_FWHM], schema.STATS_FIELD_UNITS[schema.KEY_STATS_FWHM], label="result.stats.fwhm", dtype=np.float32)
             if ee.ndim == 1:
                 ee = ee[:, np.newaxis]
 
             stats[schema.KEY_STATS_SR][sim_idx, :] = sr
             stats[schema.KEY_STATS_EE][sim_idx, :, :] = ee
-            stats[schema.KEY_STATS_FWHM_MAS][sim_idx, :] = fwhm
+            stats[schema.KEY_STATS_FWHM][sim_idx, :] = fwhm
             for name in extra_stat_names:
-                stats[name][sim_idx, :] = np.asarray(result.stats[name], dtype=np.float32)
+                stats[name][sim_idx, :] = quantity_value(result.stats[name], extra_stat_fields[name], label=f"result.stats.{name}", dtype=np.float32)
 
             # Persist PSFs only when the dataset was configured to store them.
             if require_psfs:
