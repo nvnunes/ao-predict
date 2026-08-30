@@ -19,7 +19,7 @@ from typing import TextIO
 import numpy as np
 import torch
 
-from .._model import build_dense_model, cpu_state_dict, derived_seed
+from .._model import build_dense_model, cpu_state_dict
 from .._model_package import MODEL_METADATA_KIND, MODEL_METADATA_VERSION
 from .._runtime import select_device
 from .artifacts import (
@@ -373,14 +373,21 @@ class _ShuffledBatchStream:
     def __init__(self, example_count: int, batch_size: int, seed: int) -> None:
         self.example_count = example_count
         self.batch_size = batch_size
-        self.generator = np.random.Generator(np.random.PCG64(seed))
-        self.order = self.generator.permutation(example_count).astype(np.int64)
+        self.generator = torch.Generator(device="cpu")
+        self.generator.manual_seed(seed)
+        self.order = self._permutation()
         self.cursor = 0
         self.epoch = 1
 
+    def _permutation(self) -> np.ndarray:
+        return torch.randperm(
+            self.example_count,
+            generator=self.generator,
+        ).numpy()
+
     def next(self) -> np.ndarray:
         if self.cursor >= self.example_count:
-            self.order = self.generator.permutation(self.example_count).astype(np.int64)
+            self.order = self._permutation()
             self.cursor = 0
             self.epoch += 1
         stop = min(self.cursor + self.batch_size, self.example_count)
@@ -395,7 +402,7 @@ class _ShuffledBatchStream:
             "order": torch.from_numpy(self.order.copy()),
             "cursor": self.cursor,
             "epoch": self.epoch,
-            "random_state": self.generator.bit_generator.state,
+            "random_state": self.generator.get_state().clone(),
         }
 
     def load_state_dict(self, value: object) -> None:
@@ -421,7 +428,14 @@ class _ShuffledBatchStream:
             raise ValueError("Recovery batch cursor is invalid.")
         if not _is_integer(epoch) or epoch < 1:
             raise ValueError("Recovery batch epoch is invalid.")
-        self.generator.bit_generator.state = random_state
+        if (
+            not isinstance(random_state, torch.Tensor)
+            or random_state.dtype != torch.uint8
+            or random_state.ndim != 1
+            or random_state.device.type != "cpu"
+        ):
+            raise ValueError("Recovery batch random state is invalid.")
+        self.generator.set_state(random_state)
         self.order = order_array
         self.cursor = cursor
         self.epoch = epoch
@@ -1169,12 +1183,11 @@ def _build_training_runtime(
 ) -> _TrainingRuntime:
     """Construct the model and every mutable runtime component once."""
 
-    initialization_seed = derived_seed(run.training_seed, "model-initialization")
     model, initialization_generator_state = build_dense_model(
         input_width,
         request.hidden_widths,
         output_width,
-        initialization_seed=initialization_seed,
+        initialization_seed=run.training_seed,
     )
     model = model.to(device)
     optimizer = torch.optim.Adam(
@@ -1201,7 +1214,7 @@ def _build_training_runtime(
     stream = _ShuffledBatchStream(
         run.training_example_count,
         request.batch_size,
-        derived_seed(run.training_seed, "batch-shuffling"),
+        run.training_seed,
     )
     return _TrainingRuntime(
         model=model,

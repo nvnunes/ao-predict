@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import math
 from itertools import pairwise
 
@@ -30,13 +29,6 @@ class _DenseRegressionModel(nn.Module):
 
     def forward(self, values: torch.Tensor) -> torch.Tensor:
         return self.network(values)
-
-
-def derived_seed(seed: int, label: str) -> int:
-    """Derive one stable non-negative private random-stream seed."""
-
-    digest = hashlib.sha256(f"ao-predict:{seed}:{label}".encode()).digest()
-    return int.from_bytes(digest[:8], "big") & ((1 << 63) - 1)
 
 
 def _initialize_linear_layers(model: nn.Module, generator: torch.Generator) -> None:

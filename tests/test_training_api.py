@@ -22,7 +22,7 @@ from ao_predict import (
     model_training_data_from_rows,
     train_model,
 )
-from ao_predict._model import build_dense_model, derived_seed
+from ao_predict._model import build_dense_model
 from ao_predict.training.artifacts import (
     load_model_package,
     load_recovery,
@@ -237,7 +237,7 @@ def test_same_seed_produces_identical_history_and_weights(tmp_path: Path) -> Non
 
 
 def test_explicit_initialization_matches_pytorch_linear_defaults() -> None:
-    seed = derived_seed(123, "model-initialization")
+    seed = 123
     actual, _ = build_dense_model(2, (4,), 2, initialization_seed=seed)
     with torch.random.fork_rng(devices=[]):
         torch.manual_seed(seed)
@@ -254,6 +254,17 @@ def test_explicit_initialization_matches_pytorch_linear_defaults() -> None:
     ):
         assert torch.equal(actual_layer.weight, expected_layer.weight)
         assert torch.equal(actual_layer.bias, expected_layer.bias)
+
+
+def test_shuffled_batch_stream_matches_root_seeded_torch_permutation() -> None:
+    expected_generator = torch.Generator(device="cpu")
+    expected_generator.manual_seed(123)
+    expected = torch.randperm(7, generator=expected_generator).numpy()
+    stream = training_api._ShuffledBatchStream(7, 3, 123)
+
+    actual = np.concatenate((stream.next(), stream.next(), stream.next()))
+
+    np.testing.assert_array_equal(actual, expected)
 
 
 def test_validation_measurement_uses_complete_physical_partition(
