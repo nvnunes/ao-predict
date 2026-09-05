@@ -24,6 +24,3 @@
 - For package structure, public API boundaries, persisted contracts, and lifecycle-sensitive changes, consult `docs/architecture.md` before editing.
 - Before concluding substantial work, satisfy the verification expectations in `docs/testing.md`.
 - Use the local `./.conda` environment and the workflow in `docs/development.md` for Python commands, test runs, and docs builds unless a task explicitly requires something else.
-
-## Review Lens
-- Favor contract ownership and lifecycle clarity in review.
