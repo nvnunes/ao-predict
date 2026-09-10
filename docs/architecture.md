@@ -3,19 +3,6 @@
 This document is the source of truth for `ao-predict` package structure, public API
 boundaries, persisted-contract ownership, and simulation and model lifecycles.
 
-## Shared Validation And Skills
-
-This project uses runtime-discovered `astro-agents` skills for shared review and authoring support:
-
-- `$agent-surface-review`
-- `$documentation-surface-review` with the `public-python` profile
-- `$code-quality-review`
-- `$python-code-writing`
-
-Repo-local package boundaries, persisted contracts, lifecycle rules, code
-organization priorities, and exceptions in this document remain the source of
-truth for this repo.
-
 ## Package Surface
 
 `ao_predict` is the deliberate public Python API boundary.

@@ -3,17 +3,6 @@
 This document is the source of truth for local verification commands and
 completion expectations in `ao-predict`.
 
-## Shared Validation
-
-Use this document as the source of truth for local verification commands and
-completion expectations.
-
-For shared review, use:
-
-- `$agent-surface-review` when agent-facing instructions, docs, or skill-selection context changes.
-- `$documentation-surface-review` when documentation surface behavior changes.
-- `$code-quality-review` for source-code quality review when requested or when the change needs review beyond tests.
-
 ## Environment
 
 Use the local `./.conda` environment for Python commands, test runs, and docs
