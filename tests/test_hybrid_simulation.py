@@ -35,6 +35,8 @@ from ao_predict.simulation.hybrid import (
     NgsMetricProviderResult,
     SciencePsfProviderResult,
     apply_ctot_blur,
+    apply_finite_fov_otfs,
+    image_plane_gaussian_otf,
     jitter_from_ctot,
 )
 from ao_predict.simulation.runner import _populate_result_stats, create_simulation_from_config
@@ -863,6 +865,29 @@ def test_ctot_blur_preserves_zero_ctot_and_allows_finite_fov_spill() -> None:
     assert np.all(blurred_flux > 0.0)
     assert np.all(blurred_flux < np.array([2.0, 5.0]))
     assert np.all(psfs >= 0.0)
+
+
+def test_finite_fov_otf_applies_mean_shift_without_renormalizing() -> None:
+    psfs = np.zeros((1, 9, 9), dtype=np.float32)
+    psfs[0, 4, 4] = 2.0
+    work_shape = (18, 18)
+    otf = image_plane_gaussian_otf(
+        np.zeros((2, 2)),
+        work_shape,
+        mean_shift_pix=np.array([2.0, -1.0]),
+    )
+
+    apply_finite_fov_otfs(psfs, otf[None])
+
+    expected = np.zeros_like(psfs)
+    expected[0, 3, 6] = 2.0
+    np.testing.assert_allclose(psfs, expected, rtol=0.0, atol=2.0e-7)
+
+
+def test_finite_fov_otf_rejects_non_double_support() -> None:
+    psfs = np.ones((2, 5, 7), dtype=np.float32)
+    with pytest.raises(ValueError, match="otfs must have shape"):
+        apply_finite_fov_otfs(psfs, np.ones((2, 5, 7)))
 
 
 def test_hybrid_rejects_bad_ctot_and_missing_ngs() -> None:

@@ -1051,19 +1051,60 @@ def apply_ctot_blur(
         / adapter.angle_to_wavefront_scale**2
         / pixel_scale_value**2
     )
-    for index, covariance in enumerate(covariance_pix2):
-        if not valid[index]:
-            continue
-        original_shape = tuple(psfs_array[index].shape)
-        work_shape = tuple(2 * size for size in original_shape)
+    active = np.flatnonzero(valid)
+    active_psfs = psfs_array[active].copy()
+    work_shape = tuple(2 * size for size in psfs_array.shape[-2:])
+    otfs = np.stack(
+        [image_plane_gaussian_otf(covariance_pix2[index], work_shape) for index in active]
+    )
+    apply_finite_fov_otfs(active_psfs, otfs)
+    psfs_array[active] = active_psfs
+
+
+def apply_finite_fov_otfs(psfs: np.ndarray, otfs: np.ndarray) -> None:
+    """Apply image-plane OTFs with the finite-FOV Hybrid convention.
+
+    Each PSF is centered in a zero-padded array twice its retained dimensions,
+    transformed, multiplied by its matching OTF, and cropped back to the
+    retained field. Numerical negative pixels are clipped without
+    renormalizing the cropped result.
+
+    Args:
+        psfs: PSF cube with shape ``(N, y, x)``. Results replace this array in
+            place.
+        otfs: Complex or real OTF cube with shape ``(N, 2*y, 2*x)`` using the
+            unshifted NumPy FFT frequency convention.
+
+    Raises:
+        ValueError: If the arrays have invalid shapes or values, or if an
+            output has non-positive retained flux.
+    """
+    psfs_array = np.asarray(psfs)
+    otfs_array = np.asarray(otfs)
+    if psfs_array.ndim != 3:
+        raise ValueError(f"psfs must have shape (N, y, x); got {psfs_array.shape}.")
+    expected_otf_shape = (
+        psfs_array.shape[0],
+        2 * psfs_array.shape[1],
+        2 * psfs_array.shape[2],
+    )
+    if otfs_array.shape != expected_otf_shape:
+        raise ValueError(f"otfs must have shape {expected_otf_shape}; got {otfs_array.shape}.")
+    if not np.all(np.isfinite(psfs_array)) or not np.all(np.isfinite(otfs_array)):
+        raise ValueError("psfs and otfs must contain only finite values.")
+    input_flux = np.sum(psfs_array, axis=(-2, -1), dtype=np.float64)
+    if np.any(input_flux <= 0.0):
+        raise ValueError("psfs must have strictly positive finite total flux.")
+
+    work_shape = tuple(otfs_array.shape[-2:])
+    original_shape = tuple(psfs_array.shape[-2:])
+    for index, otf in enumerate(otfs_array):
         padded = _centered_pad(psfs_array[index].astype(np.float32, copy=False), work_shape)
-        otf = _image_plane_gaussian_otf(covariance, padded.shape)
         raw = np.real(np.fft.ifft2(np.fft.fft2(padded) * otf))
         raw = _center_crop(raw, original_shape)
         raw = np.clip(raw.astype(np.float32, copy=False), 0.0, None)
-        raw_sum = float(np.sum(raw, dtype=np.float64))
-        if raw_sum <= 0.0:
-            raise ValueError(f"Ctot blur produced non-positive flux for PSF {index}.")
+        if float(np.sum(raw, dtype=np.float64)) <= 0.0:
+            raise ValueError(f"Finite-FOV blur produced non-positive flux for PSF {index}.")
         psfs_array[index] = raw
 
 
@@ -1210,18 +1251,48 @@ def _validate_psf_flux(psfs: np.ndarray, *, label: str) -> None:
         raise ValueError(f"{label} must have strictly positive finite total flux.")
 
 
-def _image_plane_gaussian_otf(covariance_pix2: np.ndarray, shape: tuple[int, int]) -> np.ndarray:
+def image_plane_gaussian_otf(
+    covariance_pix2: np.ndarray,
+    shape: tuple[int, int],
+    *,
+    mean_shift_pix: np.ndarray | None = None,
+) -> np.ndarray:
+    """Return an image-plane Gaussian OTF with an optional mean pixel shift.
+
+    Args:
+        covariance_pix2: Two-dimensional Gaussian covariance in squared pixels,
+            ordered as x then y.
+        shape: Output OTF shape in y then x order.
+        mean_shift_pix: Optional x/y mean displacement in pixels. Omit for a
+            centered Gaussian.
+
+    Returns:
+        An OTF using the unshifted NumPy FFT frequency convention.
+
+    Raises:
+        ValueError: If the covariance, shape, or mean displacement is invalid.
+    """
+    covariance_pix2 = np.asarray(covariance_pix2, dtype=float)
+    if covariance_pix2.shape != (2, 2) or not np.all(np.isfinite(covariance_pix2)):
+        raise ValueError("covariance_pix2 must be a finite 2 x 2 matrix.")
+    if len(shape) != 2 or any(int(size) != size or size < 1 for size in shape):
+        raise ValueError(f"shape must contain two positive integers; got {shape}.")
+    mean = np.zeros(2, dtype=float) if mean_shift_pix is None else np.asarray(mean_shift_pix, dtype=float)
+    if mean.shape != (2,) or not np.all(np.isfinite(mean)):
+        raise ValueError("mean_shift_pix must contain finite x/y displacements.")
+
     ny, nx = shape
     fy = np.fft.fftfreq(ny)
     fx = np.fft.fftfreq(nx)
     fx_grid, fy_grid = np.meshgrid(fx, fy)
-    covariance = 0.5 * (np.asarray(covariance_pix2, dtype=float) + np.asarray(covariance_pix2, dtype=float).T)
+    covariance = 0.5 * (covariance_pix2 + covariance_pix2.T)
     exponent = -2.0 * np.pi**2 * (
         float(covariance[0, 0]) * fx_grid**2
         + float(covariance[1, 1]) * fy_grid**2
         + 2.0 * float(covariance[0, 1]) * fx_grid * fy_grid
     )
-    return np.exp(exponent)
+    phase = -2j * np.pi * (float(mean[0]) * fx_grid + float(mean[1]) * fy_grid)
+    return np.exp(exponent + phase)
 
 
 def _artifact_file_cache_key(path: Path) -> _ArtifactFileCacheKey:
@@ -1272,6 +1343,8 @@ __all__ = [
     "NgsMetricProviderResult",
     "SciencePsfProviderResult",
     "apply_ctot_blur",
+    "apply_finite_fov_otfs",
+    "image_plane_gaussian_otf",
     "jitter_from_ctot",
     "polar_to_cartesian",
     "psd_valid_mask",
