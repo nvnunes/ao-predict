@@ -2,14 +2,24 @@
 
 AO Predict: a framework for fast AO performance prediction
 
-AO Predict provides batched TIPTOP-style simulation with resumable HDF5
-persistence and an instrument-independent PyTorch lifecycle for training dense
-surrogate models from named feature and target arrays, then loading those
-models for bounded physical prediction and aggregate evaluation.
+AO Predict provides batched TIPTOP and Hybrid AO PSF simulation with resumable
+HDF5 persistence and an instrument-independent PyTorch lifecycle for training
+dense surrogate models from named feature and target arrays, then loading
+those models for bounded physical prediction and aggregate evaluation.
 
 ## Installation
 
 To install the package from a local checkout:
+
+If the required `hybrid-ao-psf` distribution is not available from your
+package index, first install it from a sibling checkout:
+
+```bash
+python -m pip install -e ../hybrid-ao-psf
+```
+
+The [development setup](docs/development.md#bootstrap) also accepts an
+explicit Git source for local bootstrap.
 
 ```bash
 python -m pip install .
@@ -135,8 +145,13 @@ environment.
 Bootstrap a fresh clone with:
 
 ```bash
-./scripts/bootstrap.sh
+AO_PREDICT_HYBRID_SOURCE=../hybrid-ao-psf ./scripts/bootstrap.sh
 ```
+
+The source override uses a sibling Hybrid AO PSF checkout while its
+distribution is unavailable from the configured package index. Once it is
+available, plain `./scripts/bootstrap.sh` is sufficient. See the
+[development setup](docs/development.md#bootstrap) for other source choices.
 
 That script creates `./.conda`, installs the package with `dev` and `docs`
 extras, configures the git hooks path, runs the test suite, and builds the

@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "ao-predict"
 version = "0.0.1"
-description = "Adaptive optics surrogate modeling and TIPTOP batch simulation framework"
+description = "Adaptive optics simulation and surrogate-modeling framework"
 readme = "README.md"
 requires-python = ">=3.12"
 license = {text = "MIT License"}
@@ -17,6 +17,7 @@ dependencies = [
     "astropy>=7.0.0",
     "numpy>=2.2.0",
     "h5py>=3.11.0",
+    "hybrid-ao-psf>=0.1.0",
     "joblib>=1.4.0",
     "matplotlib>=3.9.0",
     "PyYAML>=6.0",

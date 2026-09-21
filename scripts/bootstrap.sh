@@ -17,6 +17,16 @@ if [ ! -d "$env_prefix" ]; then
 fi
 
 echo "[bootstrap] Installing package with dev+docs extras..."
+if [ -n "${AO_PREDICT_HYBRID_SOURCE:-}" ]; then
+  case "$AO_PREDICT_HYBRID_SOURCE" in
+    git+*|http://*|https://*)
+      conda run --prefix "$env_prefix" python -m pip install "$AO_PREDICT_HYBRID_SOURCE"
+      ;;
+    *)
+      conda run --prefix "$env_prefix" python -m pip install -e "$AO_PREDICT_HYBRID_SOURCE"
+      ;;
+  esac
+fi
 conda run --prefix "$env_prefix" python -m pip install -e ".[dev,docs]"
 
 echo "[bootstrap] Configuring git hooks path..."

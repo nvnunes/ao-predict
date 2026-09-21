@@ -2,8 +2,8 @@
 
 ao-predict provides:
 
-- batched simulation dataset workflows with TIPTOP-backed execution
-- generic interpolation artifacts for prepared simulation products
+- batched simulation dataset workflows with TIPTOP and Hybrid AO PSF execution
+- Hybrid interpolation artifacts supplied by the standalone Hybrid AO PSF project
 - schema-aware HDF5 persistence with resume/retry semantics
 - restart-safe PyTorch training for dense AO surrogate models
 - bounded physical prediction and aggregate evaluation from validated model packages
@@ -24,8 +24,9 @@ ao-predict provides:
   - [Simulation Options](reference/simulation/options.md)
   - [Simulation Runner](reference/simulation/runner.md)
   - [TIPTOP Simulation](reference/simulation/tiptop.md)
+  - [Hybrid Simulation](reference/simulation/hybrid.md)
   - [Validation](reference/simulation/validation.md)
-  - [Interpolation](reference/interpolation.md)
+  - [Hybrid interpolation ownership](reference/interpolation.md)
   - [Persistence Store](reference/persistence/store.md)
   - [Training](reference/training.md)
   - [Prediction](reference/prediction.md)

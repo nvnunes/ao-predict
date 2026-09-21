@@ -17,8 +17,16 @@ behavior in this document remain the source of truth for this repo.
 Use the bootstrap script to configure a fresh clone:
 
 ```bash
-./scripts/bootstrap.sh
+AO_PREDICT_HYBRID_SOURCE=../hybrid-ao-psf ./scripts/bootstrap.sh
 ```
+
+`hybrid-ao-psf>=0.1.0` is a required distribution dependency. Until that
+distribution is available from the configured package index, set
+`AO_PREDICT_HYBRID_SOURCE` to a sibling checkout or an explicit Git source at
+a verified revision. The example above uses a sibling checkout.
+The bootstrap installs that source first, then AO Predict and its extras. A
+plain `./scripts/bootstrap.sh` remains sufficient when the distribution is
+available from the index.
 
 The script will:
 - create `.conda` if missing
@@ -37,6 +45,13 @@ After bootstrap, prefer commands from the local environment instead of bare
 ./.conda/bin/python -m pytest -q
 ./.conda/bin/mkdocs build --strict
 ./.conda/bin/mkdocs serve
+```
+
+When developing against a sibling Hybrid AO PSF checkout, refresh that
+editable installation separately after upstream changes:
+
+```bash
+./.conda/bin/python -m pip install -e ../hybrid-ao-psf
 ```
 
 Run the CLI from the same environment:

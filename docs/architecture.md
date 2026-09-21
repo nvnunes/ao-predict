@@ -22,8 +22,10 @@ Keep one obvious owner for each major concern:
   belong to the direct `ao-stats` dependency. AO Predict owns only the
   simulation setup and persisted dataset contracts that select and store those
   values.
-- Generic simulation-product interpolation contracts belong under
-  `interpolation/*`.
+- Hybrid science-HO-PSF and NGS-HO-metric interpolation products belong to the
+  direct `hybrid-ao-psf` dependency. The former `interpolation/*` implementation
+  remains temporarily for bounded parity and the coordinated GIRMOS migration;
+  it is not the source for new AO Predict Hybrid datasets.
 - Persistence and storage concerns belong under `persistence/*`.
 - Model-training data, lifecycle, and package publication belong under
   `training/*` rather than growing out of simulation or persistence modules.
@@ -357,9 +359,11 @@ contract. The one bounded field-name upgrade accepts legacy setup
 `sr_method=pixel_max` as `peak_method=pixel_max`. New datasets write only
 `peak_method`, and conflicting legacy and canonical values are rejected. AO
 Predict does not contain other compatibility upgrades for older field names,
-missing unit attributes, or earlier interpolator payloads. Other contract
-changes therefore require upgrading all owned datasets and interpolators in
-place as part of the same migration.
+missing unit attributes, or earlier interpolator payloads. The Hybrid
+adapter's absent `non_psd_policy` field is read as its `error` default; this
+does not change existing field meanings. Completed datasets remain readable
+without loading referenced interpolation files. Other contract changes require
+an explicit migration of owned data.
 
 ## Simulation Lifecycle
 
@@ -380,6 +384,33 @@ restoring it.
 
 If a module has a strong lifecycle or execution flow, prefer method order that
 follows that lifecycle.
+
+### Hybrid Adapter Boundary
+
+`HybridSimulation` retains AO Predict's public class and persisted dataset
+identity. It owns configured upstream artifact references and provenance,
+setup/options resolution, photometry, reusable loaded-provider binding, AO
+statistics, diagnostic field paths, and result persistence. One protected
+`_resolve_hybrid_inputs()` hook returns an atomic upstream request, science
+provider, NGS provider, and AO active-star slot mask. Downstream instrument
+adapters may replace instrument-resolved request values or wrap a provider;
+the AO Predict base adapter alone calls `hybrid_ao_psf.simulate()` once per
+option row and maps its result to AO fields.
+
+Hybrid AO PSF owns interpolation evaluation, effective MASTSEL translation
+and execution, Ctot conditioning, finite-field blur, jitter, and scientific
+diagnostics. The AO adapter does not recompute these outputs. Its
+`non_psd_policy` simulation field selects `error` or `clip`, defaulting to
+`error` for new and previously stored payloads without the field. Validation
+and debug diagnostics persist `hybrid/psd_clipped` per science field alongside
+the validity mask of the conditioned covariance.
+
+Completed AO Predict datasets remain readable with their existing class
+identity and field meanings without loading their former interpolation files.
+They do not require resume or re-execution compatibility. The downstream
+GIRMOS subclass, builders, and artifact references change together in the
+next coordinated migration stage; no temporary bridge for its old private
+Hybrid hooks is part of this adapter.
 
 ## Per-Simulation Science Coordinates
 

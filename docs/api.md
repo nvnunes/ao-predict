@@ -533,10 +533,10 @@ See also:
 - `examples/simulate_tiptop_cli.sh`
 - `examples/sample_tiptop.ini`
 
-## Interpolation API
+## Hybrid Interpolation Inputs
 
-`ao_predict.interpolation` owns the generic interpolation artifact contracts.
-Project code owns conversion from native simulation products into
+Hybrid AO PSF owns the science-HO-PSF and NGS-HO-metric interpolation artifact
+contracts. Project code owns conversion from native simulation products into
 `NgsHoPsfSamples`, `NgsHoMetricSamples`, or `ScienceHoPsfSamples`.
 
 The example below builds the two interpolation artifacts consumed by
@@ -544,7 +544,7 @@ The example below builds the two interpolation artifacts consumed by
 placeholder arrays with physically valid processed HO simulation products before
 building production artifacts.
 
-Physical axes are optional when fixed. AO Predict stores fixed physical values
+Physical axes are optional when fixed. Hybrid AO PSF stores fixed physical values
 as metadata and makes only multi-value axes active interpolation coordinates.
 Wavelength is PSF-stat metadata for NGS-HO metrics; it is not an NGS
 interpolation coordinate.
@@ -556,7 +556,7 @@ from pathlib import Path
 import numpy as np
 from astropy import units as u
 import ao_predict as aop
-import ao_predict.interpolation as interp
+import hybrid_ao_psf as interp
 
 x = np.asarray([-30.0, 0.0, 30.0, -30.0, 0.0, 30.0, -30.0, 0.0, 30.0], dtype=float) * u.arcsec
 y = np.asarray([-30.0, -30.0, -30.0, 0.0, 0.0, 0.0, 30.0, 30.0, 30.0], dtype=float) * u.arcsec
@@ -591,7 +591,7 @@ science_samples = interp.ScienceHoPsfSamples(
     tel_pupil=tel_pupil,
 )
 
-science_interpolator_path = Path("science_ho_psf_interpolator.pkl")
+science_interpolator_path = Path("science_ho_psf_interpolator.h5")
 interp.save_science_ho_psf_interpolator(
     interp.build_science_ho_psf_interpolator(science_samples),
     science_interpolator_path,
@@ -604,6 +604,7 @@ hybrid_simulation = aop.SimulationConfig(
         "config_path": "mastsel.ini",
         "science_ho_psf_interpolator_path": str(science_interpolator_path),
         "ngs_ho_metric_interpolator_path": str(ngs_interpolator_path),
+        "non_psd_policy": "error",
     },
 )
 ```
@@ -614,6 +615,12 @@ per-plane `wavelength`, `pixel_scale`, and optionally `zenith_angle`,
 and shape `psfs` as `(planes, field points, psf_y, psf_x)`. For smoothed NGS
 metric fields, pass `RbfInterpolationConfig(...)` to
 `build_ngs_ho_metric_interpolator_from_psfs(...)`.
+
+The AO Predict adapter reuses loaded providers across option rows. The
+`non_psd_policy` field accepts `error` (default) or `clip` for materially
+non-positive-semidefinite Ctot matrices; scientific handling is implemented by
+Hybrid AO PSF. For standalone INI, engine, builder, and artifact details, use
+the [Hybrid AO PSF project](https://github.com/nvnunes/hybrid-ao-psf).
 
 ## Error Behavior
 

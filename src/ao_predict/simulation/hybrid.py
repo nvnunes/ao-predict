@@ -2,47 +2,44 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from configparser import ConfigParser
 from copy import deepcopy
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-import tempfile
-from typing import Any, Mapping
+from typing import Any
 
 import numpy as np
 from astropy import units as u
-from ao_stats import PsfMetadata
-
-from ao_predict.interpolation import (
+from hybrid_ao_psf import (
+    DiagnosticsLevel,
+    HybridRequest,
+    HybridResult,
     NgsHoMetricInterpolator,
+    NgsMetricProvider,
+    NonPsdPolicy,
     ScienceHoPsfInterpolator,
-    evaluate_ngs_ho_metric_interpolator,
+    SciencePsfProvider,
     load_ngs_ho_metric_interpolator,
     load_science_ho_psf_interpolator,
+    simulate,
     validate_ngs_ho_metric_interpolator,
     validate_ngs_ho_metric_query,
     validate_science_ho_psf_interpolator,
     validate_science_ho_psf_query,
 )
-from ao_predict.interpolation.science_ho_psf import (
-    _ScienceHoPsfRuntimeInterpolator,
-    _evaluate_science_ho_psf_runtime_interpolator,
-    _prepare_science_ho_psf_runtime_interpolator,
-)
 
-from . import atm
-from . import schema
+from .._units import quantity_value, unit_string
+from . import atm, schema
 from .base import BaseSimulationSetup, PsfParameters
 from .coordinates import polar_to_cartesian
 from .interfaces import SimulationContext, SimulationSetup
 from .photometry import magnitudes_to_photons_per_frame
 from .tiptop_config_backed import (
     TiptopConfigBackedSimulation,
-    _format_ini_array,
     _serialize_parser,
 )
 from .validation import normalize_meta_fields
-from .._units import quantity_value, unit_string
 
 
 @dataclass(frozen=True)
@@ -56,104 +53,50 @@ class HybridSetup(BaseSimulationSetup):
 
 
 @dataclass(frozen=True)
-class SciencePsfProviderResult:
-    """Science-HO PSFs and metadata returned by a Hybrid provider.
-
-    Attributes:
-        psfs: Science PSF cube with shape ``(points, y, x)``. The values remain
-            in the science interpolator artifact's flux convention.
-        metadata: Full PSF metadata for the predicted science PSFs. The pixel
-            scale may come from the artifact-backed provider or a subclass
-            override, and the flux convention must match ``psfs``.
-        meta: Evaluated scalar source metadata fields that should travel with
-            the simulation result under ``/meta``.
-    """
-
-    psfs: np.ndarray
-    metadata: PsfMetadata
-    meta: Mapping[str, u.Quantity] = field(default_factory=dict)
-
-    @property
-    def pixel_scale(self) -> u.Quantity:
-        """Return the provider-supplied science PSF pixel scale."""
-        return self.metadata.pixel_scale
-
-    @property
-    def tel_diameter(self) -> u.Quantity:
-        """Return the provider-supplied telescope diameter."""
-        return self.metadata.tel_diameter
-
-    @property
-    def tel_pupil(self) -> u.Quantity:
-        """Return the provider-supplied telescope pupil."""
-        return self.metadata.tel_pupil
-
-
-@dataclass(frozen=True)
-class NgsMetricProviderResult:
-    """NGS-HO metrics returned by a Hybrid metric provider.
-
-    Attributes:
-        ee: Encircled-energy values, one per active NGS point.
-        fwhm: FWHM values in milliarcseconds, one per active NGS point.
-        sr: Strehl-ratio values, one per active NGS point.
-    """
-
-    ee: u.Quantity
-    fwhm: u.Quantity
-    sr: u.Quantity
-
-
-@dataclass(frozen=True)
-class HybridCtotResult:
-    """MASTSEL Ctot output for one Hybrid simulation.
-
-    Attributes:
-        ctot_wavefront: MASTSEL covariance cube in ``nm^2`` with shape
-            ``(science_points, 2, 2)``.
-        ctot_angle: Same covariance cube converted to ``mas^2`` using the
-            MASTSEL-provided angular conversion.
-        angle_to_wavefront_scale: MASTSEL angular-to-wavefront conversion
-            quantity used for this Ctot.
-        ngs_flux: Active NGS flux values passed to MASTSEL.
-        ngs_frequency: Active NGS frequency values passed to MASTSEL.
-        runtime_ini_text: Serialized runtime INI text passed to MASTSEL.
-    """
-
-    ctot_wavefront: u.Quantity
-    ctot_angle: u.Quantity
-    angle_to_wavefront_scale: u.Quantity
-    ngs_flux: u.Quantity | None = None
-    ngs_frequency: u.Quantity | None = None
-    runtime_ini_text: str | None = None
-
-
-@dataclass(frozen=True)
 class HybridDiagnosticsContext:
-    """Typed runtime state available to Hybrid diagnostics hooks.
+    """Upstream result and AO slot mapping available to diagnostic hooks.
 
     Attributes:
-        active_ngs: Active NGS coordinate and magnitude vectors.
-        metrics: Active NGS-HO metrics passed to MASTSEL.
-        ctot: MASTSEL Ctot result and unit conversion metadata.
-        psd_mask: Per-science-point mask of PSD, nonzero Ctot matrices.
+        result: Immutable result returned by Hybrid AO PSF.
         ngs_used: Slot-aligned mask of active NGS stars for this option row.
     """
 
-    active_ngs: "_ActiveNgs"
-    metrics: NgsMetricProviderResult
-    ctot: HybridCtotResult
-    psd_mask: np.ndarray
+    result: HybridResult
     ngs_used: np.ndarray
 
 
 @dataclass(frozen=True)
-class _HybridRuntimeResult:
-    psfs: np.ndarray
-    metadata: PsfMetadata
-    meta: Mapping[str, u.Quantity]
-    jitter: u.Quantity
-    diagnostics_context: HybridDiagnosticsContext
+class HybridResolvedInputs:
+    """Atomic upstream inputs returned by the downstream extension seam.
+
+    Subclasses may call ``HybridSimulation._resolve_hybrid_inputs()`` and
+    replace instrument-owned request values or wrap a provider. The upstream
+    engine call and AO result mapping remain owned by ``HybridSimulation``.
+
+    Attributes:
+        request: Fully resolved request for one upstream simulation.
+        science_provider: Loaded reusable science-HO-PSF provider.
+        ngs_provider: Loaded reusable NGS-HO-metric provider.
+        ngs_used: AO slot mask corresponding to the active request vectors.
+    """
+
+    request: HybridRequest
+    science_provider: SciencePsfProvider
+    ngs_provider: NgsMetricProvider
+    ngs_used: np.ndarray
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.request, HybridRequest):
+            raise TypeError("request must be a HybridRequest.")
+        if not isinstance(self.science_provider, SciencePsfProvider):
+            raise TypeError("science_provider must implement SciencePsfProvider.")
+        if not isinstance(self.ngs_provider, NgsMetricProvider):
+            raise TypeError("ngs_provider must implement NgsMetricProvider.")
+        ngs_used = np.asarray(self.ngs_used, dtype=bool).reshape(-1).copy()
+        if int(np.count_nonzero(ngs_used)) != self.request.ngs_x.size:
+            raise ValueError("ngs_used active count must match the Hybrid request.")
+        ngs_used.setflags(write=False)
+        object.__setattr__(self, "ngs_used", ngs_used)
 
 
 @dataclass(frozen=True)
@@ -172,40 +115,21 @@ class _ArtifactFileCacheKey:
     modified_ns: int
 
 
-_NGS_HO_METRIC_INTERPOLATOR_CACHE: dict[_ArtifactFileCacheKey, NgsHoMetricInterpolator] = {}
-_SCIENCE_HO_PSF_RUNTIME_INTERPOLATOR_CACHE: dict[_ArtifactFileCacheKey, _ScienceHoPsfRuntimeInterpolator] = {}
-
-
-class LowOrderAngularScaleAdapter:
-    """Minimal low-order adapter exposing a fixed angular conversion."""
-
-    def __init__(self, angle_to_wavefront_scale: u.Quantity) -> None:
-        """Initialize the adapter with a positive finite MASTSEL scale."""
-        self.angle_to_wavefront_scale = float(
-            quantity_value(
-                angle_to_wavefront_scale,
-                u.nm / u.mas,
-                label="angle_to_wavefront_scale",
-            ).item()
-        )
-        if (
-            not np.isfinite(self.angle_to_wavefront_scale)
-            or self.angle_to_wavefront_scale <= 0.0
-        ):
-            raise ValueError(
-                "Invalid MASTSEL angular conversion: "
-                f"{angle_to_wavefront_scale!r}."
-            )
+_NGS_HO_METRIC_INTERPOLATOR_CACHE: dict[
+    _ArtifactFileCacheKey, NgsHoMetricInterpolator
+] = {}
+_SCIENCE_HO_PSF_INTERPOLATOR_CACHE: dict[
+    _ArtifactFileCacheKey, ScienceHoPsfInterpolator
+] = {}
 
 
 class HybridSimulation(TiptopConfigBackedSimulation):
-    """MASTSEL Hybrid `Simulation` implementation.
+    """AO Predict adapter over the standalone Hybrid AO PSF engine.
 
-    ``HybridSimulation`` consumes generic AO Predict science-HO-PSF and
-    NGS-HO-metric interpolator artifacts plus a MASTSEL-compatible INI base
-    configuration. Runtime execution predicts the science-HO PSF field,
-    evaluates NGS-HO metrics, computes MASTSEL Ctot directly, applies the Ctot
-    blur, and exposes ``jitter`` as the only extra persisted statistic.
+    AO Predict owns payload binding, per-row option and photometry resolution,
+    result persistence, statistics, and diagnostic field names. Hybrid AO PSF
+    owns provider evaluation, MASTSEL execution, Ctot handling, finite-field
+    blur, jitter, and immutable scientific result construction.
     """
 
     _VERSION = "0.0.1"
@@ -217,8 +141,10 @@ class HybridSimulation(TiptopConfigBackedSimulation):
     KEY_SCIENCE_HO_PSF_INTERPOLATOR_BUILDER = "science_ho_psf_interpolator_builder"
     KEY_NGS_HO_METRIC_INTERPOLATOR_PROVENANCE = "ngs_ho_metric_interpolator_provenance"
     KEY_NGS_HO_METRIC_INTERPOLATOR_BUILDER = "ngs_ho_metric_interpolator_builder"
+    KEY_NON_PSD_POLICY = "non_psd_policy"
     KEY_RUNTIME_EFFECTIVE_PARSER = "effective_parser"
     KEY_RUNTIME_RESULT = "hybrid_result"
+    KEY_RUNTIME_NGS_USED = "hybrid_ngs_used"
 
     @property
     def extra_stat_fields(self) -> Mapping[str, u.UnitBase]:
@@ -236,27 +162,28 @@ class HybridSimulation(TiptopConfigBackedSimulation):
         self._science_ho_psf_interpolator_path: Path | None = None
         self._ngs_ho_metric_interpolator_path: Path | None = None
         self._ngs_ho_metric_interpolator: NgsHoMetricInterpolator | None = None
-        self._science_ho_psf_runtime_interpolator: _ScienceHoPsfRuntimeInterpolator | None = None
+        self._science_ho_psf_interpolator: ScienceHoPsfInterpolator | None = None
+        self._non_psd_policy = NonPsdPolicy.ERROR
 
     @property
     def science_ho_psf_interpolator(self) -> ScienceHoPsfInterpolator:
         """Return the configured science-HO-PSF interpolator artifact."""
-        return self._get_science_ho_psf_runtime_interpolator().artifact
+        return self._get_science_ho_psf_interpolator()
 
     @property
     def ngs_ho_metric_interpolator(self) -> NgsHoMetricInterpolator:
         """Return the configured NGS-HO-metric interpolator artifact."""
         return self._get_ngs_ho_metric_interpolator()
 
-    def _get_science_ho_psf_runtime_interpolator(self) -> _ScienceHoPsfRuntimeInterpolator:
-        """Return the cached science-HO-PSF runtime interpolator."""
-        if self._science_ho_psf_runtime_interpolator is None:
+    def _get_science_ho_psf_interpolator(self) -> ScienceHoPsfInterpolator:
+        """Return the process-cached upstream science provider."""
+        if self._science_ho_psf_interpolator is None:
             if self._science_ho_psf_interpolator_path is None:
                 raise TypeError("HybridSimulation science-HO-PSF interpolator path is not configured.")
-            self._science_ho_psf_runtime_interpolator = _get_cached_science_ho_psf_runtime_interpolator(
+            self._science_ho_psf_interpolator = _get_cached_science_ho_psf_interpolator(
                 self._science_ho_psf_interpolator_path
             )
-        return self._science_ho_psf_runtime_interpolator
+        return self._science_ho_psf_interpolator
 
     def _get_ngs_ho_metric_interpolator(self) -> NgsHoMetricInterpolator:
         """Return the cached NGS-HO-metric interpolator for runtime use."""
@@ -302,7 +229,19 @@ class HybridSimulation(TiptopConfigBackedSimulation):
                 invalid, or if the selected diagnostics level is unsupported.
             FileNotFoundError: If required config or artifact paths are missing.
         """
-        simulation_payload = dict(super().prepare_simulation_payload(base_simulation_payload, simulation_cfg))
+        simulation_cfg = dict(simulation_cfg)
+        simulation_cfg[self.KEY_NON_PSD_POLICY] = _normalize_non_psd_policy(
+            simulation_cfg.get(
+                self.KEY_NON_PSD_POLICY,
+                NonPsdPolicy.ERROR.value,
+            )
+        ).value
+        simulation_payload = dict(
+            super().prepare_simulation_payload(
+                base_simulation_payload,
+                simulation_cfg,
+            )
+        )
         science_path = self._resolve_required_artifact_path(simulation_cfg, self.KEY_SCIENCE_HO_PSF_INTERPOLATOR_PATH)
         ngs_path = self._resolve_required_artifact_path(simulation_cfg, self.KEY_NGS_HO_METRIC_INTERPOLATOR_PATH)
         science = load_science_ho_psf_interpolator(science_path)
@@ -335,6 +274,7 @@ class HybridSimulation(TiptopConfigBackedSimulation):
                 missing.
         """
         super().validate_simulation_payload(simulation_payload)
+        _non_psd_policy_from_payload(simulation_payload)
         science_path = self._get_required_payload_path(simulation_payload, self.KEY_SCIENCE_HO_PSF_INTERPOLATOR_PATH)
         ngs_path = self._get_required_payload_path(simulation_payload, self.KEY_NGS_HO_METRIC_INTERPOLATOR_PATH)
         science = load_science_ho_psf_interpolator(science_path)
@@ -362,6 +302,7 @@ class HybridSimulation(TiptopConfigBackedSimulation):
         """
         base_config_text = self._get_required_base_config_text(simulation_payload)
         base_config = self._prepare_base_config_binding(base_config_text)
+        non_psd_policy = _non_psd_policy_from_payload(simulation_payload)
         science_path = self._get_required_payload_path(simulation_payload, self.KEY_SCIENCE_HO_PSF_INTERPOLATOR_PATH)
         ngs_path = self._get_required_payload_path(simulation_payload, self.KEY_NGS_HO_METRIC_INTERPOLATOR_PATH)
         self._load_base_simulation_payload(simulation_payload)
@@ -369,8 +310,9 @@ class HybridSimulation(TiptopConfigBackedSimulation):
         self._bind_base_config(base_config)
         self._science_ho_psf_interpolator_path = science_path
         self._ngs_ho_metric_interpolator_path = ngs_path
-        self._science_ho_psf_runtime_interpolator = None
+        self._science_ho_psf_interpolator = None
         self._ngs_ho_metric_interpolator = None
+        self._non_psd_policy = non_psd_policy
 
     def _config_file_description(self) -> str:
         """Return the user-facing description for missing MASTSEL INI errors."""
@@ -411,10 +353,8 @@ class HybridSimulation(TiptopConfigBackedSimulation):
     def _create_runtime_context(self, index: int, options: dict[str, Any], setup: SimulationSetup) -> dict[str, Any]:
         """Create runtime scratch state for one Hybrid simulation.
 
-        This derives the per-simulation effective MASTSEL INI parser by copying
-        the loaded base config and applying setup- and option-dependent runtime
-        overrides. It also validates the active science and NGS interpolation
-        queries before any MASTSEL execution is attempted.
+        This resolves AO-owned active-star, atmosphere, and photometry inputs
+        without evaluating providers or invoking the upstream engine.
 
         Args:
             index: Zero-based simulation index.
@@ -434,7 +374,7 @@ class HybridSimulation(TiptopConfigBackedSimulation):
         if not isinstance(setup, HybridSetup):
             raise TypeError("HybridSimulation setup must be HybridSetup.")
         active_ngs = self._active_ngs_from_options(options)
-        parser = self._build_runtime_mastsel_parser(setup, options, active_ngs)
+        parser = self._build_runtime_mastsel_parser(setup, options)
         wavelength = _require_option_scalar(options, schema.KEY_OPTION_WAVELENGTH)
         zenith_angle = _require_option_scalar(options, schema.KEY_OPTION_ZENITH_ANGLE)
         validate_science_ho_psf_query(
@@ -454,16 +394,46 @@ class HybridSimulation(TiptopConfigBackedSimulation):
         }
 
     def run(self, context: SimulationContext) -> None:
-        """Execute one Hybrid simulation with MASTSEL Ctot blur.
+        """Execute one AO option row through Hybrid AO PSF exactly once.
 
         Args:
             context: Simulation context produced by ``create()``.
 
         Raises:
             TypeError: If ``context.setup`` has the wrong concrete type.
-            ValueError: If science PSFs, NGS metrics, MASTSEL Ctot, or MASTSEL
-                unit conversion values are invalid.
-            RuntimeError: If MASTSEL cannot load the generated runtime INI.
+            ValueError: If resolved request values or upstream results are
+                invalid.
+            RuntimeError: If the upstream MASTSEL execution fails.
+        """
+        resolved = self._resolve_hybrid_inputs(context)
+        result = simulate(
+            resolved.request,
+            resolved.science_provider,
+            resolved.ngs_provider,
+        )
+        context.runtime[self.KEY_RUNTIME_RESULT] = result
+        context.runtime[self.KEY_RUNTIME_NGS_USED] = resolved.ngs_used
+
+    def _resolve_hybrid_inputs(
+        self,
+        context: SimulationContext,
+    ) -> HybridResolvedInputs:
+        """Resolve the one protected downstream extension bundle.
+
+        Subclasses may call this implementation and return a replaced request
+        or wrapped provider for instrument-owned policy. They must not execute
+        the engine or reinterpret its result. This method borrows the loaded
+        immutable providers and does not mutate persisted setup or options.
+
+        Args:
+            context: Runtime context produced by ``create()``.
+
+        Returns:
+            Atomic upstream request, provider, and AO NGS-slot mapping bundle.
+
+        Raises:
+            TypeError: If the bound setup or runtime scratch state is invalid.
+            ValueError: If required option or photometry values are invalid.
         """
         setup = self._resolved_science_setup(context)
         if not isinstance(setup, HybridSetup):
@@ -475,30 +445,40 @@ class HybridSimulation(TiptopConfigBackedSimulation):
         parser = context.runtime.get(self.KEY_RUNTIME_EFFECTIVE_PARSER)
         if not isinstance(parser, ConfigParser):
             raise TypeError("context.runtime['effective_parser'] must be a ConfigParser. Did create() run?")
-
-        science = self._predict_science_psfs(setup, options)
-        metrics = self._predict_ngs_metrics(active_ngs, options)
-        ctot = self._compute_mastsel_ctot(parser, setup, active_ngs, metrics)
-        psd_mask = psd_valid_mask(ctot.ctot_wavefront)
-        psfs = np.asarray(science.psfs, dtype=np.float32).copy()
-        apply_ctot_blur(
-            psfs,
-            ctot.ctot_wavefront,
-            pixel_scale=science.pixel_scale,
-            angle_to_wavefront_scale=ctot.angle_to_wavefront_scale,
+        science_x, science_y = polar_to_cartesian(setup.sci_r, setup.sci_theta)
+        ngs_flux = self._ngs_flux_from_config(
+            parser,
+            active_ngs.magnitude,
+            setup,
         )
-        context.runtime[self.KEY_RUNTIME_RESULT] = _HybridRuntimeResult(
-            psfs=psfs,
-            metadata=science.metadata,
-            meta=dict(science.meta),
-            jitter=jitter_from_ctot(ctot.ctot_angle),
-            diagnostics_context=HybridDiagnosticsContext(
-                active_ngs=active_ngs,
-                metrics=metrics,
-                ctot=ctot,
-                psd_mask=psd_mask,
-                ngs_used=_ngs_used_mask(options),
+        ngs_frame_rate = np.full(
+            active_ngs.magnitude.size,
+            self._get_frame_rate_lo(parser),
+            dtype=float,
+        ) * u.Hz
+        return HybridResolvedInputs(
+            request=HybridRequest(
+                science_x=science_x,
+                science_y=science_y,
+                ngs_x=active_ngs.x,
+                ngs_y=active_ngs.y,
+                wavelength=_require_option_scalar(
+                    options,
+                    schema.KEY_OPTION_WAVELENGTH,
+                ),
+                zenith_angle=_require_option_scalar(
+                    options,
+                    schema.KEY_OPTION_ZENITH_ANGLE,
+                ),
+                ngs_flux=ngs_flux,
+                ngs_frame_rate=ngs_frame_rate,
+                mastsel_ini=_serialize_parser(parser),
+                non_psd_policy=self._non_psd_policy,
+                diagnostics_level=DiagnosticsLevel(self.diagnostics_level),
             ),
+            science_provider=self._get_science_ho_psf_interpolator(),
+            ngs_provider=self._get_ngs_ho_metric_interpolator(),
+            ngs_used=_ngs_used_mask(options),
         )
 
     def _extract_psfs(self, context: SimulationContext) -> np.ndarray | None:
@@ -572,7 +552,9 @@ class HybridSimulation(TiptopConfigBackedSimulation):
         super().finalize(context)
         if context.result is None:
             raise ValueError("Hybrid finalize did not produce a simulation result.")
-        context.result.meta.update(dict(_require_hybrid_result(context).meta))
+        context.result.meta.update(
+            dict(_require_hybrid_result(context).source_metadata)
+        )
 
     def build_extra_stats(self, context: SimulationContext) -> Mapping[str, Any]:
         """Return Hybrid jitter from MASTSEL Ctot.
@@ -619,6 +601,7 @@ class HybridSimulation(TiptopConfigBackedSimulation):
             "hybrid/psd_valid_count": {"dtype": "int32", "shape": ()},
             "hybrid/psd_valid_fraction": {"dtype": "float32", "shape": (), "unit": u.dimensionless_unscaled},
             "hybrid/psd_valid_mask": {"dtype": "bool", "shape": ("num_sci",)},
+            "hybrid/psd_clipped": {"dtype": "bool", "shape": ("num_sci",)},
             "hybrid/ctot_angle_trace_min": {"dtype": "float32", "shape": (), "unit": u.mas**2},
             "hybrid/ctot_angle_trace_max": {"dtype": "float32", "shape": (), "unit": u.mas**2},
             "hybrid/ctot_angle_trace_mean": {"dtype": "float32", "shape": (), "unit": u.mas**2},
@@ -688,7 +671,10 @@ class HybridSimulation(TiptopConfigBackedSimulation):
         """
         if self.diagnostics_level == schema.DIAGNOSTICS_LEVEL_NONE:
             return {}
-        diagnostics_context = _require_hybrid_result(context).diagnostics_context
+        diagnostics_context = HybridDiagnosticsContext(
+            result=_require_hybrid_result(context),
+            ngs_used=_require_hybrid_ngs_used(context),
+        )
         diagnostics = dict(self._build_hybrid_diagnostics(diagnostics_context))
         extension = dict(self._extend_hybrid_diagnostics(diagnostics_context))
         collisions = sorted(set(diagnostics) & set(extension))
@@ -719,10 +705,10 @@ class HybridSimulation(TiptopConfigBackedSimulation):
         return {}
 
     def _build_hybrid_diagnostics(self, diagnostics_context: HybridDiagnosticsContext) -> Mapping[str, Any]:
-        """Build upstream Hybrid diagnostics for the configured level.
+        """Map upstream Hybrid diagnostics to AO persisted field names.
 
         ``validation`` diagnostics include compact scalar Ctot summaries, PSD
-        validity summaries, slot-aligned active-NGS mask, and slot-aligned
+        validity and clipping masks, slot-aligned active-NGS mask, and slot-aligned
         MASTSEL inputs. ``debug`` adds full Ctot cubes and serialized runtime
         INI text. Returned values are flat and must match the specs from
         ``_diagnostic_field_specs()`` for the active level.
@@ -739,152 +725,73 @@ class HybridSimulation(TiptopConfigBackedSimulation):
             ValueError: If required MASTSEL input diagnostics are missing,
                 non-finite, or inconsistent with the active NGS mask.
         """
-        ctot_angle = diagnostics_context.ctot.ctot_angle.to_value(u.mas**2)
-        trace = np.trace(ctot_angle, axis1=-2, axis2=-1)
-        det = np.linalg.det(ctot_angle)
+        result = diagnostics_context.result
+        upstream = result.diagnostics
+        if upstream is None:
+            raise ValueError(
+                "Hybrid AO PSF did not return the requested diagnostics."
+            )
         used = np.asarray(diagnostics_context.ngs_used, dtype=bool)
-        ngs_flux = _require_active_vector(diagnostics_context.ctot.ngs_flux, u.photon / u.s, "ngs_flux")
-        ngs_frequency = _require_active_vector(diagnostics_context.ctot.ngs_frequency, u.Hz, "ngs_frequency")
         diagnostics: dict[str, Any] = {
             "hybrid/angle_to_wavefront_scale": np.float32(
-                diagnostics_context.ctot.angle_to_wavefront_scale.to_value(
-                    u.nm / u.mas
-                )
+                result.angle_to_wavefront_scale.to_value(u.nm / u.mas)
             )
             * (u.nm / u.mas),
-            "hybrid/psd_valid_count": np.int32(np.count_nonzero(diagnostics_context.psd_mask)),
-            "hybrid/psd_valid_fraction": np.float32(np.count_nonzero(diagnostics_context.psd_mask) / diagnostics_context.psd_mask.size) * u.dimensionless_unscaled,
-            "hybrid/psd_valid_mask": np.asarray(diagnostics_context.psd_mask, dtype=bool),
-            "hybrid/ctot_angle_trace_min": np.float32(np.min(trace)) * u.mas**2,
-            "hybrid/ctot_angle_trace_max": np.float32(np.max(trace)) * u.mas**2,
-            "hybrid/ctot_angle_trace_mean": np.float32(np.mean(trace)) * u.mas**2,
-            "hybrid/ctot_angle_determinant_min": np.float32(np.min(det)) * u.mas**4,
-            "hybrid/ctot_angle_determinant_max": np.float32(np.max(det)) * u.mas**4,
-            "hybrid/ctot_angle_determinant_mean": np.float32(np.mean(det)) * u.mas**4,
+            "hybrid/psd_valid_count": np.int32(upstream.psd_valid_count),
+            "hybrid/psd_valid_fraction": np.float32(
+                upstream.psd_valid_fraction
+            )
+            * u.dimensionless_unscaled,
+            "hybrid/psd_valid_mask": np.asarray(
+                upstream.psd_valid_mask,
+                dtype=bool,
+            ),
+            "hybrid/psd_clipped": np.asarray(result.psd_clipped, dtype=bool),
+            "hybrid/ctot_angle_trace_min": upstream.ctot_angle_trace_min.astype(
+                np.float32
+            ),
+            "hybrid/ctot_angle_trace_max": upstream.ctot_angle_trace_max.astype(
+                np.float32
+            ),
+            "hybrid/ctot_angle_trace_mean": upstream.ctot_angle_trace_mean.astype(
+                np.float32
+            ),
+            "hybrid/ctot_angle_determinant_min": upstream.ctot_angle_determinant_min.astype(
+                np.float32
+            ),
+            "hybrid/ctot_angle_determinant_max": upstream.ctot_angle_determinant_max.astype(
+                np.float32
+            ),
+            "hybrid/ctot_angle_determinant_mean": upstream.ctot_angle_determinant_mean.astype(
+                np.float32
+            ),
             "hybrid/ngs_used": used,
-            "hybrid/ngs/ee": _slot_aligned(diagnostics_context.metrics.ee, used),
-            "hybrid/ngs/fwhm": _slot_aligned(diagnostics_context.metrics.fwhm, used),
-            "hybrid/ngs/sr": _slot_aligned(diagnostics_context.metrics.sr, used),
-            "hybrid/ngs/flux": _slot_aligned(ngs_flux, used),
-            "hybrid/ngs/frequency": _slot_aligned(ngs_frequency, used),
+            "hybrid/ngs/ee": _slot_aligned(result.ngs_metrics.ee, used),
+            "hybrid/ngs/fwhm": _slot_aligned(result.ngs_metrics.fwhm, used),
+            "hybrid/ngs/sr": _slot_aligned(result.ngs_metrics.sr, used),
+            "hybrid/ngs/flux": _slot_aligned(result.ngs_flux, used),
+            "hybrid/ngs/frequency": _slot_aligned(result.ngs_frame_rate, used),
         }
         if self.diagnostics_level == schema.DIAGNOSTICS_LEVEL_DEBUG:
             diagnostics.update(
                 {
-                    "hybrid/ctot_wavefront": diagnostics_context.ctot.ctot_wavefront.astype(np.float32),
-                    "hybrid/ctot_angle": diagnostics_context.ctot.ctot_angle.astype(np.float32),
-                    "hybrid/runtime_ini_text": str(diagnostics_context.ctot.runtime_ini_text or ""),
+                    "hybrid/ctot_wavefront": result.ctot_wavefront.astype(
+                        np.float32
+                    ),
+                    "hybrid/ctot_angle": result.ctot_angle.astype(np.float32),
+                    "hybrid/runtime_ini_text": result.effective_mastsel_ini,
                 }
             )
         return diagnostics
-
-    # Provider hooks
-
-    def _predict_science_psfs(self, setup: HybridSetup, options: Mapping[str, Any]) -> SciencePsfProviderResult:
-        """Return science PSFs from the artifact-backed provider.
-
-        Subclasses may override this hook to provide project-specific PSF
-        sources or pixel-scale computation. Implementations must preserve their
-        source PSF flux convention and return finite positive-flux PSFs.
-        """
-        x, y = polar_to_cartesian(setup.sci_r, setup.sci_theta)
-        prediction = _evaluate_science_ho_psf_runtime_interpolator(
-            self._get_science_ho_psf_runtime_interpolator(),
-            zenith_angle=_require_option_scalar(options, schema.KEY_OPTION_ZENITH_ANGLE),
-            wavelength=_require_option_scalar(options, schema.KEY_OPTION_WAVELENGTH),
-            x=x,
-            y=y,
-        )
-        _validate_psf_flux(prediction.psfs, label="science PSFs")
-        return SciencePsfProviderResult(
-            psfs=np.asarray(prediction.psfs, dtype=np.float32),
-            metadata=prediction.metadata,
-            meta=prediction.meta,
-        )
-
-    def _predict_ngs_metrics(self, active_ngs: _ActiveNgs, options: Mapping[str, Any]) -> NgsMetricProviderResult:
-        """Return NGS-HO metrics from the artifact-backed provider."""
-        prediction = evaluate_ngs_ho_metric_interpolator(
-            self._get_ngs_ho_metric_interpolator(),
-            zenith_angle=_require_option_scalar(options, schema.KEY_OPTION_ZENITH_ANGLE),
-            x=active_ngs.x,
-            y=active_ngs.y,
-        )
-        return NgsMetricProviderResult(
-            ee=prediction.ee,
-            fwhm=prediction.fwhm,
-            sr=prediction.sr,
-        )
-
-    # MASTSEL runtime
-
-    def _compute_mastsel_ctot(
-        self,
-        parser: ConfigParser,
-        setup: HybridSetup,
-        active_ngs: _ActiveNgs,
-        metrics: NgsMetricProviderResult,
-    ) -> HybridCtotResult:
-        """Call MASTSEL and return validated Ctot in ``nm^2`` and ``mas^2``."""
-        MavisLO = _load_mavis_lo()
-        with tempfile.TemporaryDirectory(prefix="ao_predict_hybrid_") as tmpdir:
-            ini_path = Path(tmpdir) / "sim.ini"
-            runtime_ini_text = _serialize_parser(parser)
-            ini_path.write_text(runtime_ini_text, encoding="utf-8")
-            mlo = MavisLO(str(ini_path.parent), ini_path.stem, verbose=False)
-            if getattr(mlo, "error", False):
-                raise RuntimeError("MASTSEL failed to load generated Hybrid runtime config.")
-            science_coords = np.column_stack(
-                [value.to_value(u.arcsec) for value in polar_to_cartesian(setup.sci_r, setup.sci_theta)]
-            )
-            ngs_coords = np.column_stack([active_ngs.x.to_value(u.arcsec), active_ngs.y.to_value(u.arcsec)])
-            ngs_flux = self._ngs_flux_from_config(parser, active_ngs.magnitude, setup)
-            ngs_frequency = np.full(active_ngs.magnitude.size, self._get_frame_rate_lo(parser), dtype=float) * u.Hz
-            ctot_wavefront_values = np.asarray(
-                mlo.computeTotalResidualMatrix(
-                    science_coords,
-                    ngs_coords,
-                    ngs_flux.to_value(u.photon / u.s),
-                    ngs_frequency.to_value(u.Hz),
-                    metrics.sr.to_value(u.dimensionless_unscaled),
-                    metrics.ee.to_value(u.dimensionless_unscaled),
-                    metrics.fwhm.to_value(u.mas),
-                    aNGS_FWHM_DL_mas=None,
-                    doAll=True,
-                ),
-                dtype=float,
-            )
-            ctot_wavefront = ctot_wavefront_values * u.nm**2
-            validate_ctot_shape(ctot_wavefront, expected_size=science_coords.shape[0], label="MASTSEL Ctot")
-            mas2nm = getattr(mlo, "mas2nm", None)
-            if mas2nm is None:
-                raise ValueError("MASTSEL did not expose mas2nm conversion.")
-            angle_to_wavefront_scale = float(mas2nm) * (u.nm / u.mas)
-            if (
-                not np.isfinite(angle_to_wavefront_scale.value)
-                or angle_to_wavefront_scale.value <= 0.0
-            ):
-                raise ValueError(f"MASTSEL returned invalid angular conversion: {mas2nm!r}.")
-            return HybridCtotResult(
-                ctot_wavefront=ctot_wavefront,
-                ctot_angle=ctot_wavefront / angle_to_wavefront_scale**2,
-                angle_to_wavefront_scale=angle_to_wavefront_scale,
-                ngs_flux=ngs_flux,
-                ngs_frequency=ngs_frequency,
-                runtime_ini_text=runtime_ini_text,
-            )
 
     def _build_runtime_mastsel_parser(
         self,
         setup: HybridSetup,
         options: Mapping[str, Any],
-        active_ngs: _ActiveNgs,
     ) -> ConfigParser:
-        """Build a temporary MASTSEL INI parser for one option row."""
+        """Build AO-owned atmosphere overrides for the upstream MASTSEL INI."""
         parser = deepcopy(self.base_config.parser)
         self._update_atmosphere_in_ini(parser, options, setup)
-        self._update_science_in_ini(parser, options, setup)
-        self._update_ngs_in_ini(parser, active_ngs)
         return parser
 
     def _update_atmosphere_in_ini(
@@ -900,9 +807,6 @@ class HybridSimulation(TiptopConfigBackedSimulation):
         ``r0_Value`` and uses ``Seeing``. Hybrid writes only ``r0_Value`` so
         the AO Predict runtime ``r0`` reaches MASTSEL directly.
         """
-        if parser.has_section("telescope"):
-            parser["telescope"]["ZenithAngle"] = f"{_require_option_scalar(options, schema.KEY_OPTION_ZENITH_ANGLE).to_value(u.deg):.6g}"
-
         if not parser.has_section("atmosphere"):
             return
         atmosphere = parser["atmosphere"]
@@ -914,31 +818,6 @@ class HybridSimulation(TiptopConfigBackedSimulation):
         atmosphere["r0_Value"] = f"{r0.to_value(u.m):.6g}"
         if "Seeing" in atmosphere:
             del atmosphere["Seeing"]
-
-    def _update_science_in_ini(
-        self,
-        parser: ConfigParser,
-        options: Mapping[str, Any],
-        setup: HybridSetup,
-    ) -> None:
-        """Apply science geometry and science-wavelength updates."""
-        self._write_science_source_fields(
-            parser,
-            setup.sci_r,
-            setup.sci_theta,
-            _require_option_scalar(options, schema.KEY_OPTION_WAVELENGTH),
-        )
-
-    def _update_ngs_in_ini(
-        self,
-        parser: ConfigParser,
-        active_ngs: _ActiveNgs,
-    ) -> None:
-        """Apply active-NGS geometry and LO lenslet updates."""
-        self._write_source_geometry_fields(parser, "sources_LO", active_ngs.r, active_ngs.theta)
-        if parser.has_section("sensor_LO") and "NumberLenslets" in parser["sensor_LO"]:
-            n_lenslets = self._get_n_lenslets_lo(parser)
-            parser["sensor_LO"]["NumberLenslets"] = _format_ini_array(np.full(active_ngs.magnitude.size, n_lenslets, dtype=float))
 
     def _ngs_flux_from_config(self, parser: ConfigParser, ngs_magnitude: u.Quantity, setup: HybridSetup) -> u.Quantity:
         """Return active NGS flux in photons per second for MASTSEL."""
@@ -1013,162 +892,20 @@ class HybridSimulation(TiptopConfigBackedSimulation):
         )
 
 
-def apply_ctot_blur(
-    psfs: np.ndarray,
-    ctot_wavefront: u.Quantity,
-    *,
-    pixel_scale: u.Quantity,
-    angle_to_wavefront_scale: u.Quantity,
-) -> None:
-    """Apply finite-FOV Hybrid Ctot blur in place.
-
-    Each PSF is zero-padded before applying the image-plane OTF, cropped back
-    to the retained PSF field of view, and clipped for numerical negative
-    pixels. The cropped result is not renormalized, so Ctot blur can move
-    energy outside the retained PSF support.
-    """
-    validate_ctot_shape(ctot_wavefront, expected_size=np.asarray(psfs).shape[0], label="Ctot")
-    psfs_array = np.asarray(psfs)
-    if psfs_array.ndim != 3:
-        raise ValueError(f"psfs must have shape (N, y, x); got {psfs_array.shape}.")
-    if not np.all(np.isfinite(psfs_array)):
-        raise ValueError("psfs must contain only finite values.")
-    pixel_scale_value = float(quantity_value(pixel_scale, u.mas, label="pixel_scale").item())
-    if not np.isfinite(pixel_scale_value) or pixel_scale_value <= 0.0:
-        raise ValueError(f"pixel_scale must be positive and finite, got {pixel_scale!r}.")
-    adapter = LowOrderAngularScaleAdapter(angle_to_wavefront_scale)
-    input_flux = np.sum(psfs_array, axis=(-2, -1), dtype=np.float64)
-    if not np.all(np.isfinite(input_flux)) or np.any(input_flux <= 0.0):
-        raise ValueError("psfs must have strictly positive finite total flux.")
-
-    diff_ctot = quantity_value(ctot_wavefront, u.nm**2, label="ctot_wavefront", dtype=float)
-    valid = psd_valid_mask(ctot_wavefront)
-    if not np.any(valid):
-        return
-
-    covariance_pix2 = (
-        diff_ctot
-        / adapter.angle_to_wavefront_scale**2
-        / pixel_scale_value**2
-    )
-    active = np.flatnonzero(valid)
-    active_psfs = psfs_array[active].copy()
-    work_shape = tuple(2 * size for size in psfs_array.shape[-2:])
-    otfs = np.stack(
-        [image_plane_gaussian_otf(covariance_pix2[index], work_shape) for index in active]
-    )
-    apply_finite_fov_otfs(active_psfs, otfs)
-    psfs_array[active] = active_psfs
-
-
-def apply_finite_fov_otfs(psfs: np.ndarray, otfs: np.ndarray) -> None:
-    """Apply image-plane OTFs with the finite-FOV Hybrid convention.
-
-    Each PSF is centered in a zero-padded array twice its retained dimensions,
-    transformed, multiplied by its matching OTF, and cropped back to the
-    retained field. Numerical negative pixels are clipped without
-    renormalizing the cropped result.
-
-    Args:
-        psfs: PSF cube with shape ``(N, y, x)``. Results replace this array in
-            place.
-        otfs: Complex or real OTF cube with shape ``(N, 2*y, 2*x)`` using the
-            unshifted NumPy FFT frequency convention.
-
-    Raises:
-        ValueError: If the arrays have invalid shapes or values, or if an
-            output has non-positive retained flux.
-    """
-    psfs_array = np.asarray(psfs)
-    otfs_array = np.asarray(otfs)
-    if psfs_array.ndim != 3:
-        raise ValueError(f"psfs must have shape (N, y, x); got {psfs_array.shape}.")
-    expected_otf_shape = (
-        psfs_array.shape[0],
-        2 * psfs_array.shape[1],
-        2 * psfs_array.shape[2],
-    )
-    if otfs_array.shape != expected_otf_shape:
-        raise ValueError(f"otfs must have shape {expected_otf_shape}; got {otfs_array.shape}.")
-    if not np.all(np.isfinite(psfs_array)) or not np.all(np.isfinite(otfs_array)):
-        raise ValueError("psfs and otfs must contain only finite values.")
-    input_flux = np.sum(psfs_array, axis=(-2, -1), dtype=np.float64)
-    if np.any(input_flux <= 0.0):
-        raise ValueError("psfs must have strictly positive finite total flux.")
-
-    work_shape = tuple(otfs_array.shape[-2:])
-    original_shape = tuple(psfs_array.shape[-2:])
-    for index, otf in enumerate(otfs_array):
-        padded = _centered_pad(psfs_array[index].astype(np.float32, copy=False), work_shape)
-        raw = np.real(np.fft.ifft2(np.fft.fft2(padded) * otf))
-        raw = _center_crop(raw, original_shape)
-        raw = np.clip(raw.astype(np.float32, copy=False), 0.0, None)
-        if float(np.sum(raw, dtype=np.float64)) <= 0.0:
-            raise ValueError(f"Finite-FOV blur produced non-positive flux for PSF {index}.")
-        psfs_array[index] = raw
-
-
-def _centered_pad(psf: np.ndarray, shape: tuple[int, int]) -> np.ndarray:
-    source_y, source_x = psf.shape
-    target_y, target_x = shape
-    if target_y < source_y or target_x < source_x:
-        raise ValueError(f"Target padded shape {shape} cannot contain PSF shape {psf.shape}.")
-    before_y = (target_y - source_y) // 2
-    before_x = (target_x - source_x) // 2
-    return np.pad(
-        psf,
-        (
-            (before_y, target_y - source_y - before_y),
-            (before_x, target_x - source_x - before_x),
-        ),
-        mode="constant",
-    )
-
-
-def _center_crop(psf: np.ndarray, shape: tuple[int, int]) -> np.ndarray:
-    target_y, target_x = shape
-    source_y, source_x = psf.shape
-    if target_y > source_y or target_x > source_x:
-        raise ValueError(f"Target crop shape {shape} cannot exceed PSF shape {psf.shape}.")
-    start_y = (source_y - target_y) // 2
-    start_x = (source_x - target_x) // 2
-    return psf[start_y : start_y + target_y, start_x : start_x + target_x]
-
-
-def jitter_from_ctot(ctot_angle: u.Quantity) -> u.Quantity:
-    """Return Hybrid jitter from an angular Ctot covariance."""
-    validate_ctot_shape(ctot_angle, label="Ctot angle")
-    values = quantity_value(ctot_angle, u.mas**2, label="ctot_angle", dtype=float)
-    traces = np.trace(values, axis1=-2, axis2=-1)
-    return np.sqrt(np.clip(traces, 0.0, None)) * u.mas
-
-
-def psd_valid_mask(ctot_wavefront: u.Quantity) -> np.ndarray:
-    """Return mask where Ctot is positive semidefinite and nonzero."""
-    validate_ctot_shape(ctot_wavefront, label="Ctot")
-    values = quantity_value(ctot_wavefront, u.nm**2, label="ctot_wavefront", dtype=float)
-    sym = 0.5 * (values + np.swapaxes(values, -1, -2))
-    eig = np.linalg.eigvalsh(sym)
-    return np.all(eig >= 0.0, axis=1) & np.any(eig > 1.0e-12, axis=1)
-
-
-def validate_ctot_shape(ctot: u.Quantity, *, label: str, expected_size: int | None = None) -> None:
-    """Validate a Ctot covariance cube."""
-    if not isinstance(ctot, u.Quantity):
-        raise TypeError(f"{label} must be an Astropy Quantity.")
-    if ctot.ndim != 3 or ctot.shape[-2:] != (2, 2):
-        raise ValueError(f"{label} must have shape (N, 2, 2); got {ctot.shape}.")
-    if expected_size is not None and ctot.shape[0] != int(expected_size):
-        raise ValueError(f"{label} field length {ctot.shape[0]} does not match expected {expected_size}.")
-    if not np.all(np.isfinite(ctot.value)):
-        raise ValueError(f"{label} contains non-finite values.")
-
-
-def _require_hybrid_result(context: SimulationContext) -> _HybridRuntimeResult:
+def _require_hybrid_result(context: SimulationContext) -> HybridResult:
     result = context.runtime.get(HybridSimulation.KEY_RUNTIME_RESULT)
-    if not isinstance(result, _HybridRuntimeResult):
-        raise ValueError("Missing Hybrid runtime result. Did run(...) complete?")
+    if not isinstance(result, HybridResult):
+        raise ValueError(  # noqa: TRY004 - incomplete runtime state is a lifecycle error
+            "Missing Hybrid runtime result. Did run(...) complete?"
+        )
     return result
+
+
+def _require_hybrid_ngs_used(context: SimulationContext) -> np.ndarray:
+    value = context.runtime.get(HybridSimulation.KEY_RUNTIME_NGS_USED)
+    if value is None:
+        raise ValueError("Missing Hybrid NGS slot mapping. Did run(...) complete?")
+    return np.asarray(value, dtype=bool).reshape(-1)
 
 
 def _science_meta_fields(interpolator: ScienceHoPsfInterpolator) -> dict[str, u.UnitBase]:
@@ -1206,16 +943,6 @@ def _ngs_used_mask(options: Mapping[str, Any]) -> np.ndarray:
     return np.asarray(options[schema.KEY_OPTION_NGS_USED], dtype=bool).reshape(-1)
 
 
-def _require_active_vector(value: u.Quantity | None, unit: u.UnitBase, label: str) -> u.Quantity:
-    """Return a finite active-NGS diagnostic vector."""
-    if value is None:
-        raise ValueError(f"Hybrid diagnostics require {label}.")
-    arr = quantity_value(value, unit, label=label, dtype=float).reshape(-1)
-    if not np.all(np.isfinite(arr)):
-        raise ValueError(f"Hybrid diagnostics {label} must contain finite values.")
-    return arr * unit
-
-
 def _slot_aligned(active_values: u.Quantity, used: np.ndarray) -> u.Quantity:
     """Return NGS slot-aligned values with inactive slots set to ``NaN``."""
     active = np.asarray(active_values.value, dtype=float).reshape(-1)
@@ -1240,59 +967,22 @@ def _require_option_scalar(options: Mapping[str, Any], key: str) -> u.Quantity:
     return value * unit
 
 
-def _validate_psf_flux(psfs: np.ndarray, *, label: str) -> None:
-    psfs = np.asarray(psfs)
-    if psfs.ndim != 3:
-        raise ValueError(f"{label} must have shape (N, y, x); got {psfs.shape}.")
-    if not np.all(np.isfinite(psfs)):
-        raise ValueError(f"{label} must contain only finite values.")
-    flux = np.sum(psfs, axis=(-2, -1), dtype=np.float64)
-    if not np.all(np.isfinite(flux)) or np.any(flux <= 0.0):
-        raise ValueError(f"{label} must have strictly positive finite total flux.")
+def _normalize_non_psd_policy(value: Any) -> NonPsdPolicy:
+    try:
+        return NonPsdPolicy(str(value).strip().lower())
+    except ValueError as exc:
+        raise ValueError("non_psd_policy must be 'error' or 'clip'.") from exc
 
 
-def image_plane_gaussian_otf(
-    covariance_pix2: np.ndarray,
-    shape: tuple[int, int],
-    *,
-    mean_shift_pix: np.ndarray | None = None,
-) -> np.ndarray:
-    """Return an image-plane Gaussian OTF with an optional mean pixel shift.
-
-    Args:
-        covariance_pix2: Two-dimensional Gaussian covariance in squared pixels,
-            ordered as x then y.
-        shape: Output OTF shape in y then x order.
-        mean_shift_pix: Optional x/y mean displacement in pixels. Omit for a
-            centered Gaussian.
-
-    Returns:
-        An OTF using the unshifted NumPy FFT frequency convention.
-
-    Raises:
-        ValueError: If the covariance, shape, or mean displacement is invalid.
-    """
-    covariance_pix2 = np.asarray(covariance_pix2, dtype=float)
-    if covariance_pix2.shape != (2, 2) or not np.all(np.isfinite(covariance_pix2)):
-        raise ValueError("covariance_pix2 must be a finite 2 x 2 matrix.")
-    if len(shape) != 2 or any(int(size) != size or size < 1 for size in shape):
-        raise ValueError(f"shape must contain two positive integers; got {shape}.")
-    mean = np.zeros(2, dtype=float) if mean_shift_pix is None else np.asarray(mean_shift_pix, dtype=float)
-    if mean.shape != (2,) or not np.all(np.isfinite(mean)):
-        raise ValueError("mean_shift_pix must contain finite x/y displacements.")
-
-    ny, nx = shape
-    fy = np.fft.fftfreq(ny)
-    fx = np.fft.fftfreq(nx)
-    fx_grid, fy_grid = np.meshgrid(fx, fy)
-    covariance = 0.5 * (covariance_pix2 + covariance_pix2.T)
-    exponent = -2.0 * np.pi**2 * (
-        float(covariance[0, 0]) * fx_grid**2
-        + float(covariance[1, 1]) * fy_grid**2
-        + 2.0 * float(covariance[0, 1]) * fx_grid * fy_grid
+def _non_psd_policy_from_payload(
+    simulation_payload: Mapping[str, Any],
+) -> NonPsdPolicy:
+    return _normalize_non_psd_policy(
+        simulation_payload.get(
+            HybridSimulation.KEY_NON_PSD_POLICY,
+            NonPsdPolicy.ERROR.value,
+        )
     )
-    phase = -2j * np.pi * (float(mean[0]) * fx_grid + float(mean[1]) * fy_grid)
-    return np.exp(exponent + phase)
 
 
 def _artifact_file_cache_key(path: Path) -> _ArtifactFileCacheKey:
@@ -1305,15 +995,16 @@ def _artifact_file_cache_key(path: Path) -> _ArtifactFileCacheKey:
     )
 
 
-def _get_cached_science_ho_psf_runtime_interpolator(path: Path) -> _ScienceHoPsfRuntimeInterpolator:
+def _get_cached_science_ho_psf_interpolator(
+    path: Path,
+) -> ScienceHoPsfInterpolator:
     key = _artifact_file_cache_key(path)
-    runtime_interpolator = _SCIENCE_HO_PSF_RUNTIME_INTERPOLATOR_CACHE.get(key)
-    if runtime_interpolator is None:
-        artifact = load_science_ho_psf_interpolator(path)
-        validate_science_ho_psf_interpolator(artifact)
-        runtime_interpolator = _prepare_science_ho_psf_runtime_interpolator(artifact)
-        _SCIENCE_HO_PSF_RUNTIME_INTERPOLATOR_CACHE[key] = runtime_interpolator
-    return runtime_interpolator
+    interpolator = _SCIENCE_HO_PSF_INTERPOLATOR_CACHE.get(key)
+    if interpolator is None:
+        interpolator = load_science_ho_psf_interpolator(path)
+        validate_science_ho_psf_interpolator(interpolator)
+        _SCIENCE_HO_PSF_INTERPOLATOR_CACHE[key] = interpolator
+    return interpolator
 
 
 def _get_cached_ngs_ho_metric_interpolator(path: Path) -> NgsHoMetricInterpolator:
@@ -1326,27 +1017,10 @@ def _get_cached_ngs_ho_metric_interpolator(path: Path) -> NgsHoMetricInterpolato
     return interpolator
 
 
-def _load_mavis_lo() -> Any:
-    try:
-        from mastsel import MavisLO  # pylint: disable=import-outside-toplevel
-    except Exception as exc:  # pragma: no cover - depends on optional runtime package.
-        raise RuntimeError("MASTSEL is not importable; cannot run HybridSimulation.") from exc
-    return MavisLO
-
-
 __all__ = [
-    "HybridCtotResult",
     "HybridDiagnosticsContext",
+    "HybridResolvedInputs",
     "HybridSetup",
     "HybridSimulation",
-    "LowOrderAngularScaleAdapter",
-    "NgsMetricProviderResult",
-    "SciencePsfProviderResult",
-    "apply_ctot_blur",
-    "apply_finite_fov_otfs",
-    "image_plane_gaussian_otf",
-    "jitter_from_ctot",
     "polar_to_cartesian",
-    "psd_valid_mask",
-    "validate_ctot_shape",
 ]

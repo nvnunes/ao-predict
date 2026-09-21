@@ -11,8 +11,13 @@ builds unless a task explicitly requires something else.
 For fresh clones, use:
 
 ```bash
-./scripts/bootstrap.sh
+AO_PREDICT_HYBRID_SOURCE=../hybrid-ao-psf ./scripts/bootstrap.sh
 ```
+
+The source override uses a sibling Hybrid AO PSF checkout while its
+distribution is unavailable from the configured package index. See
+[`docs/development.md`](development.md#bootstrap) for other source choices and
+for when plain `./scripts/bootstrap.sh` is sufficient.
 
 That script creates the local environment when needed, installs the package
 with `dev` and `docs` extras, configures the git hooks path, runs the test
