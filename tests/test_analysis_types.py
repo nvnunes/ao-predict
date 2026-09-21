@@ -471,7 +471,7 @@ def test_load_analysis_dataset_loads_eager_non_psf_payloads(tmp_path: Path) -> N
         },
         {
             "ee_apertures": np.array([50.0, 100.0], dtype=float) * u.mas,
-            "sr_method": schema.DEFAULT_SETUP_SR_METHOD,
+            "peak_method": schema.DEFAULT_SETUP_PEAK_METHOD,
             "fwhm_summary": schema.DEFAULT_SETUP_FWHM_SUMMARY,
             "ee_geometry": schema.DEFAULT_SETUP_EE_GEOMETRY,
             "atm_wavelength": 0.5 * u.um,
@@ -591,7 +591,7 @@ def test_load_analysis_dataset_preserves_analysis_visible_store_slice(tmp_path: 
         },
         {
             "ee_apertures": np.array([50.0, 100.0], dtype=float) * u.mas,
-            "sr_method": schema.DEFAULT_SETUP_SR_METHOD,
+            "peak_method": schema.DEFAULT_SETUP_PEAK_METHOD,
             "fwhm_summary": schema.DEFAULT_SETUP_FWHM_SUMMARY,
             "ee_geometry": schema.DEFAULT_SETUP_EE_GEOMETRY,
             "atm_wavelength": 0.5 * u.um,
@@ -983,7 +983,7 @@ def test_analysis_simulation_views_are_read_only_to_callers(tmp_path: Path) -> N
         },
         {
             "ee_apertures": np.array([50.0, 100.0], dtype=float) * u.mas,
-            "sr_method": schema.DEFAULT_SETUP_SR_METHOD,
+            "peak_method": schema.DEFAULT_SETUP_PEAK_METHOD,
             "fwhm_summary": schema.DEFAULT_SETUP_FWHM_SUMMARY,
             "ee_geometry": schema.DEFAULT_SETUP_EE_GEOMETRY,
             "atm_wavelength": 0.5 * u.um,
@@ -1064,7 +1064,7 @@ def test_analysis_dataset_psfs_remain_lazy_until_simulation_access(tmp_path: Pat
         },
         {
             "ee_apertures": np.array([50.0, 100.0], dtype=float) * u.mas,
-            "sr_method": schema.DEFAULT_SETUP_SR_METHOD,
+            "peak_method": schema.DEFAULT_SETUP_PEAK_METHOD,
             "fwhm_summary": schema.DEFAULT_SETUP_FWHM_SUMMARY,
             "ee_geometry": schema.DEFAULT_SETUP_EE_GEOMETRY,
             "atm_wavelength": 0.5 * u.um,
@@ -1151,7 +1151,7 @@ def test_analysis_simulation_psfs_raises_clear_error_when_dataset_has_no_psfs(tm
         },
         {
             "ee_apertures": np.array([50.0, 100.0], dtype=float) * u.mas,
-            "sr_method": schema.DEFAULT_SETUP_SR_METHOD,
+            "peak_method": schema.DEFAULT_SETUP_PEAK_METHOD,
             "fwhm_summary": schema.DEFAULT_SETUP_FWHM_SUMMARY,
             "ee_geometry": schema.DEFAULT_SETUP_EE_GEOMETRY,
             "atm_wavelength": 0.5 * u.um,
@@ -1219,7 +1219,7 @@ def test_analysis_dataset_loads_via_supported_loader_entrypoint(tmp_path: Path) 
         },
         {
             "ee_apertures": np.array([50.0, 100.0], dtype=float) * u.mas,
-            "sr_method": schema.DEFAULT_SETUP_SR_METHOD,
+            "peak_method": schema.DEFAULT_SETUP_PEAK_METHOD,
             "fwhm_summary": schema.DEFAULT_SETUP_FWHM_SUMMARY,
             "ee_geometry": schema.DEFAULT_SETUP_EE_GEOMETRY,
             "atm_wavelength": 0.5 * u.um,
@@ -1287,7 +1287,7 @@ def test_analysis_dataset_exposes_supported_scientific_view_contract(tmp_path: P
         },
         {
             "ee_apertures": np.array([50.0, 100.0], dtype=float) * u.mas,
-            "sr_method": schema.DEFAULT_SETUP_SR_METHOD,
+            "peak_method": schema.DEFAULT_SETUP_PEAK_METHOD,
             "fwhm_summary": schema.DEFAULT_SETUP_FWHM_SUMMARY,
             "ee_geometry": schema.DEFAULT_SETUP_EE_GEOMETRY,
             "atm_wavelength": 0.5 * u.um,
@@ -1367,7 +1367,7 @@ def test_analysis_dataset_exposes_supported_scientific_view_contract(tmp_path: P
         sim0.config["setup"]["ee_apertures"].to_value(u.mas),
         np.array([50.0, 100.0], dtype=float),
     )
-    assert sim0.config["setup"]["sr_method"] == schema.DEFAULT_SETUP_SR_METHOD
+    assert sim0.config["setup"]["peak_method"] == schema.DEFAULT_SETUP_PEAK_METHOD
     assert sim0.config["setup"]["ee_geometry"] == schema.DEFAULT_SETUP_EE_GEOMETRY
     assert sim0.config["options"]["wavelength"].to_value(u.um) == np.float64(1.25)
     assert sim1.config["options"]["zenith_angle"].to_value(u.deg) == np.float64(25.0)
@@ -1436,7 +1436,7 @@ def _write_single_analysis_result(store: SimulationStore, *, save_psfs: bool) ->
         },
         {
             "ee_apertures": np.array([50.0, 100.0], dtype=float) * u.mas,
-            "sr_method": schema.DEFAULT_SETUP_SR_METHOD,
+            "peak_method": schema.DEFAULT_SETUP_PEAK_METHOD,
             "fwhm_summary": schema.DEFAULT_SETUP_FWHM_SUMMARY,
             "ee_geometry": schema.DEFAULT_SETUP_EE_GEOMETRY,
             "atm_wavelength": 0.5 * u.um,

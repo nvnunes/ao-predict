@@ -82,7 +82,7 @@ def _write_config_yaml(path: Path, ini_path: Path, *, options_cfg: dict[str, obj
         },
         "setup": {
             "ee_apertures": {"value": [50.0, 100.0], "unit": "mas"},
-            "sr_method": schema.DEFAULT_SETUP_SR_METHOD,
+            "peak_method": schema.DEFAULT_SETUP_PEAK_METHOD,
             "fwhm_summary": schema.DEFAULT_SETUP_FWHM_SUMMARY,
             "ngs_magnitude_zeropoint": {"value": 1.1e13 / 368.0, "unit": "photon / s"},
             "sci_r": {"value": [0.0, 10.0, 20.0], "unit": "arcsec"},
@@ -130,7 +130,9 @@ def _success_result(m: int = 3, *, with_stats: bool = True, with_psfs: bool = Tr
             "tel_diameter": 8.0 * u.m,
             "tel_pupil": np.ones((6, 6), dtype=np.float32) * u.one,
         },
-        psfs=np.zeros((m, 4, 4), dtype=np.float32) if with_psfs else None,
+        psfs=np.full((m, 4, 4), 1.0 / 16.0, dtype=np.float32)
+        if with_psfs
+        else None,
     )
     if with_stats:
         result.stats = {
@@ -190,7 +192,7 @@ class TiptopSimulation(Simulation):
     def load_setup_payload(self, setup_payload):
         self._setup = SimulationSetup(
             ee_apertures=setup_payload["ee_apertures"],
-            sr_method=str(setup_payload["sr_method"]),
+            peak_method=str(setup_payload["peak_method"]),
             fwhm_summary=str(setup_payload["fwhm_summary"]),
             ee_geometry=str(setup_payload["ee_geometry"]),
             atm_wavelength=setup_payload["atm_wavelength"],
@@ -204,7 +206,7 @@ class TiptopSimulation(Simulation):
     def validate_setup_payload(self, setup_payload):
         _ = SimulationSetup(
             ee_apertures=setup_payload["ee_apertures"],
-            sr_method=str(setup_payload["sr_method"]),
+            peak_method=str(setup_payload["peak_method"]),
             fwhm_summary=str(setup_payload["fwhm_summary"]),
             ee_geometry=str(setup_payload["ee_geometry"]),
             atm_wavelength=setup_payload["atm_wavelength"],
@@ -243,7 +245,7 @@ def test_cli_simulate_init_and_run(tmp_path: Path, monkeypatch):
 
     with h5py.File(dataset_path, "r") as f:
         assert float(f["setup/ngs_magnitude_zeropoint"][()]) > 0.0
-        assert f["setup/sr_method"][()].decode("utf-8") == schema.DEFAULT_SETUP_SR_METHOD
+        assert f["setup/peak_method"][()].decode("utf-8") == schema.DEFAULT_SETUP_PEAK_METHOD
         assert f["setup/fwhm_summary"][()].decode("utf-8") == schema.DEFAULT_SETUP_FWHM_SUMMARY
         assert f["setup/ee_geometry"][()].decode("utf-8") == schema.DEFAULT_SETUP_EE_GEOMETRY
         np.testing.assert_array_equal(f["status/state"][:], np.array([1, 1, 1], dtype=np.uint8))

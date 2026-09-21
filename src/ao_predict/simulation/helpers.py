@@ -68,12 +68,18 @@ def get_ee_apertures(setup: Mapping[str, Any] | SimulationSetup) -> u.Quantity:
     return ee * u.mas
 
 
-def get_sr_method(setup: Mapping[str, Any] | SimulationSetup) -> str:
-    """Return the dataset-level Strehl selector from setup."""
-    sr_method = setup[schema.KEY_SETUP_SR_METHOD] if isinstance(setup, Mapping) else getattr(setup, schema.KEY_SETUP_SR_METHOD)
-    value = str(sr_method).strip()
+def get_peak_method(setup: Mapping[str, Any] | SimulationSetup) -> str:
+    """Return the dataset-level shared peak estimator from setup."""
+    peak_method = (
+        setup[schema.KEY_SETUP_PEAK_METHOD]
+        if isinstance(setup, Mapping)
+        else getattr(setup, schema.KEY_SETUP_PEAK_METHOD)
+    )
+    value = str(peak_method).strip()
     if not value:
-        raise ValueError(f"setup['{schema.KEY_SETUP_SR_METHOD}'] must be a non-empty string.")
+        raise ValueError(
+            f"setup['{schema.KEY_SETUP_PEAK_METHOD}'] must be a non-empty string."
+        )
     return value
 
 

@@ -28,7 +28,11 @@ from ..utils import (
     require_finite_positive_scalar,
     require_lowercase_mapping_keys,
 )
-from .validation import validate_atm_profile_ids, validate_options_payload_core
+from .validation import (
+    upgrade_setup_peak_method,
+    validate_atm_profile_ids,
+    validate_options_payload_core,
+)
 
 
 # Primitive option value parsing helpers
@@ -631,17 +635,23 @@ def normalize_setup_config(setup: object) -> dict[str, object]:
     """
     if isinstance(setup, Mapping):
         require_lowercase_mapping_keys(setup, label=schema.KEY_SETUP_SECTION)
-        return {str(k): v for k, v in dict(setup).items()}
+        return upgrade_setup_peak_method(
+            {str(k): v for k, v in dict(setup).items()}
+        )
 
     # API dataclass-like path (SetupConfig).
     if hasattr(setup, schema.KEY_SETUP_EE_APERTURES):
         out: dict[str, object] = {
             schema.KEY_SETUP_EE_APERTURES: getattr(setup, schema.KEY_SETUP_EE_APERTURES)
         }
-        if hasattr(setup, schema.KEY_SETUP_SR_METHOD):
-            sr_method = getattr(setup, schema.KEY_SETUP_SR_METHOD)
+        if hasattr(setup, schema.KEY_SETUP_PEAK_METHOD):
+            peak_method = getattr(setup, schema.KEY_SETUP_PEAK_METHOD)
+            if peak_method is not None:
+                out[schema.KEY_SETUP_PEAK_METHOD] = peak_method
+        if hasattr(setup, schema.LEGACY_KEY_SETUP_SR_METHOD):
+            sr_method = getattr(setup, schema.LEGACY_KEY_SETUP_SR_METHOD)
             if sr_method is not None:
-                out[schema.KEY_SETUP_SR_METHOD] = sr_method
+                out[schema.LEGACY_KEY_SETUP_SR_METHOD] = sr_method
         if hasattr(setup, schema.KEY_SETUP_FWHM_SUMMARY):
             fwhm_summary = getattr(setup, schema.KEY_SETUP_FWHM_SUMMARY)
             if fwhm_summary is not None:
@@ -656,7 +666,9 @@ def normalize_setup_config(setup: object) -> dict[str, object]:
                 sim_fields, label=f"{schema.KEY_SETUP_SECTION}.{schema.KEY_CFG_SETUP_SPECIFIC_FIELDS}"
             )
             out.update({str(k): v for k, v in dict(sim_fields).items()})
-        return {str(k): v for k, v in dict(out).items()}
+        return upgrade_setup_peak_method(
+            {str(k): v for k, v in dict(out).items()}
+        )
 
     raise TypeError("setup config must be a mapping or SetupConfig-like object.")
 

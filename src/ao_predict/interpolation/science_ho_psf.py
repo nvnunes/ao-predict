@@ -9,14 +9,14 @@ from typing import Any, Mapping
 
 import numpy as np
 from astropy import units as u
-from scipy.interpolate import RegularGridInterpolator
-
-from ao_predict.simulation.stats import (
+from ao_stats import (
     EE_GEOMETRY_ENCIRCLED,
     PsfMetadata,
     compute_psf_ee,
     compute_psf_fwhm,
 )
+from scipy.interpolate import RegularGridInterpolator
+
 from ao_predict.simulation.validation import validate_meta_field_name
 from ao_predict._units import quantity_value, require_quantity
 

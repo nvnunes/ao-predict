@@ -73,6 +73,23 @@ def test_simulation_module_config_backed_exports() -> None:
     assert not hasattr(simulation, "resolve_science_coordinates")
 
 
+def test_statistics_api_has_moved_to_ao_stats() -> None:
+    package = importlib.import_module("ao_predict")
+    simulation = importlib.import_module("ao_predict.simulation")
+
+    moved_names = {
+        "PsfMetadata",
+        "clip_and_sum_normalize_psfs",
+        "compute_psf_ee",
+        "compute_psf_fwhm",
+        "compute_psf_sr",
+        "compute_psf_stats",
+    }
+    for name in moved_names:
+        assert not hasattr(package, name)
+        assert not hasattr(simulation, name)
+
+
 def test_interpolation_submodule_exports_without_root_exports() -> None:
     package = importlib.import_module("ao_predict")
     interpolation = importlib.import_module("ao_predict.interpolation")

@@ -46,7 +46,7 @@ def _base_request(tmp_path: Path) -> InitDatasetRequest:
         simulation=SimulationConfig(name="Tiptop", base_path=str(Path(ini_path).parent), specific_fields={"config_path": str(ini_path)}),
         setup=SetupConfig(
             ee_apertures=[50.0, 100.0] * u.mas,
-            sr_method=schema.DEFAULT_SETUP_SR_METHOD,
+            peak_method=schema.DEFAULT_SETUP_PEAK_METHOD,
             fwhm_summary=schema.DEFAULT_SETUP_FWHM_SUMMARY,
             specific_fields={
                 "ngs_magnitude_zeropoint": (1.1e13 / 368.0) * u.photon / u.s
@@ -74,7 +74,9 @@ def _success_result(m: int = 3, *, with_stats: bool = True, with_psfs: bool = Tr
             "tel_diameter": 8.0 * u.m,
             "tel_pupil": np.ones((6, 6), dtype=np.float32) * u.dimensionless_unscaled,
         },
-        psfs=np.zeros((m, 4, 4), dtype=np.float32) if with_psfs else None,
+        psfs=np.full((m, 4, 4), 1.0 / 16.0, dtype=np.float32)
+        if with_psfs
+        else None,
     )
     if with_stats:
         result.stats = {
@@ -134,7 +136,7 @@ class FakeSimulation(Simulation):
     def load_setup_payload(self, setup_payload):
         self._setup = SimulationSetup(
             ee_apertures=setup_payload["ee_apertures"],
-            sr_method=str(setup_payload["sr_method"]),
+            peak_method=str(setup_payload["peak_method"]),
             fwhm_summary=str(setup_payload["fwhm_summary"]),
             ee_geometry=str(setup_payload["ee_geometry"]),
             atm_wavelength=setup_payload["atm_wavelength"],
@@ -352,7 +354,7 @@ def test_api_full_pipeline_with_test_simulation(tmp_path: Path):
         sr = np.asarray(f[f"{schema.KEY_STATS_SECTION}/{schema.KEY_STATS_SR}"][:], dtype=float)
         assert np.all(np.isfinite(sr))
         np.testing.assert_allclose(sr[:, 0], np.full((3,), sr[0, 0], dtype=float), rtol=1e-6, atol=1e-6)
-        assert f[f"{schema.KEY_SETUP_SECTION}/{schema.KEY_SETUP_SR_METHOD}"][()].decode("utf-8") == schema.DEFAULT_SETUP_SR_METHOD
+        assert f[f"{schema.KEY_SETUP_SECTION}/{schema.KEY_SETUP_PEAK_METHOD}"][()].decode("utf-8") == schema.DEFAULT_SETUP_PEAK_METHOD
         assert (
             f[f"{schema.KEY_SETUP_SECTION}/{schema.KEY_SETUP_FWHM_SUMMARY}"][()].decode("utf-8")
             == schema.DEFAULT_SETUP_FWHM_SUMMARY
@@ -370,7 +372,7 @@ def test_api_init_persists_explicit_setup_stats_selectors(tmp_path: Path):
         simulation=request.simulation,
         setup=SetupConfig(
             ee_apertures=[50.0, 100.0] * u.mas,
-            sr_method=schema.STATS_SR_METHOD_PIXEL_MAX,
+            peak_method=schema.STATS_PEAK_METHOD_PIXEL_MAX,
             fwhm_summary=schema.STATS_FWHM_SUMMARY_MAX,
             ee_geometry=schema.STATS_EE_GEOMETRY_ENCIRCLED,
             specific_fields={"ngs_magnitude_zeropoint": (1.1e13 / 368.0) * u.photon / u.s},
@@ -381,7 +383,7 @@ def test_api_init_persists_explicit_setup_stats_selectors(tmp_path: Path):
     sim_api.init_dataset(request)
 
     with h5py.File(request.dataset_path, "r") as f:
-        assert f[f"{schema.KEY_SETUP_SECTION}/{schema.KEY_SETUP_SR_METHOD}"][()].decode("utf-8") == schema.STATS_SR_METHOD_PIXEL_MAX
+        assert f[f"{schema.KEY_SETUP_SECTION}/{schema.KEY_SETUP_PEAK_METHOD}"][()].decode("utf-8") == schema.STATS_PEAK_METHOD_PIXEL_MAX
         assert (
             f[f"{schema.KEY_SETUP_SECTION}/{schema.KEY_SETUP_FWHM_SUMMARY}"][()].decode("utf-8")
             == schema.STATS_FWHM_SUMMARY_MAX
@@ -390,6 +392,60 @@ def test_api_init_persists_explicit_setup_stats_selectors(tmp_path: Path):
             f[f"{schema.KEY_SETUP_SECTION}/{schema.KEY_SETUP_EE_GEOMETRY}"][()].decode("utf-8")
             == schema.STATS_EE_GEOMETRY_ENCIRCLED
         )
+
+
+def test_api_init_upgrades_legacy_sr_method_to_peak_method(tmp_path: Path):
+    request = _base_request(tmp_path)
+    request = replace(
+        request,
+        setup={
+            "ee_apertures": [50.0, 100.0] * u.mas,
+            "sr_method": "pixel_fit",
+            "ngs_magnitude_zeropoint": (1.1e13 / 368.0) * u.photon / u.s,
+        },
+    )
+
+    sim_api.init_dataset(request)
+
+    with h5py.File(request.dataset_path, "r") as f:
+        assert "sr_method" not in f[schema.KEY_SETUP_SECTION]
+        assert (
+            f[f"{schema.KEY_SETUP_SECTION}/{schema.KEY_SETUP_PEAK_METHOD}"][()]
+            .decode("utf-8")
+            == schema.STATS_PEAK_METHOD_GAUSSIAN_FIT
+        )
+
+
+def test_api_init_rejects_conflicting_peak_method_names(tmp_path: Path):
+    request = _base_request(tmp_path)
+    request = replace(
+        request,
+        setup={
+            "ee_apertures": [50.0, 100.0] * u.mas,
+            "peak_method": "pixel_max",
+            "sr_method": "pixel_fit",
+            "ngs_magnitude_zeropoint": (1.1e13 / 368.0) * u.photon / u.s,
+        },
+    )
+
+    with pytest.raises(ValueError, match="conflicting 'peak_method'.*'sr_method'"):
+        sim_api.init_dataset(request)
+
+
+def test_store_reads_legacy_sr_method_as_peak_method(tmp_path: Path):
+    request = _base_request(tmp_path)
+    sim_api.init_dataset(request)
+    with h5py.File(request.dataset_path, "r+") as f:
+        setup = f[schema.KEY_SETUP_SECTION]
+        del setup[schema.KEY_SETUP_PEAK_METHOD]
+        setup.create_dataset("sr_method", data="pixel_fit")
+
+    store = sim_api.SimulationStore(request.dataset_path)
+    store.validate_schema()
+    setup = store.read_setup()
+
+    assert "sr_method" not in setup
+    assert setup[schema.KEY_SETUP_PEAK_METHOD] == schema.STATS_PEAK_METHOD_GAUSSIAN_FIT
 
 
 def test_api_init_persists_ngs_mag_standard_and_exposes_it_to_analysis(tmp_path: Path):
@@ -414,13 +470,13 @@ def test_api_init_rejects_invalid_setup_stats_selector(tmp_path: Path):
         simulation=request.simulation,
         setup=SetupConfig(
             ee_apertures=[50.0, 100.0] * u.mas,
-            sr_method="bad_selector",
+            peak_method="bad_selector",
             specific_fields={"ngs_magnitude_zeropoint": (1.1e13 / 368.0) * u.photon / u.s},
         ),
         options=request.options,
     )
 
-    with pytest.raises(ValueError, match="setup\\['sr_method'\\] must be one of: pixel_fit, pixel_max\\."):
+    with pytest.raises(ValueError, match="setup\\['peak_method'\\] must be one of: gaussian_fit, pixel_max\\."):
         sim_api.init_dataset(request)
 
 

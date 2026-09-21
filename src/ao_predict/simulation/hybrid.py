@@ -11,6 +11,7 @@ from typing import Any, Mapping
 
 import numpy as np
 from astropy import units as u
+from ao_stats import PsfMetadata
 
 from ao_predict.interpolation import (
     NgsHoMetricInterpolator,
@@ -35,7 +36,6 @@ from .base import BaseSimulationSetup, PsfParameters
 from .coordinates import polar_to_cartesian
 from .interfaces import SimulationContext, SimulationSetup
 from .photometry import magnitudes_to_photons_per_frame
-from .stats import PsfMetadata
 from .tiptop_config_backed import (
     TiptopConfigBackedSimulation,
     _format_ini_array,

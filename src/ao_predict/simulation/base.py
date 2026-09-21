@@ -8,13 +8,13 @@ from typing import Any, Mapping, TypeVar
 
 import numpy as np
 from astropy import units as u
+from ao_stats import clip_and_sum_normalize_psfs
 
 from . import schema
 from . import atm
 from .coordinates import resolve_science_coordinates
 from .helpers import _MISSING, select_mapping_value
 from .interfaces import Simulation, SimulationContext, SimulationResult, SimulationSetup, SimulationState
-from .stats import clip_and_sum_normalize_psfs
 from .._units import quantity_value, require_quantity, unit_string
 
 
@@ -448,12 +448,12 @@ class BaseSimulation(Simulation, ABC):
 
         return {
             schema.KEY_SETUP_EE_APERTURES: ee_apertures,
-            schema.KEY_SETUP_SR_METHOD: str(
+            schema.KEY_SETUP_PEAK_METHOD: str(
                 select_mapping_value(
                     base_setup_payload,
                     setup_cfg,
-                    schema.KEY_SETUP_SR_METHOD,
-                    default=schema.DEFAULT_SETUP_SR_METHOD,
+                    schema.KEY_SETUP_PEAK_METHOD,
+                    default=schema.DEFAULT_SETUP_PEAK_METHOD,
                 )
             ).strip(),
             schema.KEY_SETUP_FWHM_SUMMARY: str(
@@ -491,7 +491,7 @@ class BaseSimulation(Simulation, ABC):
         lgs_theta_raw = setup_payload.get(self.KEY_SETUP_LGS_THETA, [])
         setup = setup_cls(
             ee_apertures=require_quantity(setup_payload[schema.KEY_SETUP_EE_APERTURES], u.mas, label=schema.KEY_SETUP_EE_APERTURES),
-            sr_method=str(setup_payload[schema.KEY_SETUP_SR_METHOD]).strip(),
+            peak_method=str(setup_payload[schema.KEY_SETUP_PEAK_METHOD]).strip(),
             fwhm_summary=str(setup_payload[schema.KEY_SETUP_FWHM_SUMMARY]).strip(),
             ee_geometry=str(setup_payload[schema.KEY_SETUP_EE_GEOMETRY]).strip(),
             atm_wavelength=require_quantity(setup_payload[schema.KEY_SETUP_ATM_WAVELENGTH], u.um, label=schema.KEY_SETUP_ATM_WAVELENGTH),

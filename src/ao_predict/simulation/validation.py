@@ -172,6 +172,51 @@ def normalize_unit_field_mapping(value: Any, *, label: str) -> dict[str, str]:
     return normalized
 
 
+def upgrade_setup_peak_method(setup: Mapping[str, Any]) -> dict[str, Any]:
+    """Return a setup copy with the legacy peak-selector field canonicalized.
+
+    Legacy ``sr_method`` values are accepted only at setup ingestion. The
+    returned mapping contains ``peak_method`` and never ``sr_method``.
+
+    Args:
+        setup: Partial or complete setup mapping.
+
+    Returns:
+        Setup mapping using the canonical ``peak_method`` field.
+
+    Raises:
+        ValueError: If legacy and canonical fields resolve to different values.
+    """
+    resolved = dict(setup)
+    legacy_key = schema.LEGACY_KEY_SETUP_SR_METHOD
+    canonical_key = schema.KEY_SETUP_PEAK_METHOD
+    if legacy_key not in resolved:
+        return resolved
+
+    legacy_value = str(resolved.pop(legacy_key)).strip()
+    upgraded_value = {
+        "pixel_fit": schema.STATS_PEAK_METHOD_GAUSSIAN_FIT,
+        "pixel_max": schema.STATS_PEAK_METHOD_PIXEL_MAX,
+    }.get(legacy_value, legacy_value)
+    if canonical_key in resolved:
+        canonical_value = str(resolved[canonical_key]).strip()
+        if canonical_value != upgraded_value:
+            raise ValueError(
+                "setup contains conflicting 'peak_method' and legacy "
+                "'sr_method' values."
+            )
+    else:
+        resolved[canonical_key] = upgraded_value
+    return resolved
+
+
+def resolve_setup_payload_for_load(setup: Mapping[str, Any]) -> dict[str, Any]:
+    """Upgrade and validate a persisted setup payload for runtime use."""
+    resolved = upgrade_setup_peak_method(setup)
+    validate_setup_payload_core(resolved)
+    return resolved
+
+
 def validate_direct_dataset_field_name(name: Any, *, label: str) -> str:
     """Return one validated direct HDF5 dataset field name."""
     if not isinstance(name, str):
@@ -248,11 +293,11 @@ def validate_setup_payload_core(setup: Mapping[str, Any]) -> None:
     if ee_apertures.size == 0 or not np.all(np.isfinite(ee_apertures)):
         raise ValueError("setup['ee_apertures'] must be a non-empty 1D finite array.")
 
-    sr_method = str(setup[schema.KEY_SETUP_SR_METHOD]).strip()
-    if sr_method not in schema.SETUP_STATS_SR_METHODS:
+    peak_method = str(setup[schema.KEY_SETUP_PEAK_METHOD]).strip()
+    if peak_method not in schema.SETUP_STATS_PEAK_METHODS:
         raise ValueError(
-            "setup['sr_method'] must be one of: "
-            + ", ".join(schema.SETUP_STATS_SR_METHODS)
+            "setup['peak_method'] must be one of: "
+            + ", ".join(schema.SETUP_STATS_PEAK_METHODS)
             + "."
         )
 

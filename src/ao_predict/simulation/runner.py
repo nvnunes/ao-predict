@@ -10,6 +10,7 @@ from typing import Any, Type
 from joblib import Parallel, delayed
 import numpy as np
 from astropy import units as u
+from ao_stats import PsfMetadata, compute_psf_stats
 
 from .._units import quantity_value, unit_string
 from ..persistence import SimulationStore
@@ -17,12 +18,12 @@ from . import schema
 from .config import add_runtime_derived_options
 from .validation import (
     resolve_simulation_payload_for_load,
+    upgrade_setup_peak_method,
     validate_psf_cube,
     validate_simulation_payload_core,
     validate_setup_payload_core,
 )
 from .interfaces import Simulation, SimulationResult, SimulationState
-from .stats import PsfMetadata, compute_psf_stats
 
 
 # Structures
@@ -234,7 +235,7 @@ def _prepare_base_setup_payload(base_setup: dict[str, Any]) -> dict[str, Any]:
     Returns:
         Setup mapping with core fields normalized into persistence-ready forms.
     """
-    setup = dict(base_setup)
+    setup = upgrade_setup_peak_method(base_setup)
     if "ee_apertures" in setup:
         setup["ee_apertures"] = quantity_value(
             setup["ee_apertures"],
@@ -242,7 +243,7 @@ def _prepare_base_setup_payload(base_setup: dict[str, Any]) -> dict[str, Any]:
             label="setup.ee_apertures",
             dtype=float,
         ).reshape(-1) * u.mas
-    setup.setdefault(schema.KEY_SETUP_SR_METHOD, schema.DEFAULT_SETUP_SR_METHOD)
+    setup.setdefault(schema.KEY_SETUP_PEAK_METHOD, schema.DEFAULT_SETUP_PEAK_METHOD)
     setup.setdefault(schema.KEY_SETUP_FWHM_SUMMARY, schema.DEFAULT_SETUP_FWHM_SUMMARY)
     setup.setdefault(schema.KEY_SETUP_EE_GEOMETRY, schema.DEFAULT_SETUP_EE_GEOMETRY)
     return setup
@@ -364,7 +365,7 @@ def _populate_result_stats(simulation: Simulation, context: Any) -> None:
         context.result.psfs,
         psf_metadata,
         ee_apertures=context.setup.ee_apertures,
-        sr_method=context.setup.sr_method,
+        peak_method=context.setup.peak_method,
         fwhm_summary=context.setup.fwhm_summary,
         ee_geometry=context.setup.ee_geometry,
         preprocess=lambda psfs: simulation.prepare_psfs_for_stats(

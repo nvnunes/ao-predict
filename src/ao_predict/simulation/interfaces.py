@@ -34,7 +34,8 @@ class SimulationSetup:
 
     Attributes:
         ee_apertures: EE aperture diameters (mas).
-        sr_method: Dataset-level Strehl selector for PSF statistics.
+        peak_method: Dataset-level peak estimator shared by Strehl and
+            enclosed-energy calculations.
         fwhm_summary: Dataset-level FWHM contour summary selector.
         ee_geometry: Dataset-level EE aperture geometry selector.
         atm_wavelength: Atmospheric reference wavelength (um).
@@ -46,7 +47,7 @@ class SimulationSetup:
     """
 
     ee_apertures: u.Quantity
-    sr_method: str
+    peak_method: str
     fwhm_summary: str
     ee_geometry: str
     atm_wavelength: u.Quantity

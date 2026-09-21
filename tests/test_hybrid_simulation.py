@@ -40,7 +40,7 @@ from ao_predict.simulation.hybrid import (
     jitter_from_ctot,
 )
 from ao_predict.simulation.runner import _populate_result_stats, create_simulation_from_config
-from ao_predict.simulation.stats import PsfMetadata
+from ao_stats import PsfMetadata
 
 
 def _ini_text() -> str:
@@ -909,7 +909,7 @@ def test_hybrid_rejects_bad_ctot_and_missing_ngs() -> None:
 def _setup_payload() -> dict[str, object]:
     return {
         "ee_apertures": np.array([50.0]) * u.mas,
-        "sr_method": "pixel_fit",
+        "peak_method": "gaussian_fit",
         "fwhm_summary": "geom",
         "ee_geometry": "ensquared",
         "atm_wavelength": 0.5 * u.um,
@@ -952,8 +952,8 @@ def _options() -> dict[str, object]:
 
 def _science_samples() -> ScienceHoPsfSamples:
     psfs = np.zeros((1, 2, 5, 5), dtype=np.float32)
-    psfs[0, 0, 2, 2] = 2.0
-    psfs[0, 1, 2, 2] = 3.0
+    psfs[0, 0, 2, 2] = 0.5
+    psfs[0, 1, 2, 2] = 0.75
     return ScienceHoPsfSamples(
         zenith_angle=np.array([20.0]) * u.deg,
         wavelength=np.array([1.0]) * u.um,

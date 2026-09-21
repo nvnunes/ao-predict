@@ -279,12 +279,12 @@ its canonical generic Astropy unit string in a `units` attribute. The value is
 `1` for dimensionless scientific quantities.
 
 Implemented core metric family:
-- Strehl: image-domain `pixel_fit` (default) or `pixel_max`, selected by `/setup/sr_method`
+- Shared peak estimation: `gaussian_fit` (default) or `pixel_max`, selected by `/setup/peak_method`; Strehl uses its amplitude and EE uses its location
 - EE: fixed peak-centered image-domain aperture accumulation selected by `/setup/ee_geometry`
 - FWHM: fixed native contour measurement summarized by `/setup/fwhm_summary`
 
 Setup-level stats selectors:
-- `/setup/sr_method`: dataset-level Strehl selector, `pixel_fit` or `pixel_max`
+- `/setup/peak_method`: dataset-level shared peak estimator, `gaussian_fit` or `pixel_max`
 - `/setup/fwhm_summary`: dataset-level contour-summary selector, `geom`, `mean`, `max`, or `min`
 - `/setup/ee_geometry`: dataset-level EE aperture selector, `ensquared` or `encircled`
 

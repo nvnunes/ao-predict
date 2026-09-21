@@ -23,7 +23,6 @@ ao-predict provides:
   - [Simulation API](reference/simulation/api.md)
   - [Simulation Options](reference/simulation/options.md)
   - [Simulation Runner](reference/simulation/runner.md)
-  - [Simulation Stats](reference/simulation/stats.md)
   - [TIPTOP Simulation](reference/simulation/tiptop.md)
   - [Validation](reference/simulation/validation.md)
   - [Interpolation](reference/interpolation.md)

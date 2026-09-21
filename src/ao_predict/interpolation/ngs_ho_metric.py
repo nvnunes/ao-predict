@@ -9,16 +9,16 @@ from typing import Any, Mapping
 
 import numpy as np
 from astropy import units as u
-from scipy.interpolate import RegularGridInterpolator
-from scipy.spatial import Delaunay, QhullError
-
-from ao_predict.simulation.stats import (
+from ao_stats import (
     EE_GEOMETRY_ENCIRCLED,
     PsfMetadata,
     compute_psf_ee,
     compute_psf_fwhm,
     compute_psf_sr,
 )
+from scipy.interpolate import RegularGridInterpolator
+from scipy.spatial import Delaunay, QhullError
+
 from ao_predict._units import quantity_value, require_quantity
 
 from ._core import (

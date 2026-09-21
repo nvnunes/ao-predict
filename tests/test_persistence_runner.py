@@ -1,12 +1,7 @@
 from __future__ import annotations
 
-import importlib.util
-import sys
-import types
 from collections.abc import Mapping
-from pathlib import Path
 
-import contourpy
 import h5py
 import numpy as np
 import pytest
@@ -30,8 +25,6 @@ from ao_predict.simulation.runner import (
     run_pending_simulations,
     run_simulations_by_state,
 )
-import ao_predict.simulation.stats as stats_module
-from ao_predict.simulation.stats import PsfMetadata, compute_psf_ee, compute_psf_fwhm, compute_psf_sr, compute_psf_stats
 from ao_predict.simulation.validation import validate_successful_result
 from helpers import run_pending_with_callback
 from mock_simulation import (
@@ -41,9 +34,6 @@ from mock_simulation import (
     MockSimulation,
     WarmupMockSimulation,
 )
-
-_GIRMOS_AOSTATS = None
-
 
 def _simulation(
     *,
@@ -99,7 +89,7 @@ def _mock_simulation(
 def _setup() -> dict:
     return {
         "ee_apertures": np.array([50.0, 100.0], dtype=float) * u.mas,
-        "sr_method": schema.DEFAULT_SETUP_SR_METHOD,
+        "peak_method": schema.DEFAULT_SETUP_PEAK_METHOD,
         "fwhm_summary": schema.DEFAULT_SETUP_FWHM_SUMMARY,
         "ee_geometry": schema.DEFAULT_SETUP_EE_GEOMETRY,
         "atm_wavelength": 0.5 * u.um,
@@ -145,29 +135,6 @@ def _stats_meta(pixel_scale: float = 4.0) -> dict:
         schema.KEY_META_TEL_DIAMETER: 8.0 * u.m,
         schema.KEY_META_TEL_PUPIL: np.ones((6, 6), dtype=np.float32) * u.dimensionless_unscaled,
     }
-
-
-def _psf_metadata(
-    *,
-    wavelength: float | np.ndarray = 1.65,
-    pixel_scale: float | np.ndarray = 4.0,
-    tel_diameter: float | np.ndarray = 8.0,
-    tel_pupil: np.ndarray | None = None,
-) -> PsfMetadata:
-    return PsfMetadata(
-        wavelength=u.Quantity(np.asarray(wavelength), u.um, copy=False),
-        pixel_scale=u.Quantity(np.asarray(pixel_scale), u.mas, copy=False),
-        tel_diameter=u.Quantity(np.asarray(tel_diameter), u.m, copy=False),
-        tel_pupil=u.Quantity(
-            np.ones((6, 6), dtype=np.float32) if tel_pupil is None else tel_pupil,
-            u.dimensionless_unscaled,
-            copy=False,
-        ),
-    )
-
-
-def _stats_ee_apertures() -> u.Quantity:
-    return np.array([50.0, 100.0], dtype=np.float32) * u.mas
 
 
 def _success_result(
@@ -224,7 +191,7 @@ def _setup_obj() -> SimulationSetup:
     setup = _setup()
     return SimulationSetup(
         ee_apertures=setup["ee_apertures"],
-        sr_method=str(setup["sr_method"]),
+        peak_method=str(setup["peak_method"]),
         fwhm_summary=str(setup["fwhm_summary"]),
         ee_geometry=str(setup["ee_geometry"]),
         atm_wavelength=setup["atm_wavelength"],
@@ -233,93 +200,6 @@ def _setup_obj() -> SimulationSetup:
         lgs_theta=setup["lgs_theta"],
         sci_r=setup["sci_r"],
         sci_theta=setup["sci_theta"],
-    )
-
-
-def _stub_unavailable_girmos_dependencies() -> None:
-    """Install test-only stubs for upstream imports not needed by AO Predict paths."""
-    if "skimage.measure" not in sys.modules:
-        skimage_module = types.ModuleType("skimage")
-        skimage_measure = types.ModuleType("skimage.measure")
-
-        def _find_contours(z: np.ndarray, level: float) -> list[np.ndarray]:
-            generator = contourpy.contour_generator(z=np.asarray(z, dtype=float))
-            return [line[:, [1, 0]] for line in generator.lines(float(level))]
-
-        skimage_measure.find_contours = _find_contours
-        skimage_module.measure = skimage_measure
-        sys.modules["skimage"] = skimage_module
-        sys.modules["skimage.measure"] = skimage_measure
-
-    if "mastsel.mavisPsf" not in sys.modules:
-        mastsel_module = types.ModuleType("mastsel")
-        mastsel_mavis = types.ModuleType("mastsel.mavisPsf")
-
-        def _unused(*args, **kwargs):
-            raise RuntimeError("Legacy-only upstream dependency should not be used in AO Predict regression tests.")
-
-        mastsel_mavis.Field = object
-        mastsel_mavis.convolve = _unused
-        mastsel_mavis.residualToSpectrum = _unused
-        mastsel_module.mavisPsf = mastsel_mavis
-        sys.modules["mastsel"] = mastsel_module
-        sys.modules["mastsel.mavisPsf"] = mastsel_mavis
-
-    if "p3.aoSystem.FourierUtils" not in sys.modules:
-        p3_module = types.ModuleType("p3")
-        p3_aosystem = types.ModuleType("p3.aoSystem")
-        p3_fourier = types.ModuleType("p3.aoSystem.FourierUtils")
-
-        def _unused(*args, **kwargs):
-            raise RuntimeError("Legacy-only upstream dependency should not be used in AO Predict regression tests.")
-
-        p3_fourier.otf2psf = _unused
-        p3_fourier.telescopeOtf = _unused
-        p3_fourier.find_contour_points = _unused
-        p3_fourier.fwhm_1d = _unused
-        p3_aosystem.FourierUtils = p3_fourier
-        p3_module.aoSystem = p3_aosystem
-        sys.modules["p3"] = p3_module
-        sys.modules["p3.aoSystem"] = p3_aosystem
-        sys.modules["p3.aoSystem.FourierUtils"] = p3_fourier
-
-    if "ao_tools" not in sys.modules:
-        ao_tools_module = types.ModuleType("ao_tools")
-        ao_tools_module.simulate = types.SimpleNamespace()
-        sys.modules["ao_tools"] = ao_tools_module
-
-
-def _load_girmos_aostats_for_regression():
-    """Load the locked downstream AO stats module for regression comparisons."""
-    global _GIRMOS_AOSTATS
-    if _GIRMOS_AOSTATS is not None:
-        return _GIRMOS_AOSTATS
-
-    path = Path("/Users/nelsonnunes/Library/CloudStorage/Dropbox/Projects/girmos-aosims/ao_tools/aostats.py")
-    if not path.exists():
-        pytest.skip(f"Downstream regression source not available: {path}")
-
-    _stub_unavailable_girmos_dependencies()
-    spec = importlib.util.spec_from_file_location("girmos_aostats_regression", path)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    _GIRMOS_AOSTATS = module
-    return module
-
-
-def _gaussian_psf(
-    ny: int,
-    nx: int,
-    center_y: float,
-    center_x: float,
-    sigma_y: float,
-    sigma_x: float,
-) -> np.ndarray:
-    y, x = np.indices((ny, nx), dtype=np.float32)
-    return np.exp(
-        -0.5 * (((y - center_y) / sigma_y) ** 2 + ((x - center_x) / sigma_x) ** 2),
-        dtype=np.float32,
     )
 
 
@@ -432,7 +312,7 @@ def test_populate_result_stats_rejects_simulation_provided_core_stats():
     context.runtime["extra_stat_fields"] = {}
     context.result = SimulationResult(
         state=SimulationState.SUCCEEDED,
-        psfs=np.full((3, 4, 4), 0.1, dtype=np.float32),
+        psfs=np.full((3, 4, 4), 1.0 / 16.0, dtype=np.float32),
         meta=_stats_meta(),
     )
     simulation = _ExtraStatsSimulation(
@@ -451,7 +331,7 @@ def test_populate_result_stats_rejects_direct_result_stats_population():
     context.runtime["extra_stat_fields"] = {}
     context.result = SimulationResult(
         state=SimulationState.SUCCEEDED,
-        psfs=np.full((3, 4, 4), 0.1, dtype=np.float32),
+        psfs=np.full((3, 4, 4), 1.0 / 16.0, dtype=np.float32),
         meta=_stats_meta(),
         stats={"halo": np.full((3,), 0.2, dtype=np.float32) * u.mas},
     )
@@ -469,7 +349,7 @@ def test_populate_result_stats_rejects_undeclared_extra_stats():
     context.runtime["extra_stat_fields"] = {}
     context.result = SimulationResult(
         state=SimulationState.SUCCEEDED,
-        psfs=np.full((3, 4, 4), 0.1, dtype=np.float32),
+        psfs=np.full((3, 4, 4), 1.0 / 16.0, dtype=np.float32),
         meta=_stats_meta(),
     )
     simulation = _ExtraStatsSimulation(
@@ -486,7 +366,7 @@ def test_populate_result_stats_passes_runtime_options_to_stats(monkeypatch):
     context.runtime["extra_stat_fields"] = {}
     context.result = SimulationResult(
         state=SimulationState.SUCCEEDED,
-        psfs=np.full((3, 4, 4), 0.1, dtype=np.float32),
+        psfs=np.full((3, 4, 4), 1.0 / 16.0, dtype=np.float32),
         meta=_stats_meta(),
     )
 
@@ -495,13 +375,13 @@ def test_populate_result_stats_passes_runtime_options_to_stats(monkeypatch):
         metadata,
         *,
         ee_apertures,
-        sr_method,
+        peak_method,
         fwhm_summary,
         ee_geometry,
         preprocess=None,
         **kwargs,
     ):
-        del psfs, ee_apertures, sr_method, fwhm_summary, preprocess, kwargs
+        del psfs, ee_apertures, peak_method, fwhm_summary, preprocess, kwargs
         observed_options.append(
             {
                 schema.KEY_OPTION_WAVELENGTH: metadata.wavelength,
@@ -521,810 +401,6 @@ def test_populate_result_stats_passes_runtime_options_to_stats(monkeypatch):
     assert len(observed_options) == 1
     assert observed_options[0][schema.KEY_OPTION_WAVELENGTH].to_value(u.um) == pytest.approx(1.65)
     assert observed_options[0][schema.KEY_SETUP_EE_GEOMETRY] == schema.DEFAULT_SETUP_EE_GEOMETRY
-
-
-def test_compute_psf_stats_rejects_missing_ee_apertures():
-    with pytest.raises(ValueError, match="ee_apertures is required when computing EE"):
-        compute_psf_stats(
-            np.zeros((3, 4, 4), dtype=np.float32),
-            _psf_metadata(),
-        )
-
-
-def test_compute_psf_stats_fwhm_metric_does_not_require_ee_apertures_or_compute_sr_ee(monkeypatch):
-    def _compute_strehl(*args, **kwargs):
-        raise AssertionError("SR should not be computed")
-
-    def _compute_enclosed_energy(*args, **kwargs):
-        raise AssertionError("EE should not be computed")
-
-    def _measure(psfs, pixel_scale):
-        del pixel_scale
-        return (
-            np.full((psfs.shape[0],), 4.0, dtype=np.float32),
-            np.full((psfs.shape[0],), 9.0, dtype=np.float32),
-        )
-
-    monkeypatch.setattr(stats_module, "_compute_strehl", _compute_strehl)
-    monkeypatch.setattr(stats_module, "_compute_enclosed_energy", _compute_enclosed_energy)
-    monkeypatch.setattr(stats_module, "_measure_contour_fwhms", _measure)
-
-    result = compute_psf_stats(
-        np.zeros((2, 4, 4), dtype=np.float32),
-        _psf_metadata(),
-        metrics=("fwhm",),
-    )
-
-    assert len(result) == 1
-    np.testing.assert_allclose(
-        result[0], np.full((2,), 6.0, dtype=np.float32) * u.mas
-    )
-
-
-def test_compute_psf_stats_ee_metric_uses_peak_locations_without_computing_sr(monkeypatch):
-    def _compute_strehl(*args, **kwargs):
-        raise AssertionError("SR should not be computed")
-
-    def _peak_locations(psfs, sr_method):
-        del sr_method
-        return np.full((psfs.shape[0], 2), 1.0, dtype=np.float32)
-
-    def _ee(psfs, ee_apertures, pixel_scale, peak_locations_yx=None, *, ee_geometry="ensquared"):
-        del pixel_scale, ee_geometry
-        np.testing.assert_allclose(peak_locations_yx, np.full((psfs.shape[0], 2), 1.0, dtype=np.float32))
-        return np.full((psfs.shape[0], ee_apertures.shape[0]), 0.25, dtype=np.float32)
-
-    monkeypatch.setattr(stats_module, "_compute_strehl", _compute_strehl)
-    monkeypatch.setattr(stats_module, "_compute_peak_locations", _peak_locations)
-    monkeypatch.setattr(stats_module, "_compute_enclosed_energy", _ee)
-
-    result = compute_psf_stats(
-        np.zeros((2, 4, 4), dtype=np.float32),
-        _psf_metadata(),
-        ee_apertures=_stats_ee_apertures(),
-        metrics=("ee",),
-    )
-
-    assert len(result) == 1
-    np.testing.assert_allclose(result[0], np.full((2, 2), 0.25, dtype=np.float32))
-
-
-def test_compute_psf_stats_rejects_invalid_metric_names():
-    with pytest.raises(ValueError, match="metrics contains unsupported names"):
-        compute_psf_stats(
-            np.zeros((2, 4, 4), dtype=np.float32),
-            _psf_metadata(),
-            metrics=("unknown",),
-        )
-
-
-def test_compute_psf_metric_wrappers_return_single_metric(monkeypatch):
-    def _compute_strehl(psfs, sr_method, pixel_scale, wavelength, tel_diameter, tel_pupil):
-        del sr_method, pixel_scale, wavelength, tel_diameter, tel_pupil
-        return np.full((psfs.shape[0],), 0.5, dtype=np.float32), np.zeros((psfs.shape[0], 2), dtype=np.float32)
-
-    def _peak_locations(psfs, sr_method):
-        del sr_method
-        return np.zeros((psfs.shape[0], 2), dtype=np.float32)
-
-    def _ee(psfs, ee_apertures, pixel_scale, peak_locations_yx=None, *, ee_geometry="ensquared"):
-        del pixel_scale, peak_locations_yx, ee_geometry
-        return np.full((psfs.shape[0], ee_apertures.shape[0]), 0.25, dtype=np.float32)
-
-    def _measure(psfs, pixel_scale):
-        del pixel_scale
-        return (
-            np.full((psfs.shape[0],), 4.0, dtype=np.float32),
-            np.full((psfs.shape[0],), 9.0, dtype=np.float32),
-        )
-
-    monkeypatch.setattr(stats_module, "_compute_strehl", _compute_strehl)
-    monkeypatch.setattr(stats_module, "_compute_peak_locations", _peak_locations)
-    monkeypatch.setattr(stats_module, "_compute_enclosed_energy", _ee)
-    monkeypatch.setattr(stats_module, "_measure_contour_fwhms", _measure)
-
-    psfs = np.zeros((2, 4, 4), dtype=np.float32)
-    np.testing.assert_allclose(compute_psf_sr(psfs, _psf_metadata()), np.full((2,), 0.5, dtype=np.float32))
-    np.testing.assert_allclose(
-        compute_psf_ee(psfs, _psf_metadata(), ee_apertures=_stats_ee_apertures()),
-        np.full((2, 2), 0.25, dtype=np.float32),
-    )
-    np.testing.assert_allclose(
-        compute_psf_fwhm(psfs, _psf_metadata()),
-        np.full((2,), 6.0, dtype=np.float32) * u.mas,
-    )
-
-
-def test_compute_psf_stats_rejects_invalid_sr_method():
-    with pytest.raises(ValueError, match="sr_method must be one of"):
-        compute_psf_stats(
-            np.zeros((3, 4, 4), dtype=np.float32),
-            _psf_metadata(),
-            ee_apertures=_stats_ee_apertures(),
-            sr_method="invalid",
-        )
-
-
-def test_compute_psf_stats_rejects_invalid_fwhm_summary():
-    with pytest.raises(ValueError, match="fwhm_summary must be one of"):
-        compute_psf_stats(
-            np.zeros((3, 4, 4), dtype=np.float32),
-            _psf_metadata(),
-            ee_apertures=_stats_ee_apertures(),
-            fwhm_summary="invalid",
-        )
-
-
-def test_compute_psf_stats_rejects_invalid_per_psf_wavelength_length():
-    with pytest.raises(ValueError, match="metadata.wavelength per-PSF vector length must match the PSF cube length 3"):
-        compute_psf_stats(
-            np.zeros((3, 4, 4), dtype=np.float32),
-            _psf_metadata(wavelength=np.array([1.6, 1.7], dtype=np.float32)),
-            ee_apertures=_stats_ee_apertures(),
-        )
-
-
-def test_compute_psf_stats_rejects_invalid_per_psf_pixel_scale_length():
-    with pytest.raises(ValueError, match="metadata.pixel_scale per-PSF vector length must match the PSF cube length 3"):
-        compute_psf_stats(
-            np.zeros((3, 4, 4), dtype=np.float32),
-            _psf_metadata(pixel_scale=np.array([4.0, 4.1], dtype=np.float32)),
-            ee_apertures=_stats_ee_apertures(),
-        )
-
-
-def test_compute_psf_stats_rejects_non_scalar_telescope_diameter():
-    with pytest.raises(ValueError, match="metadata.tel_diameter must be a scalar"):
-        compute_psf_stats(
-            np.zeros((3, 4, 4), dtype=np.float32),
-            _psf_metadata(tel_diameter=np.array([8.0, 8.1], dtype=np.float32)),
-            ee_apertures=_stats_ee_apertures(),
-        )
-
-
-def test_compute_psf_stats_rejects_non_2d_telescope_pupil():
-    with pytest.raises(ValueError, match=r"metadata\.tel_pupil must be 2D"):
-        compute_psf_stats(
-            np.zeros((3, 4, 4), dtype=np.float32),
-            _psf_metadata(tel_pupil=np.ones((3, 6, 6), dtype=np.float32)),
-            ee_apertures=_stats_ee_apertures(),
-        )
-
-
-def test_compute_psf_stats_rejects_invalid_per_psf_ee_aperture_length():
-    with pytest.raises(ValueError, match="ee_apertures per-PSF leading dimension must match the PSF cube length 3"):
-        compute_psf_stats(
-            np.zeros((3, 4, 4), dtype=np.float32),
-            _psf_metadata(),
-            ee_apertures=np.ones((2, 1), dtype=np.float32) * u.mas,
-        )
-
-
-def test_compute_psf_stats_dispatches_selected_strehl_method(monkeypatch):
-    calls: list[str] = []
-
-    def _pixel_fit(psfs, pixel_scale, wavelength, tel_diameter, tel_pupil):
-        del pixel_scale, wavelength, tel_diameter, tel_pupil
-        calls.append(schema.STATS_SR_METHOD_PIXEL_FIT)
-        return (
-            np.zeros((psfs.shape[0],), dtype=np.float32),
-            np.zeros((psfs.shape[0], 2), dtype=np.float32),
-        )
-
-    def _pixel_max(psfs, pixel_scale, wavelength, tel_diameter, tel_pupil):
-        del pixel_scale, wavelength, tel_diameter, tel_pupil
-        calls.append(schema.STATS_SR_METHOD_PIXEL_MAX)
-        return (
-            np.zeros((psfs.shape[0],), dtype=np.float32),
-            np.zeros((psfs.shape[0], 2), dtype=np.float32),
-        )
-
-    monkeypatch.setattr(stats_module, "_compute_strehl_pixel_fit", _pixel_fit)
-    monkeypatch.setattr(stats_module, "_compute_strehl_pixel_max", _pixel_max)
-
-    compute_psf_stats(
-        np.zeros((3, 4, 4), dtype=np.float32),
-        _psf_metadata(),
-        ee_apertures=_stats_ee_apertures(),
-        sr_method=schema.STATS_SR_METHOD_PIXEL_MAX,
-    )
-
-    assert calls == [schema.STATS_SR_METHOD_PIXEL_MAX]
-    calls.clear()
-
-    compute_psf_stats(
-        np.zeros((2, 4, 4), dtype=np.float32),
-        _psf_metadata(),
-        ee_apertures=_stats_ee_apertures(),
-        sr_method=schema.STATS_SR_METHOD_PIXEL_FIT,
-    )
-
-    assert calls == [schema.STATS_SR_METHOD_PIXEL_FIT]
-
-
-def test_compute_psf_stats_reuses_fit_peak_locations_for_ee(monkeypatch):
-    ee_peak_locations: list[np.ndarray | None] = []
-    ee_geometries: list[str] = []
-
-    def _pixel_fit(psfs, pixel_scale, wavelength, tel_diameter, tel_pupil):
-        del pixel_scale, wavelength, tel_diameter, tel_pupil
-        return (
-            np.zeros((psfs.shape[0],), dtype=np.float32),
-            np.full((psfs.shape[0], 2), 1.5, dtype=np.float32),
-        )
-
-    def _pixel_max(psfs, pixel_scale, wavelength, tel_diameter, tel_pupil):
-        del pixel_scale, wavelength, tel_diameter, tel_pupil
-        return (
-            np.zeros((psfs.shape[0],), dtype=np.float32),
-            np.full((psfs.shape[0], 2), 2.5, dtype=np.float32),
-        )
-
-    def _ee(
-        psfs,
-        ee_apertures,
-        pixel_scale,
-        peak_locations_xy=None,
-        *,
-        ee_geometry="ensquared",
-    ):
-        del pixel_scale
-        ee_peak_locations.append(None if peak_locations_xy is None else np.asarray(peak_locations_xy, dtype=np.float32))
-        ee_geometries.append(ee_geometry)
-        return np.zeros((psfs.shape[0], ee_apertures.shape[0]), dtype=np.float32)
-
-    monkeypatch.setattr(stats_module, "_compute_strehl_pixel_fit", _pixel_fit)
-    monkeypatch.setattr(stats_module, "_compute_strehl_pixel_max", _pixel_max)
-    monkeypatch.setattr(stats_module, "_compute_enclosed_energy", _ee)
-
-    compute_psf_stats(
-        np.zeros((2, 4, 4), dtype=np.float32),
-        _psf_metadata(),
-        ee_apertures=_stats_ee_apertures(),
-        sr_method=schema.STATS_SR_METHOD_PIXEL_FIT,
-    )
-
-    assert len(ee_peak_locations) == 1
-    np.testing.assert_allclose(ee_peak_locations[0], np.full((2, 2), 1.5, dtype=np.float32))
-    assert ee_geometries == ["ensquared"]
-    ee_peak_locations.clear()
-    ee_geometries.clear()
-
-    compute_psf_stats(
-        np.zeros((2, 4, 4), dtype=np.float32),
-        _psf_metadata(),
-        ee_apertures=_stats_ee_apertures(),
-        sr_method=schema.STATS_SR_METHOD_PIXEL_MAX,
-    )
-
-    assert len(ee_peak_locations) == 1
-    np.testing.assert_allclose(ee_peak_locations[0], np.full((2, 2), 2.5, dtype=np.float32))
-    assert ee_geometries == ["ensquared"]
-
-
-def test_compute_psf_stats_passes_requested_ee_geometry(monkeypatch):
-    requested: list[str] = []
-
-    def _ee(
-        psfs,
-        ee_apertures,
-        pixel_scale,
-        peak_locations_yx=None,
-        *,
-        ee_geometry="ensquared",
-    ):
-        del pixel_scale, peak_locations_yx
-        requested.append(ee_geometry)
-        return np.zeros((psfs.shape[0], ee_apertures.shape[0]), dtype=np.float32)
-
-    monkeypatch.setattr(stats_module, "_compute_enclosed_energy", _ee)
-
-    compute_psf_stats(
-        np.zeros((2, 4, 4), dtype=np.float32),
-        _psf_metadata(),
-        ee_apertures=_stats_ee_apertures(),
-        ee_geometry="encircled",
-    )
-
-    assert requested == ["encircled"]
-
-
-def test_compute_psf_stats_rejects_invalid_ee_geometry(monkeypatch):
-    def _compute_strehl(psfs, sr_method, pixel_scale, wavelength, tel_diameter, tel_pupil):
-        del sr_method, pixel_scale, wavelength, tel_diameter, tel_pupil
-        return np.zeros((psfs.shape[0],), dtype=np.float32), np.full((psfs.shape[0], 2), 2, dtype=np.float32)
-
-    monkeypatch.setattr(stats_module, "_compute_strehl", _compute_strehl)
-
-    with pytest.raises(ValueError, match="ee_geometry must be one of"):
-        compute_psf_stats(
-            np.zeros((2, 4, 4), dtype=np.float32),
-            _psf_metadata(),
-            ee_apertures=_stats_ee_apertures(),
-            ee_geometry="triangle",
-        )
-
-
-def test_compute_psf_stats_computes_encircled_energy(monkeypatch):
-    def _compute_strehl(psfs, sr_method, pixel_scale, wavelength, tel_diameter, tel_pupil):
-        del sr_method, pixel_scale, wavelength, tel_diameter, tel_pupil
-        return np.zeros((psfs.shape[0],), dtype=np.float32), np.full((psfs.shape[0], 2), 2, dtype=np.float32)
-
-    monkeypatch.setattr(stats_module, "_compute_strehl", _compute_strehl)
-
-    psfs = np.zeros((2, 5, 5), dtype=np.float32)
-    psfs[:, 2, 2] = 1.0
-
-    _sr, ee, _fwhm = compute_psf_stats(
-        psfs,
-        _psf_metadata(),
-        ee_apertures=_stats_ee_apertures(),
-        ee_geometry="encircled",
-    )
-
-    assert ee.shape == (2, 2)
-    np.testing.assert_allclose(ee, np.ones((2, 2), dtype=np.float32), atol=1e-6)
-
-
-def test_compute_psf_stats_selects_requested_fwhm_summary(monkeypatch):
-    requested: list[str] = []
-    select_impl = stats_module._compute_fwhm_summary
-
-    def _measure(psfs, pixel_scale):
-        del pixel_scale
-        return (
-            np.full((psfs.shape[0],), 4.0, dtype=np.float32),
-            np.full((psfs.shape[0],), 3.0, dtype=np.float32),
-        )
-
-    def _select(fwhm_summary, fwhm_min, fwhm_max):
-        requested.append(fwhm_summary)
-        return select_impl(fwhm_summary, fwhm_min, fwhm_max)
-
-    monkeypatch.setattr(stats_module, "_measure_contour_fwhms", _measure)
-    monkeypatch.setattr(stats_module, "_compute_fwhm_summary", _select)
-
-    _sr, _ee, fwhm = compute_psf_stats(
-        np.zeros((2, 4, 4), dtype=np.float32),
-        _psf_metadata(),
-        ee_apertures=_stats_ee_apertures(),
-        fwhm_summary=schema.STATS_FWHM_SUMMARY_MAX,
-    )
-
-    assert requested == [schema.STATS_FWHM_SUMMARY_MAX]
-    np.testing.assert_allclose(
-        fwhm, np.full((2,), 3.0, dtype=np.float32) * u.mas
-    )
-
-
-def test_compute_psf_stats_uses_per_psf_wavelength(monkeypatch):
-    observed_wavelengths: list[float] = []
-
-    def _compute_strehl(psfs, sr_method, pixel_scale, wavelength, tel_diameter, tel_pupil):
-        del sr_method, pixel_scale, tel_diameter, tel_pupil
-        observed_wavelengths.append(float(wavelength))
-        return np.zeros((psfs.shape[0],), dtype=np.float32), np.zeros((psfs.shape[0], 2), dtype=np.float32)
-
-    monkeypatch.setattr(stats_module, "_compute_strehl", _compute_strehl)
-
-    compute_psf_stats(
-        np.zeros((2, 4, 4), dtype=np.float32),
-        _psf_metadata(wavelength=np.array([1.2, 1.8], dtype=np.float32)),
-        ee_apertures=_stats_ee_apertures(),
-    )
-
-    np.testing.assert_allclose(observed_wavelengths, [1.2, 1.8])
-
-
-def test_compute_psf_stats_uses_per_psf_pixel_scale(monkeypatch):
-    observed_pixel_scales: list[float] = []
-
-    def _compute_strehl(psfs, sr_method, pixel_scale, wavelength, tel_diameter, tel_pupil):
-        del sr_method, wavelength, tel_diameter, tel_pupil
-        observed_pixel_scales.append(float(pixel_scale))
-        return np.zeros((psfs.shape[0],), dtype=np.float32), np.zeros((psfs.shape[0], 2), dtype=np.float32)
-
-    monkeypatch.setattr(stats_module, "_compute_strehl", _compute_strehl)
-
-    compute_psf_stats(
-        np.zeros((2, 4, 4), dtype=np.float32),
-        _psf_metadata(pixel_scale=np.array([3.5, 4.5], dtype=np.float32)),
-        ee_apertures=_stats_ee_apertures(),
-    )
-
-    np.testing.assert_allclose(observed_pixel_scales, [3.5, 4.5])
-
-
-def test_compute_psf_stats_uses_per_psf_ee_apertures(monkeypatch):
-    observed_apertures: list[np.ndarray] = []
-
-    def _ee(psfs, ee_apertures, pixel_scale, peak_locations_yx=None, *, ee_geometry="ensquared"):
-        del pixel_scale, peak_locations_yx, ee_geometry
-        observed_apertures.append(np.asarray(ee_apertures, dtype=np.float32))
-        return np.zeros((psfs.shape[0], ee_apertures.shape[0]), dtype=np.float32)
-
-    monkeypatch.setattr(stats_module, "_compute_enclosed_energy", _ee)
-
-    _sr, ee, _fwhm = compute_psf_stats(
-        np.zeros((2, 4, 4), dtype=np.float32),
-        _psf_metadata(),
-        ee_apertures=np.array([[10.0], [20.0]], dtype=np.float32) * u.mas,
-    )
-
-    assert ee.shape == (2, 1)
-    assert len(observed_apertures) == 2
-    np.testing.assert_allclose(observed_apertures[0], [10.0])
-    np.testing.assert_allclose(observed_apertures[1], [20.0])
-
-
-def test_compute_psf_stats_default_preprocess_shortcut_clips_and_normalizes(monkeypatch):
-    observed_psfs: list[np.ndarray] = []
-
-    def _compute_strehl(psfs, sr_method, pixel_scale, wavelength, tel_diameter, tel_pupil):
-        del sr_method, pixel_scale, wavelength, tel_diameter, tel_pupil
-        observed_psfs.append(np.asarray(psfs, dtype=np.float32))
-        return np.zeros((psfs.shape[0],), dtype=np.float32), np.zeros((psfs.shape[0], 2), dtype=np.float32)
-
-    monkeypatch.setattr(stats_module, "_compute_strehl", _compute_strehl)
-
-    compute_psf_stats(
-        np.array([[[-1.0, 3.0], [1.0, 0.0]]], dtype=np.float32),
-        _psf_metadata(),
-        ee_apertures=np.array([50.0], dtype=np.float32) * u.mas,
-        preprocess="default",
-    )
-
-    assert len(observed_psfs) == 1
-    np.testing.assert_allclose(
-        observed_psfs[0],
-        np.array([[[0.0, 0.75], [0.25, 0.0]]], dtype=np.float32),
-    )
-
-
-def test_compute_psf_stats_rejects_unknown_preprocess_string():
-    with pytest.raises(ValueError, match="preprocess must be None, 'default', or a callable"):
-        compute_psf_stats(
-            np.zeros((2, 4, 4), dtype=np.float32),
-            _psf_metadata(),
-            ee_apertures=_stats_ee_apertures(),
-            preprocess="runner",
-        )
-
-
-def test_compute_psf_stats_uses_preprocess_callable(monkeypatch):
-    observed_psfs: list[np.ndarray] = []
-
-    def _preprocess(psfs):
-        return np.asarray(psfs, dtype=np.float32) + 2.0
-
-    def _compute_strehl(psfs, sr_method, pixel_scale, wavelength, tel_diameter, tel_pupil):
-        del sr_method, pixel_scale, wavelength, tel_diameter, tel_pupil
-        observed_psfs.append(np.asarray(psfs, dtype=np.float32))
-        return np.zeros((psfs.shape[0],), dtype=np.float32), np.zeros((psfs.shape[0], 2), dtype=np.float32)
-
-    monkeypatch.setattr(stats_module, "_compute_strehl", _compute_strehl)
-
-    compute_psf_stats(
-        np.zeros((2, 4, 4), dtype=np.float32),
-        _psf_metadata(),
-        ee_apertures=_stats_ee_apertures(),
-        preprocess=_preprocess,
-    )
-
-    assert len(observed_psfs) == 1
-    np.testing.assert_allclose(observed_psfs[0], np.full((2, 4, 4), 2.0, dtype=np.float32))
-
-
-def test_compute_strehl_pixel_max_matches_diffraction_limited_peak():
-    tel_pupil = np.ones((6, 6), dtype=np.float32)
-    psf_dl = stats_module._get_diffraction_limited_psf(
-        8.0,
-        tel_pupil,
-        1.65,
-        4.0,
-        center_in_one_pix=True,
-    )
-
-    sr, peak_locations_yx = stats_module._compute_strehl_pixel_max(
-        psf_dl[None, :, :],
-        4.0,
-        1.65,
-        8.0,
-        tel_pupil,
-    )
-    expected_peak = np.array(np.unravel_index(np.argmax(psf_dl), psf_dl.shape), dtype=np.float32)[None, :]
-
-    np.testing.assert_allclose(sr, np.array([1.0], dtype=np.float32), rtol=1e-5, atol=1e-5)
-    np.testing.assert_allclose(peak_locations_yx, expected_peak, atol=0.0)
-
-
-def test_compute_strehl_pixel_fit_matches_diffraction_limited_peak():
-    tel_pupil = np.ones((6, 6), dtype=np.float32)
-    psf_dl = stats_module._get_diffraction_limited_psf(
-        8.0,
-        tel_pupil,
-        1.65,
-        4.0,
-        center_in_one_pix=False,
-    )
-
-    sr, peak_locations_yx = stats_module._compute_strehl_pixel_fit(
-        psf_dl[None, :, :],
-        4.0,
-        1.65,
-        8.0,
-        tel_pupil,
-    )
-
-    np.testing.assert_allclose(sr, np.array([1.0], dtype=np.float32), rtol=1e-4, atol=1e-4)
-    np.testing.assert_allclose(peak_locations_yx, np.array([[psf_dl.shape[0] / 2.0 - 0.5, psf_dl.shape[1] / 2.0 - 0.5]], dtype=np.float32), atol=0.1)
-
-
-def test_compute_encircled_energy_uses_exact_aperture_weights():
-    psf = np.zeros((1, 5, 5), dtype=np.float32)
-    psf[0, 2, 2] = 1.0
-
-    ee = stats_module._compute_enclosed_energy(
-        psf,
-        np.array([2.0, 6.0], dtype=float),
-        2.0,
-        np.array([[2, 2]], dtype=np.int64),
-        ee_geometry="encircled",
-    )
-
-    np.testing.assert_allclose(ee, np.array([[np.pi / 4.0, 1.0]], dtype=np.float32), atol=1e-6)
-
-
-def test_compute_ensquared_energy_shifts_subpixel_peak_locations():
-    psf = np.zeros((1, 5, 5), dtype=np.float32)
-    psf[0, 2, 2] = 0.25
-    psf[0, 2, 3] = 0.25
-    psf[0, 3, 2] = 0.25
-    psf[0, 3, 3] = 0.25
-
-    ee_subpixel = stats_module._compute_enclosed_energy(
-        psf,
-        np.array([2.0], dtype=float),
-        2.0,
-        np.array([[2.5, 2.5]], dtype=np.float32),
-    )
-    ee_argmax = stats_module._compute_enclosed_energy(
-        psf,
-        np.array([2.0], dtype=float),
-        2.0,
-        None,
-    )
-
-    assert np.all(np.isfinite(ee_subpixel))
-    assert ee_subpixel.shape == (1, 1)
-    assert float(ee_subpixel[0, 0]) >= float(ee_argmax[0, 0])
-
-
-def test_compute_ensquared_energy_single_aperture_returns_matrix():
-    psf = np.zeros((2, 5, 5), dtype=np.float32)
-    psf[:, 2, 2] = 1.0
-
-    ee = stats_module._compute_enclosed_energy(
-        psf,
-        np.array([2.0], dtype=float),
-        2.0,
-        np.array([[2, 2], [2, 2]], dtype=np.int64),
-    )
-
-    assert ee.shape == (2, 1)
-    np.testing.assert_allclose(ee, np.array([[1.0], [1.0]], dtype=np.float32), atol=1e-6)
-
-
-def test_compute_ensquared_energy_uses_integer_peak_locations():
-    psf = np.zeros((1, 5, 5), dtype=np.float32)
-    psf[0, 2, 2] = 1.0
-
-    ee = stats_module._compute_enclosed_energy(
-        psf,
-        np.array([2.0, 6.0], dtype=float),
-        2.0,
-        np.array([[2, 2]], dtype=np.int64),
-    )
-
-    np.testing.assert_allclose(ee, np.array([[1.0, 1.0]], dtype=np.float32), atol=1e-6)
-
-
-def test_compute_encircled_energy_is_stable_for_extra_apertures():
-    psf = _gaussian_psf(9, 9, 4.0, 4.0, 1.5, 1.5)[None, :, :]
-    psf /= psf.sum()
-
-    ee_single = stats_module._compute_enclosed_energy(
-        psf,
-        np.array([4.0], dtype=float),
-        1.0,
-        np.array([[4, 4]], dtype=np.int64),
-        ee_geometry="encircled",
-    )
-    ee_multi = stats_module._compute_enclosed_energy(
-        psf,
-        np.array([4.0, 8.0], dtype=float),
-        1.0,
-        np.array([[4, 4]], dtype=np.int64),
-        ee_geometry="encircled",
-    )
-
-    np.testing.assert_allclose(ee_single[:, 0], ee_multi[:, 0], atol=1e-7)
-
-
-def test_compute_encircled_energy_is_no_larger_than_ensquared_energy():
-    psf = _gaussian_psf(9, 9, 4.0, 4.0, 1.5, 1.5)[None, :, :]
-    psf /= psf.sum()
-    apertures = np.array([4.0, 6.0], dtype=float)
-    peak_locations = np.array([[4, 4]], dtype=np.int64)
-
-    encircled = stats_module._compute_enclosed_energy(psf, apertures, 1.0, peak_locations, ee_geometry="encircled")
-    ensquared = stats_module._compute_enclosed_energy(psf, apertures, 1.0, peak_locations)
-
-    assert np.all(encircled <= ensquared + 1e-6)
-
-
-def test_measure_peak_centered_ensquared_energy_curves_applies_radius_factor():
-    psf = np.zeros((1, 21, 21), dtype=np.float32)
-    psf[0, 10, 10] = 1.0
-
-    curves, curve_radii_mas = stats_module._measure_peak_centered_ensquared_energy_curves(
-        psf,
-        np.array([10], dtype=np.int64),
-        np.array([10], dtype=np.int64),
-        max_radius=4,
-        pixel_scale=1.0,
-    )
-
-    assert curves.shape == (1, 5)
-    np.testing.assert_allclose(curve_radii_mas, np.array([0.5, 1.5, 2.5, 3.5, 4.5]))
-
-
-def test_measure_contour_fwhms_returns_expected_widths_for_square_ring():
-    psf = np.zeros((1, 7, 7), dtype=np.float32)
-    psf[0, 1:6, 1:6] = 1.0
-    psf[0, 2:5, 2:5] = 0.0
-
-    fwhm_min, fwhm_max = stats_module._measure_contour_fwhms(psf, 2.0)
-
-    np.testing.assert_allclose(fwhm_min, np.array([10.0], dtype=np.float32), atol=1e-6)
-    np.testing.assert_allclose(fwhm_max, np.array([12.806249], dtype=np.float32), atol=1e-6)
-
-
-def test_compute_fwhm_summary_selects_geom_mean_max_min():
-    fwhm_min = np.array([4.0], dtype=np.float32)
-    fwhm_max = np.array([9.0], dtype=np.float32)
-
-    np.testing.assert_allclose(
-        stats_module._compute_fwhm_summary(schema.STATS_FWHM_SUMMARY_GEOM, fwhm_min, fwhm_max),
-        np.array([6.0], dtype=np.float32),
-        atol=1e-6,
-    )
-    np.testing.assert_allclose(
-        stats_module._compute_fwhm_summary(schema.STATS_FWHM_SUMMARY_MEAN, fwhm_min, fwhm_max),
-        np.array([6.5], dtype=np.float32),
-        atol=1e-6,
-    )
-    np.testing.assert_allclose(
-        stats_module._compute_fwhm_summary(schema.STATS_FWHM_SUMMARY_MAX, fwhm_min, fwhm_max),
-        np.array([9.0], dtype=np.float32),
-        atol=1e-6,
-    )
-    np.testing.assert_allclose(
-        stats_module._compute_fwhm_summary(schema.STATS_FWHM_SUMMARY_MIN, fwhm_min, fwhm_max),
-        np.array([4.0], dtype=np.float32),
-        atol=1e-6,
-    )
-
-
-def test_measure_contour_fwhms_returns_nan_on_invalid_cases():
-    truncated = np.zeros((1, 5, 5), dtype=np.float32)
-    truncated[0, :, :3] = 1.0
-
-    non_crossing = np.full((1, 4, 4), 1.0, dtype=np.float32)
-
-    non_finite = np.zeros((1, 5, 5), dtype=np.float32)
-    non_finite[0, 2, 2] = np.nan
-
-    for psf in (truncated, non_crossing, non_finite):
-        fwhm_min, fwhm_max = stats_module._measure_contour_fwhms(psf, 2.0)
-        assert np.isnan(fwhm_min[0])
-        assert np.isnan(fwhm_max[0])
-
-
-def test_measure_contour_fwhms_returns_nan_for_zero_peak_threshold():
-    psf = np.zeros((1, 5, 5), dtype=np.float32)
-
-    fwhm_min, fwhm_max = stats_module._measure_contour_fwhms(psf, 2.0)
-
-    assert np.isnan(fwhm_min[0])
-    assert np.isnan(fwhm_max[0])
-
-
-def test_measure_contour_fwhms_returns_nan_for_collapsed_contour_geometry(monkeypatch):
-    psf = np.zeros((1, 7, 7), dtype=np.float32)
-    psf[0, 3, 3] = 1.0
-
-    monkeypatch.setattr(
-        stats_module,
-        "_find_contours",
-        lambda _psf, _level: [np.array([[3.0, 2.0], [3.0, 3.0], [3.0, 4.0]], dtype=float)],
-    )
-
-    fwhm_min, fwhm_max = stats_module._measure_contour_fwhms(psf, 2.0)
-
-    assert np.isnan(fwhm_min[0])
-    assert np.isnan(fwhm_max[0])
-
-
-@pytest.mark.parametrize(
-    ("sr_method", "fwhm_summary"),
-    [
-        (schema.STATS_SR_METHOD_PIXEL_FIT, schema.STATS_FWHM_SUMMARY_GEOM),
-        (schema.STATS_SR_METHOD_PIXEL_FIT, schema.STATS_FWHM_SUMMARY_MEAN),
-        (schema.STATS_SR_METHOD_PIXEL_MAX, schema.STATS_FWHM_SUMMARY_MAX),
-        (schema.STATS_SR_METHOD_PIXEL_MAX, schema.STATS_FWHM_SUMMARY_MIN),
-    ],
-)
-def test_compute_psf_stats_matches_girmos_aopredict_regression(sr_method, fwhm_summary):
-    upstream = _load_girmos_aostats_for_regression()
-    simulation = MockSimulation()
-
-    psfs = np.stack(
-        [
-            _gaussian_psf(31, 31, 15.2, 14.7, 2.1, 1.7),
-            _gaussian_psf(31, 31, 13.8, 16.1, 2.5, 2.2),
-        ],
-        axis=0,
-    ).astype(np.float32)
-    options = {schema.KEY_OPTION_WAVELENGTH: np.float32(1.65)}
-    meta = _stats_meta(pixel_scale=4.0)
-    setup = {
-        schema.KEY_SETUP_EE_APERTURES: np.array([12.0, 28.0, 44.0], dtype=float),
-        schema.KEY_SETUP_SR_METHOD: sr_method,
-        schema.KEY_SETUP_FWHM_SUMMARY: fwhm_summary,
-    }
-
-    sr, ee, fwhm = compute_psf_stats(
-        psfs,
-        PsfMetadata(
-            wavelength=options[schema.KEY_OPTION_WAVELENGTH],
-            pixel_scale=meta[schema.KEY_META_PIXEL_SCALE],
-            tel_diameter=meta[schema.KEY_META_TEL_DIAMETER],
-            tel_pupil=meta[schema.KEY_META_TEL_PUPIL],
-        ),
-        ee_apertures=setup[schema.KEY_SETUP_EE_APERTURES],
-        sr_method=sr_method,
-        fwhm_summary=fwhm_summary,
-        preprocess=lambda cube: simulation.prepare_psfs_for_stats(cube, setup, meta),
-    )
-
-    sr_method_upstream = {
-        schema.STATS_SR_METHOD_PIXEL_FIT: upstream.SRMethod.PixelFit,
-        schema.STATS_SR_METHOD_PIXEL_MAX: upstream.SRMethod.PixelMax,
-    }[sr_method]
-    fwhm_summary_upstream = {
-        schema.STATS_FWHM_SUMMARY_GEOM: upstream.FWHMSummary.GeoM,
-        schema.STATS_FWHM_SUMMARY_MEAN: upstream.FWHMSummary.Mean,
-        schema.STATS_FWHM_SUMMARY_MAX: upstream.FWHMSummary.Max,
-        schema.STATS_FWHM_SUMMARY_MIN: upstream.FWHMSummary.Min,
-    }[fwhm_summary]
-
-    sr_expected, fwhm_expected, ee_expected = upstream._compute_psf_stats(
-        None,
-        psfs,
-        4.0,
-        1.65e-6,
-        8.0,
-        meta[schema.KEY_META_TEL_PUPIL],
-        method=upstream.StatsMethod.AOPredict,
-        sr_method=sr_method_upstream,
-        ee_apertures=setup[schema.KEY_SETUP_EE_APERTURES],
-        fwhm_summary=fwhm_summary_upstream,
-    )
-
-    np.testing.assert_allclose(sr, np.asarray(sr_expected, dtype=np.float32), rtol=1e-5, atol=1e-6)
-    np.testing.assert_allclose(ee, np.asarray(ee_expected, dtype=np.float32), rtol=1e-5, atol=1e-6)
-    np.testing.assert_allclose(fwhm, np.asarray(fwhm_expected, dtype=np.float32), rtol=1e-5, atol=1e-6)
 
 
 def test_store_create_and_row_writes(tmp_path):
@@ -1854,7 +930,7 @@ def test_runner_with_simulation_interface(tmp_path):
         def load_setup_payload(self, setup_payload):
             self._setup = SimulationSetup(
                 ee_apertures=setup_payload["ee_apertures"],
-                sr_method=str(setup_payload["sr_method"]),
+                peak_method=str(setup_payload["peak_method"]),
                 fwhm_summary=str(setup_payload["fwhm_summary"]),
                 ee_geometry=str(setup_payload["ee_geometry"]),
                 atm_wavelength=setup_payload["atm_wavelength"],
@@ -1868,7 +944,7 @@ def test_runner_with_simulation_interface(tmp_path):
         def validate_setup_payload(self, setup_payload):
             _ = SimulationSetup(
                 ee_apertures=setup_payload["ee_apertures"],
-                sr_method=str(setup_payload["sr_method"]),
+                peak_method=str(setup_payload["peak_method"]),
                 fwhm_summary=str(setup_payload["fwhm_summary"]),
                 ee_geometry=str(setup_payload["ee_geometry"]),
                 atm_wavelength=setup_payload["atm_wavelength"],
@@ -2177,7 +1253,7 @@ def test_runner_with_simulation_interface_filtered_indexes(tmp_path):
         def load_setup_payload(self, setup_payload):
             self._setup = SimulationSetup(
                 ee_apertures=setup_payload["ee_apertures"],
-                sr_method=str(setup_payload["sr_method"]),
+                peak_method=str(setup_payload["peak_method"]),
                 fwhm_summary=str(setup_payload["fwhm_summary"]),
                 ee_geometry=str(setup_payload["ee_geometry"]),
                 atm_wavelength=setup_payload["atm_wavelength"],
@@ -2266,7 +1342,7 @@ def test_runner_persists_declared_extra_stats(tmp_path):
         def load_setup_payload(self, setup_payload):
             self._setup = SimulationSetup(
                 ee_apertures=setup_payload["ee_apertures"],
-                sr_method=str(setup_payload["sr_method"]),
+                peak_method=str(setup_payload["peak_method"]),
                 fwhm_summary=str(setup_payload["fwhm_summary"]),
                 ee_geometry=str(setup_payload["ee_geometry"]),
                 atm_wavelength=setup_payload["atm_wavelength"],

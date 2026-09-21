@@ -264,9 +264,9 @@ Stats note:
 - Core stats under `/stats` are `sr`, `ee`, and `fwhm`.
 - Successful runs may persist `fwhm = NaN` when contour-based FWHM cannot be
   recovered; `sr` and `ee` remain finite for successful results.
-- Dataset-level stats selectors live under `/setup` as `sr_method`, `fwhm_summary`, and `ee_geometry`.
+- Dataset-level stats selectors live under `/setup` as `peak_method`, `fwhm_summary`, and `ee_geometry`.
 - The implemented core stats family is:
-  - Strehl: image-domain `pixel_fit` (default) or `pixel_max`
+  - Strehl: image-domain `gaussian_fit` (default) or `pixel_max`
   - EE: fixed peak-centered image-domain aperture accumulation selected by `/setup/ee_geometry`
   - FWHM: fixed native contour measurement summarized by `/setup/fwhm_summary`
 - Core metadata under `/meta` mixes one per-simulation field and invariant telescope fields:
@@ -362,12 +362,12 @@ For `TiptopSimulation`, provide `specific_fields["config_path"]` and optionally
 ### `SetupConfig`
 
 - `ee_apertures: u.Quantity`
-- `sr_method: str | None = None`
+- `peak_method: str | None = None`
 - `fwhm_summary: str | None = None`
 - `ee_geometry: str | None = None`
 - `specific_fields: dict[str, object] = {}`
 
-Core typed setup fields are `ee_apertures`, `sr_method`, `fwhm_summary`, and `ee_geometry`. All other setup fields can be passed in `specific_fields`.
+Core typed setup fields are `ee_apertures`, `peak_method`, `fwhm_summary`, and `ee_geometry`. All other setup fields can be passed in `specific_fields`.
 For `TiptopSimulation`, include `specific_fields["ngs_magnitude_zeropoint"]`.
 These setup fields control how persisted `/stats/sr`, `/stats/ee`, and
 `/stats/fwhm` are computed and interpreted across the whole dataset.
@@ -446,7 +446,11 @@ Notes:
 - If NGS input is provided explicitly, provide the full triplet. Unused star slots may be represented with `NaN`, but each slot must be either all finite or all `NaN` across the triplet.
 - If explicit NGS input is omitted, the selected simulation must supply the persisted NGS triplet during options preparation.
 - During execution, ao-predict derives a runtime-only `ngs_used` boolean vector from the persisted NGS triplet. This field is not persisted in `/options`.
-- If omitted, setup defaults `sr_method` to `pixel_fit`, `fwhm_summary` to `geom`, and `ee_geometry` to `ensquared`.
+- If omitted, setup defaults `peak_method` to `gaussian_fit`, `fwhm_summary` to `geom`, and `ee_geometry` to `ensquared`.
+- Legacy mapping or persisted setup input named `sr_method` is silently
+  canonicalized at ingestion. `pixel_fit` becomes `gaussian_fit`, `pixel_max`
+  is unchanged, and new datasets persist only `peak_method`. Supplying both
+  names with conflicting values is an error.
 
 Atmospheric input note:
 - `r0` is the canonical persisted per-sim atmospheric option.
@@ -493,7 +497,7 @@ request = InitDatasetRequest(
     ),
     setup=SetupConfig(
         ee_apertures=np.array([50.0, 100.0]) * u.mas,
-        sr_method="pixel_fit",
+        peak_method="gaussian_fit",
         fwhm_summary="geom",
         ee_geometry="ensquared",
         specific_fields={"ngs_magnitude_zeropoint": 3.0e10 * u.photon / u.s},
@@ -618,92 +622,13 @@ metric fields, pass `RbfInterpolationConfig(...)` to
 - Dataset/config mismatches raise `DatasetConfigMismatchError`.
 
 
-## PSF Stats API
+## PSF Statistics
 
-`compute_psf_stats(...)` computes AO Predict core PSF statistics from one
-PSF image or a PSF cube. Import it from the package root together with
-`PsfMetadata`, focused metric helpers, and the named preprocessing helper when
-needed:
-
-```python
-import numpy as np
-from astropy import units as u
-
-from ao_predict import (
-    PsfMetadata,
-    clip_and_sum_normalize_psfs,
-    compute_psf_ee,
-    compute_psf_fwhm,
-    compute_psf_stats,
-)
-
-metadata = PsfMetadata(
-    wavelength=1.65 * u.um,
-    pixel_scale=4.0 * u.mas,
-    tel_diameter=8.0 * u.m,
-    tel_pupil=np.asarray(tel_pupil) * u.one,
-)
-
-sr, ee, fwhm = compute_psf_stats(
-    psfs,
-    metadata,
-    ee_apertures=np.array([50.0, 100.0]) * u.mas,
-    sr_method="pixel_fit",
-    fwhm_summary="geom",
-    ee_geometry="ensquared",
-    preprocess=clip_and_sum_normalize_psfs,
-)
-
-fwhm_only = compute_psf_fwhm(
-    psfs,
-    metadata,
-    fwhm_summary="geom",
-    preprocess="default",
-)
-
-ee_only = compute_psf_ee(
-    psfs,
-    metadata,
-    ee_apertures=np.array([50.0, 100.0]) * u.mas,
-    sr_method="pixel_fit",
-    ee_geometry="ensquared",
-    preprocess="default",
-)
-
-selected = compute_psf_stats(
-    psfs,
-    metadata,
-    metrics=("fwhm", "ee"),
-    ee_apertures=np.array([50.0, 100.0]) * u.mas,
-    preprocess="default",
-)
-```
-
-`wavelength` and `pixel_scale` may be scalar quantities shared by all PSFs,
-or one-dimensional per-PSF arrays matching the PSF cube length. `ee_apertures`
-may be a shared quantity vector or a per-PSF quantity array with shape `[M, A]`.
-It is required only when enclosed energy is computed.
-
-When `metrics` is omitted, `compute_psf_stats(...)` returns the standard tuple
-`(sr, ee, fwhm)`. When `metrics` is supplied, it must be a non-empty
-sequence drawn from `"sr"`, `"ee"`, and `"fwhm"`; the return value is a
-tuple in the requested order. Every returned value is an Astropy quantity:
-`sr` and `ee` are dimensionless, and `fwhm` is in milliarcseconds. The focused
-helpers `compute_psf_sr(...)`, `compute_psf_ee(...)`, and
-`compute_psf_fwhm(...)` return only their named metric and use the same
-metadata, selector, and preprocessing contracts.
-
-Metric selector options are:
-
-- `sr_method`: `"pixel_fit"` by default; also supports `"pixel_max"`.
-- `fwhm_summary`: `"geom"` by default; also supports `"mean"`, `"max"`, and `"min"`.
-- `ee_geometry`: `"ensquared"` by default; also supports `"encircled"`.
-
-The public stats function does no clipping, centering, or normalization unless
-`preprocess` is supplied. External callers can omit `preprocess` when PSFs are
-already metric-ready, pass `clip_and_sum_normalize_psfs` or `preprocess="default"`
-to use AO Predict's shared non-negative clipping and pixel-sum normalization
-path, or pass another callable with signature `preprocess(psfs)`.
+AO Stats owns the neutral `PsfMetadata` contract, preprocessing, and EE, FWHM,
+and Strehl calculations used by AO Predict. Import those interfaces directly
+from `ao_stats`; AO Predict retains only its simulation setup and persisted
+dataset contracts for selecting and storing the resulting statistics. See the
+AO Stats API guide for the standalone calculation interface.
 
 ## Plotting Helpers
 

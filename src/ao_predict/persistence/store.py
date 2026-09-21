@@ -14,11 +14,11 @@ from ..simulation import schema
 from ..simulation.atm import ATM_PROFILE_FIELD_UNITS
 from ..simulation.validation import (
     normalize_meta_fields,
+    resolve_setup_payload_for_load,
     resolve_simulation_payload_for_load,
     validate_atm_profile_ids,
     validate_options_payload_core,
     validate_successful_result,
-    validate_setup_payload_core,
     validate_simulation_payload_core,
 )
 from ..simulation.interfaces import SimulationResult, SimulationState
@@ -695,7 +695,7 @@ class SimulationStore:
             raise FileExistsError(f"Dataset already exists: {self.path}")
 
         validate_simulation_payload_core(simulation)
-        validate_setup_payload_core(setup)
+        setup = resolve_setup_payload_for_load(setup)
         m_sci = get_num_sci(setup)
         num_sims = validate_options_payload_core(options, expected_num_sci=m_sci)
         validate_atm_profile_ids(setup, options)
@@ -814,7 +814,9 @@ class SimulationStore:
         """
 
         with h5py.File(self.path, "r") as f:
-            return _read_node(f[schema.KEY_SETUP_SECTION])
+            return resolve_setup_payload_for_load(
+                _read_node(f[schema.KEY_SETUP_SECTION])
+            )
 
     def read_simulation(self) -> dict[str, Any]:
         """Read ``/simulation`` as a validated final-contract payload.
@@ -1190,8 +1192,9 @@ class SimulationStore:
                 diagnostic_field_specs = {}
 
             try:
-                setup_data = _read_node(f[schema.KEY_SETUP_SECTION])
-                validate_setup_payload_core(setup_data)
+                setup_data = resolve_setup_payload_for_load(
+                    _read_node(f[schema.KEY_SETUP_SECTION])
+                )
             except Exception as exc:
                 issues.append(f"Invalid /setup payload: {exc}")
                 setup_data = None

@@ -18,6 +18,10 @@ boundaries, persisted-contract ownership, and simulation and model lifecycles.
 Keep one obvious owner for each major concern:
 
 - Simulation execution belongs under `simulation/*`.
+- Neutral PSF metadata, preprocessing, and EE, FWHM, and Strehl calculations
+  belong to the direct `ao-stats` dependency. AO Predict owns only the
+  simulation setup and persisted dataset contracts that select and store those
+  values.
 - Generic simulation-product interpolation contracts belong under
   `interpolation/*`.
 - Persistence and storage concerns belong under `persistence/*`.
@@ -345,11 +349,15 @@ Keep one clear owner per rule:
 Avoid split ownership where builders, validators, and subclasses all partially
 enforce the same persisted rule.
 
-## Current Persisted Contract Only
+## Current Persisted Contract And Peak-method Upgrade
 
 Dataset creation and loading both require the complete current persisted
-contract. AO Predict does not contain compatibility upgrades for older field
-names, missing unit attributes, or earlier interpolator payloads. Contract
+contract. The one bounded field-name upgrade accepts legacy setup
+`sr_method=pixel_fit` as `peak_method=gaussian_fit` and
+`sr_method=pixel_max` as `peak_method=pixel_max`. New datasets write only
+`peak_method`, and conflicting legacy and canonical values are rejected. AO
+Predict does not contain other compatibility upgrades for older field names,
+missing unit attributes, or earlier interpolator payloads. Other contract
 changes therefore require upgrading all owned datasets and interpolators in
 place as part of the same migration.
 
