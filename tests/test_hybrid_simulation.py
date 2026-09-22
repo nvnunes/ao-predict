@@ -68,7 +68,7 @@ def _base_payload(sim: HybridSimulation) -> dict[str, object]:
 def _write_hybrid_inputs(tmp_path: Path) -> tuple[Path, Path, Path]:
     ini_path = tmp_path / "mastsel.ini"
     ini_path.write_text(_ini_text(), encoding="utf-8")
-    science_path = tmp_path / "science.h5"
+    science_path = tmp_path / "science.pkl"
     ngs_path = tmp_path / "ngs.pkl"
     save_science_ho_psf_interpolator(
         build_science_ho_psf_interpolator(_science_samples()),
@@ -163,7 +163,7 @@ def test_hybrid_payload_persists_non_psd_policy_and_defaults_legacy_payload(
             {
                 "base_path": str(invalid_root),
                 "config_path": ini_path.name,
-                "science_ho_psf_interpolator_path": "science.h5",
+                "science_ho_psf_interpolator_path": "science.pkl",
                 "ngs_ho_metric_interpolator_path": "ngs.pkl",
                 "non_psd_policy": "unsupported",
             },
@@ -905,7 +905,7 @@ def test_hybrid_diagnostic_extension_fields_cannot_collide(tmp_path: Path) -> No
             {
                 "base_path": str(tmp_path),
                 "config_path": _write_hybrid_inputs(tmp_path)[0].name,
-                "science_ho_psf_interpolator_path": "science.h5",
+                "science_ho_psf_interpolator_path": "science.pkl",
                 "ngs_ho_metric_interpolator_path": "ngs.pkl",
                 "diagnostics_level": "validation",
             },
@@ -935,7 +935,7 @@ def test_hybrid_diagnostic_extension_fields_are_appended(
         {
             "base_path": str(tmp_path),
             "config_path": _write_hybrid_inputs(tmp_path)[0].name,
-            "science_ho_psf_interpolator_path": "science.h5",
+            "science_ho_psf_interpolator_path": "science.pkl",
             "ngs_ho_metric_interpolator_path": "ngs.pkl",
             "diagnostics_level": "validation",
         },

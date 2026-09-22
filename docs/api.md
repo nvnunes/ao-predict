@@ -587,7 +587,7 @@ science_samples = interp.ScienceHoPsfSamples(
     tel_pupil=tel_pupil,
 )
 
-science_interpolator_path = Path("science_ho_psf_interpolator.h5")
+science_interpolator_path = Path("science_ho_psf_interpolator.pkl")
 interp.save_science_ho_psf_interpolator(
     interp.build_science_ho_psf_interpolator(science_samples),
     science_interpolator_path,
