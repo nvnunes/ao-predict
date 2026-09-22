@@ -451,17 +451,13 @@ class HybridSimulation(TiptopConfigBackedSimulation):
             active_ngs.magnitude,
             setup,
         )
-        ngs_frame_rate = np.full(
-            active_ngs.magnitude.size,
-            self._get_frame_rate_lo(parser),
-            dtype=float,
-        ) * u.Hz
         return HybridResolvedInputs(
             request=HybridRequest(
                 science_x=science_x,
                 science_y=science_y,
                 ngs_x=active_ngs.x,
                 ngs_y=active_ngs.y,
+                ngs_flux=ngs_flux,
                 wavelength=_require_option_scalar(
                     options,
                     schema.KEY_OPTION_WAVELENGTH,
@@ -470,8 +466,6 @@ class HybridSimulation(TiptopConfigBackedSimulation):
                     options,
                     schema.KEY_OPTION_ZENITH_ANGLE,
                 ),
-                ngs_flux=ngs_flux,
-                ngs_frame_rate=ngs_frame_rate,
                 mastsel_ini=_serialize_parser(parser),
                 non_psd_policy=self._non_psd_policy,
                 diagnostics_level=DiagnosticsLevel(self.diagnostics_level),
