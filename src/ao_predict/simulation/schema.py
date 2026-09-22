@@ -214,7 +214,7 @@ SETUP_FIELD_UNITS = {
     KEY_SETUP_ATM_WAVELENGTH: u.um,
     KEY_SETUP_LGS_R: u.arcsec,
     KEY_SETUP_LGS_THETA: u.deg,
-    KEY_SETUP_NGS_MAGNITUDE_ZEROPOINT: u.photon / u.s,
+    KEY_SETUP_NGS_MAGNITUDE_ZEROPOINT: u.photon / (u.m**2 * u.s),
     KEY_SETUP_SCI_R: u.arcsec,
     KEY_SETUP_SCI_THETA: u.deg,
 }

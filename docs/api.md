@@ -368,9 +368,15 @@ For `TiptopSimulation`, provide `specific_fields["config_path"]` and optionally
 - `specific_fields: dict[str, object] = {}`
 
 Core typed setup fields are `ee_apertures`, `peak_method`, `fwhm_summary`, and `ee_geometry`. All other setup fields can be passed in `specific_fields`.
-For `TiptopSimulation`, include `specific_fields["ngs_magnitude_zeropoint"]`.
-These setup fields control how persisted `/stats/sr`, `/stats/ee`, and
-`/stats/fwhm` are computed and interpreted across the whole dataset.
+The shared peak, FWHM, and EE selectors control how persisted `/stats/sr`,
+`/stats/ee`, and `/stats/fwhm` are computed and interpreted across the dataset.
+For TIPTOP-backed and Hybrid simulations, include
+`specific_fields["ngs_magnitude_zeropoint"]`.
+It is a zero-magnitude photon flux in `photon / (m2 s)`, before AO Predict
+applies the LO-WFS subaperture area to obtain an effective rate in
+`photon / s`. TIPTOP divides that rate by the LO frame rate to obtain photons
+per frame; Hybrid uses the effective rate directly. Supply the calibration
+appropriate to the simulation's NGS magnitude standard.
 
 ### `OptionsConfig`
 
@@ -496,7 +502,7 @@ request = InitDatasetRequest(
         peak_method="gaussian_fit",
         fwhm_summary="geom",
         ee_geometry="ensquared",
-        specific_fields={"ngs_magnitude_zeropoint": 3.0e10 * u.photon / u.s},
+        specific_fields={"ngs_magnitude_zeropoint": 3.0e10 * u.photon / (u.m**2 * u.s)},
     ),
     options=TableOptionsConfig(
         broadcast={"zenith_angle": 20.0 * u.deg},

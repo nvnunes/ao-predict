@@ -88,7 +88,7 @@ class MockSimulation(BaseSimulation):
             default_lgs_theta=[] * u.deg,
             default_sci_r=[0.0] * u.arcsec,
             default_sci_theta=[0.0] * u.deg,
-            default_ngs_mag_zeropoint=1.0e10 * u.photon / u.s,
+            default_ngs_mag_zeropoint=1.0e10 * u.photon / (u.m**2 * u.s),
         )
 
     def load_setup_payload(self, setup_payload: Mapping[str, Any]) -> None:

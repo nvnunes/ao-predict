@@ -84,7 +84,7 @@ def _write_config_yaml(path: Path, ini_path: Path, *, options_cfg: dict[str, obj
             "ee_apertures": {"value": [50.0, 100.0], "unit": "mas"},
             "peak_method": schema.DEFAULT_SETUP_PEAK_METHOD,
             "fwhm_summary": schema.DEFAULT_SETUP_FWHM_SUMMARY,
-            "ngs_magnitude_zeropoint": {"value": 1.1e13 / 368.0, "unit": "photon / s"},
+            "ngs_magnitude_zeropoint": {"value": 1.1e13 / 368.0, "unit": "photon / (m2 s)"},
             "sci_r": {"value": [0.0, 10.0, 20.0], "unit": "arcsec"},
             "sci_theta": {"value": [0.0, 90.0, 180.0], "unit": "deg"},
             "lgs_r": {"value": [30.0, 30.0, 30.0, 30.0], "unit": "arcsec"},
@@ -579,7 +579,7 @@ def test_cli_load_config_normalizes_key_case(tmp_path: Path):
                 "Simulation": {"Name": "ao_predict.simulation.tiptop:TiptopSimulation", "Config_Path": str(ini_path)},
                 "Setup": {
                     "EE_APERTURES": {"Value": [50.0, 100.0], "Unit": "mas"},
-                    "NGS_MAGNITUDE_ZEROPOINT": {"Value": 3.0e10, "Unit": "photon / s"},
+                    "NGS_MAGNITUDE_ZEROPOINT": {"Value": 3.0e10, "Unit": "photon / (m2 s)"},
                 },
                 "Options": {
                     "Table": {

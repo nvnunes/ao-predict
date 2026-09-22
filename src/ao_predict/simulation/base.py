@@ -25,6 +25,11 @@ class BaseSimulationSetup(SimulationSetup):
     This extends the core ``SimulationSetup`` contract with the common
     NGS magnitude zero-point used by simulations that derive WFS photon
     inputs from magnitudes.
+
+    Attributes:
+        ngs_magnitude_zeropoint: Positive zero-magnitude photon flux before
+            collection-area scaling, in ``photon / (m2 s)``. Instrument
+            throughput may already be included in this calibration.
     """
 
     ngs_magnitude_zeropoint: u.Quantity
@@ -337,7 +342,7 @@ class BaseSimulation(Simulation, ABC):
         ngs_magnitude_zeropoint = float(
             quantity_value(
                 ngs_magnitude_zeropoint,
-                u.photon / u.s,
+                u.photon / (u.m**2 * u.s),
                 label=cls.KEY_SETUP_NGS_MAGNITUDE_ZEROPOINT,
                 dtype=float,
             ).item()
@@ -433,7 +438,7 @@ class BaseSimulation(Simulation, ABC):
         lgs_theta = require_quantity(lgs_theta, u.deg, label=self.KEY_SETUP_LGS_THETA)
         ngs_magnitude_zeropoint = require_quantity(
             ngs_magnitude_zeropoint,
-            u.photon / u.s,
+            u.photon / (u.m**2 * u.s),
             label=self.KEY_SETUP_NGS_MAGNITUDE_ZEROPOINT,
         )
         sci_r = require_quantity(sci_r, u.arcsec, label=schema.KEY_SETUP_SCI_R)
@@ -498,7 +503,7 @@ class BaseSimulation(Simulation, ABC):
             atm_profiles=atm.parse_atm_profiles(setup_payload[schema.KEY_SETUP_ATM_PROFILES]),
             lgs_r=require_quantity(lgs_r_raw, u.arcsec, label=self.KEY_SETUP_LGS_R),
             lgs_theta=require_quantity(lgs_theta_raw, u.deg, label=self.KEY_SETUP_LGS_THETA),
-            ngs_magnitude_zeropoint=require_quantity(setup_payload[self.KEY_SETUP_NGS_MAGNITUDE_ZEROPOINT], u.photon / u.s, label=self.KEY_SETUP_NGS_MAGNITUDE_ZEROPOINT),
+            ngs_magnitude_zeropoint=require_quantity(setup_payload[self.KEY_SETUP_NGS_MAGNITUDE_ZEROPOINT], u.photon / (u.m**2 * u.s), label=self.KEY_SETUP_NGS_MAGNITUDE_ZEROPOINT),
             sci_r=require_quantity(setup_payload[schema.KEY_SETUP_SCI_R], u.arcsec, label=schema.KEY_SETUP_SCI_R),
             sci_theta=require_quantity(setup_payload[schema.KEY_SETUP_SCI_THETA], u.deg, label=schema.KEY_SETUP_SCI_THETA),
         )

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+import hashlib
 
 import h5py
 import numpy as np
@@ -93,7 +94,7 @@ def _setup() -> dict:
         "fwhm_summary": schema.DEFAULT_SETUP_FWHM_SUMMARY,
         "ee_geometry": schema.DEFAULT_SETUP_EE_GEOMETRY,
         "atm_wavelength": 0.5 * u.um,
-        "ngs_magnitude_zeropoint": 3.0e10 * u.photon / u.s,
+        "ngs_magnitude_zeropoint": 3.0e10 * u.photon / (u.m**2 * u.s),
         "sci_r": np.array([0.0, 10.0, 20.0], dtype=float) * u.arcsec,
         "sci_theta": np.array([0.0, 90.0, 180.0], dtype=float) * u.deg,
         "lgs_r": np.array([30.0, 30.0, 30.0, 30.0], dtype=float) * u.arcsec,
@@ -1003,12 +1004,16 @@ def _load_bound_mock_simulation(store: SimulationStore, simulation_cls: type[Moc
     return simulation
 
 
-def test_runner_parallel_matches_serial_outputs(tmp_path):
+@pytest.mark.parametrize("legacy_zeropoint", [False, True])
+def test_runner_parallel_matches_serial_outputs(tmp_path, legacy_zeropoint):
     serial_path = tmp_path / "serial_data.h5"
     parallel_path = tmp_path / "parallel_data.h5"
 
     serial_store = SimulationStore(serial_path)
     serial_store.create(_mock_simulation(), _setup(), _options(num_sims=4), save_psfs=True)
+    if legacy_zeropoint:
+        with h5py.File(serial_path, "r+") as f:
+            f["setup/ngs_magnitude_zeropoint"].attrs["units"] = "ph / s"
     serial_summary = run_pending_simulations(
         serial_store,
         _load_bound_mock_simulation(serial_store),
@@ -1018,6 +1023,9 @@ def test_runner_parallel_matches_serial_outputs(tmp_path):
 
     parallel_store = SimulationStore(parallel_path)
     parallel_store.create(_mock_simulation(), _setup(), _options(num_sims=4), save_psfs=True)
+    if legacy_zeropoint:
+        with h5py.File(parallel_path, "r+") as f:
+            f["setup/ngs_magnitude_zeropoint"].attrs["units"] = "ph / s"
     parallel_summary = run_pending_simulations(
         parallel_store,
         _load_bound_mock_simulation(parallel_store),
@@ -1404,6 +1412,58 @@ def test_store_validate_and_reset_failed(tmp_path):
     reset_count = store.reset_failed_to_pending()
     assert reset_count == 1
     assert store.pending_indices().tolist() == [1, 2]
+
+
+def test_store_reads_legacy_zeropoint_without_modifying_file(tmp_path):
+    path = tmp_path / "legacy_zeropoint.h5"
+    store = SimulationStore(path)
+    store.create(_simulation(), _setup(), _options())
+    with h5py.File(path, "r+") as f:
+        f["setup/ngs_magnitude_zeropoint"].attrs["units"] = "ph / s"
+
+    before = hashlib.sha256(path.read_bytes()).digest()
+    store.validate_schema()
+    loaded = store.read_setup()["ngs_magnitude_zeropoint"]
+    assert loaded.unit == u.photon / (u.m**2 * u.s)
+    assert loaded.to_value(u.photon / (u.m**2 * u.s)) == pytest.approx(3.0e10)
+    assert hashlib.sha256(path.read_bytes()).digest() == before
+
+
+@pytest.mark.parametrize(
+    ("field", "unit"),
+    [("ee_apertures", "ph / s"), ("ngs_magnitude_zeropoint", "m")],
+)
+def test_store_does_not_accept_other_legacy_unit_labels(tmp_path, field, unit):
+    path = tmp_path / "invalid_units.h5"
+    store = SimulationStore(path)
+    store.create(_simulation(), _setup(), _options())
+    with h5py.File(path, "r+") as f:
+        f[f"setup/{field}"].attrs["units"] = unit
+    with pytest.raises(ValueError, match=f"/setup/{field}"):
+        store.validate_schema()
+
+
+def test_store_rejects_new_zeropoint_with_legacy_or_unrelated_units(tmp_path):
+    for unit in (u.photon / u.s, u.m):
+        setup = _setup()
+        setup["ngs_magnitude_zeropoint"] = 3.0e10 * unit
+        path = tmp_path / f"invalid_{unit.physical_type}.h5"
+        with pytest.raises(ValueError, match="ngs_magnitude_zeropoint"):
+            SimulationStore(path).create(_simulation(), setup, _options())
+        assert not path.exists()
+
+
+def test_store_canonicalizes_new_zeropoint_equivalent_units(tmp_path):
+    path = tmp_path / "canonical_zeropoint.h5"
+    setup = _setup()
+    setup["ngs_magnitude_zeropoint"] = 3.0e6 * u.photon / (u.cm**2 * u.s)
+    store = SimulationStore(path)
+    store.create(_simulation(), setup, _options())
+
+    with h5py.File(path, "r") as f:
+        assert f["setup/ngs_magnitude_zeropoint"].attrs["units"] == "ph / (s m2)"
+        assert f["setup/ngs_magnitude_zeropoint"][()] == pytest.approx(3.0e10)
+    store.validate_schema()
 
 
 def test_store_reset_all_to_pending(tmp_path):

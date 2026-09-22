@@ -143,7 +143,7 @@ def test_tiptop_create_context(tmp_path: Path):
     simulation_payload = _prepare_simulation_payload(sim, {"config_path": str(ini_path)})
     setup = {
         "ee_apertures": np.array([50.0, 100.0]) * u.mas,
-        "ngs_magnitude_zeropoint": 1.1e13 / 368.0 * u.photon / u.s,
+        "ngs_magnitude_zeropoint": 1.1e13 / 368.0 * u.photon / (u.m**2 * u.s),
         "sci_r": np.array([0.0, 1.0]) * u.arcsec,
         "atm_profiles": {
             "0": {
@@ -188,7 +188,7 @@ def test_tiptop_create_context(tmp_path: Path):
     assert ctx.runtime["effective_parser"] is not None
     assert sim._base_config is not None
     assert ctx.runtime["effective_parser"] is not sim._base_config.parser
-    assert ctx.setup.ngs_magnitude_zeropoint.to_value(u.photon / u.s) > 0.0
+    assert ctx.setup.ngs_magnitude_zeropoint.to_value(u.photon / (u.m**2 * u.s)) > 0.0
     assert ctx.setup.atm_wavelength.to_value(u.um) == pytest.approx(0.5)
     assert ctx.setup is sim.setup
     np.testing.assert_allclose(ctx.setup.sci_r, np.array([0.0, 1.0]) * u.arcsec)
@@ -219,8 +219,7 @@ def test_tiptop_create_context(tmp_path: Path):
     np.testing.assert_array_equal(ctx.options["ngs_used"], np.array([True, False, True]))
     photons = np.fromstring(ctx.runtime["effective_parser"]["sensor_LO"]["NumberPhotons"].strip("[]"), sep=",")
     assert photons.size == 2
-    assert np.all(photons > 0.0)
-    assert photons[0] > photons[1]
+    np.testing.assert_array_equal(photons, np.array([38.0, 15.0]))
     # Selected atmospheric profile is applied; effective config carries Seeing (not r0_Value).
     assert "r0_Value" not in ctx.runtime["effective_parser"]["atmosphere"]
     assert float(ctx.runtime["effective_parser"]["atmosphere"]["Seeing"]) > 0.0
@@ -253,14 +252,14 @@ def test_tiptop_validate_setup_payload_does_not_rebind_loaded_setup(tmp_path: Pa
 
     original_setup_payload = sim.prepare_setup_payload(
         {"ee_apertures": np.array([50.0, 100.0]) * u.mas},
-        {"ngs_magnitude_zeropoint": 3.0e10 * u.photon / u.s},
+        {"ngs_magnitude_zeropoint": 3.0e10 * u.photon / (u.m**2 * u.s)},
     )
     sim.load_setup_payload(original_setup_payload)
     original_setup = sim.setup
 
     candidate_setup_payload = sim.prepare_setup_payload(
         {"ee_apertures": np.array([25.0]) * u.mas},
-        {"ngs_magnitude_zeropoint": 4.0e10 * u.photon / u.s},
+        {"ngs_magnitude_zeropoint": 4.0e10 * u.photon / (u.m**2 * u.s)},
     )
     sim.validate_setup_payload(candidate_setup_payload)
 
@@ -269,7 +268,7 @@ def test_tiptop_validate_setup_payload_does_not_rebind_loaded_setup(tmp_path: Pa
         sim.setup.ee_apertures.to_value(u.mas),
         np.array([50.0, 100.0]),
     )
-    assert sim.setup.ngs_magnitude_zeropoint.to_value(u.photon / u.s) == pytest.approx(
+    assert sim.setup.ngs_magnitude_zeropoint.to_value(u.photon / (u.m**2 * u.s)) == pytest.approx(
         3.0e10
     )
 
@@ -284,7 +283,7 @@ def test_tiptop_create_context_leaves_ini_ngs_when_options_omit_ngs(tmp_path: Pa
 
     setup_payload = sim.prepare_setup_payload(
         {"ee_apertures": np.array([50.0, 100.0]) * u.mas},
-        {"ngs_magnitude_zeropoint": 3.0e10 * u.photon / u.s},
+        {"ngs_magnitude_zeropoint": 3.0e10 * u.photon / (u.m**2 * u.s)},
     )
     sim.load_setup_payload(setup_payload)
 
@@ -313,7 +312,7 @@ def test_tiptop_prepare_options_payload_loads_ngs_defaults_from_ini(tmp_path: Pa
 
     setup_payload = sim.prepare_setup_payload(
         {"ee_apertures": np.array([50.0, 100.0]) * u.mas},
-        {"ngs_magnitude_zeropoint": 3.0e10 * u.photon / u.s},
+        {"ngs_magnitude_zeropoint": 3.0e10 * u.photon / (u.m**2 * u.s)},
     )
 
     options_payload = sim.prepare_options_payload(
@@ -336,7 +335,10 @@ def test_tiptop_prepare_options_payload_loads_ngs_defaults_from_ini(tmp_path: Pa
         np.array([[0.0], [0.0]]),
     )
     assert options_payload["ngs_magnitude"].shape == (2, 1)
-    assert np.all(np.isfinite(options_payload["ngs_magnitude"]))
+    np.testing.assert_allclose(
+        options_payload["ngs_magnitude"].to_value(u.mag),
+        np.full((2, 1), 12.940228147639203),
+    )
 
 
 def test_tiptop_run_finalize_with_stubbed_tiptop(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -388,7 +390,7 @@ def test_tiptop_run_finalize_with_stubbed_tiptop(tmp_path: Path, monkeypatch: py
     simulation_payload = _prepare_simulation_payload(sim, {"config_path": str(ini_path)})
     setup = {
         "ee_apertures": np.array([50.0, 100.0]) * u.mas,
-        "ngs_magnitude_zeropoint": 1.1e13 / 368.0 * u.photon / u.s,
+        "ngs_magnitude_zeropoint": 1.1e13 / 368.0 * u.photon / (u.m**2 * u.s),
         "sci_r": np.array([0.0, 1.0, 2.0]) * u.arcsec,
         "atm_profiles": {
             "0": {
@@ -463,7 +465,7 @@ def test_tiptop_derives_r0_from_seeing_when_missing(tmp_path: Path):
     sim.load_simulation_payload(simulation_payload)
     setup_payload = sim.prepare_setup_payload(
         {"ee_apertures": np.array([50.0]) * u.mas},
-        {"ngs_magnitude_zeropoint": 1.1e13 / 368.0 * u.photon / u.s},
+        {"ngs_magnitude_zeropoint": 1.1e13 / 368.0 * u.photon / (u.m**2 * u.s)},
     )
 
     assert 0 in setup_payload["atm_profiles"]
@@ -490,7 +492,7 @@ def test_tiptop_uses_only_seeing_in_effective_config_when_r0_present(tmp_path: P
     sim.load_simulation_payload(simulation_payload)
     setup_payload = sim.prepare_setup_payload(
         {"ee_apertures": np.array([50.0]) * u.mas},
-        {"ngs_magnitude_zeropoint": 3.0e10 * u.photon / u.s},
+        {"ngs_magnitude_zeropoint": 3.0e10 * u.photon / (u.m**2 * u.s)},
     )
     sim.load_setup_payload(setup_payload)
 
@@ -524,7 +526,7 @@ def test_tiptop_accepts_seeing_arcsec_in_atm_profiles(tmp_path: Path):
     setup_payload = sim.prepare_setup_payload(
         {"ee_apertures": np.array([50.0, 100.0]) * u.mas},
         {
-            "ngs_magnitude_zeropoint": 1.1e13 / 368.0 * u.photon / u.s,
+            "ngs_magnitude_zeropoint": 1.1e13 / 368.0 * u.photon / (u.m**2 * u.s),
             "atm_profiles": {
                 "0": {
                     "name": "seeing_profile",
@@ -554,7 +556,7 @@ def test_tiptop_requires_runtime_ngs_used_when_ngs_options_present(tmp_path: Pat
     sim.load_simulation_payload(simulation_payload)
     setup_payload = sim.prepare_setup_payload(
         {"ee_apertures": np.array([50.0]) * u.mas},
-        {"ngs_magnitude_zeropoint": 3.0e10 * u.photon / u.s},
+        {"ngs_magnitude_zeropoint": 3.0e10 * u.photon / (u.m**2 * u.s)},
     )
     sim.load_setup_payload(setup_payload)
 
@@ -597,7 +599,7 @@ def test_tiptop_rejects_non_positive_atm_profile_scalars(tmp_path: Path, field: 
         sim.prepare_setup_payload(
             {"ee_apertures": np.array([50.0, 100.0]) * u.mas},
             {
-                "ngs_magnitude_zeropoint": 1.1e13 / 368.0 * u.photon / u.s,
+                "ngs_magnitude_zeropoint": 1.1e13 / 368.0 * u.photon / (u.m**2 * u.s),
                 "atm_profiles": {"0": profile},
             },
         )
@@ -615,7 +617,7 @@ def test_tiptop_rejects_inconsistent_atm_profile_r0_and_seeing(tmp_path: Path):
         sim.prepare_setup_payload(
             {"ee_apertures": np.array([50.0, 100.0]) * u.mas},
             {
-                "ngs_magnitude_zeropoint": 1.1e13 / 368.0 * u.photon / u.s,
+                "ngs_magnitude_zeropoint": 1.1e13 / 368.0 * u.photon / (u.m**2 * u.s),
                 "atm_profiles": {
                     "1": {
                         "name": "conflict_profile",
@@ -669,7 +671,7 @@ def test_tiptop_rejects_invalid_lo_frame_rate_for_ngs_mag(tmp_path: Path, line: 
     sim.load_simulation_payload(simulation_payload)
     setup_payload = sim.prepare_setup_payload(
         {"ee_apertures": np.array([50.0, 100.0]) * u.mas},
-        {"ngs_magnitude_zeropoint": 1.1e13 / 368.0 * u.photon / u.s},
+        {"ngs_magnitude_zeropoint": 1.1e13 / 368.0 * u.photon / (u.m**2 * u.s)},
     )
     sim.load_setup_payload(setup_payload)
 
@@ -705,7 +707,7 @@ def test_tiptop_rejects_invalid_telescope_diameter_for_ngs_mag(tmp_path: Path, l
     sim.load_simulation_payload(simulation_payload)
     setup_payload = sim.prepare_setup_payload(
         {"ee_apertures": np.array([50.0, 100.0]) * u.mas},
-        {"ngs_magnitude_zeropoint": 1.1e13 / 368.0 * u.photon / u.s},
+        {"ngs_magnitude_zeropoint": 1.1e13 / 368.0 * u.photon / (u.m**2 * u.s)},
     )
     sim.load_setup_payload(setup_payload)
 

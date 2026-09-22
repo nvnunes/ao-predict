@@ -4,7 +4,7 @@ simulation:
 
 setup:
   ee_apertures: {value: [50.0, 100.0], unit: mas}
-  ngs_magnitude_zeropoint: {value: 3.0e10, unit: photon / s}
+  ngs_magnitude_zeropoint: {value: 3.0e10, unit: photon / (m2 s)}
 
 options:
   broadcast:

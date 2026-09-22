@@ -184,7 +184,12 @@ Core required key:
 - `ee_apertures`
 
 Most simulation-specific setup values are resolved by the simulation implementation (for TIPTOP, usually from INI).
-For `TiptopSimulation`, `setup.ngs_magnitude_zeropoint` is also required.
+For TIPTOP-backed and Hybrid simulations, `setup.ngs_magnitude_zeropoint`
+is also required.
+It is the zero-magnitude photon flux per square metre in
+`photon / (m2 s)`. The LO-WFS subaperture area converts it to an effective
+rate in `photon / s`. TIPTOP divides that rate by the LO frame rate to obtain
+photons per frame; Hybrid uses the effective rate directly.
 
 Physical setup values use a `{value, unit}` mapping. Field names remain
 unit-free:
@@ -192,7 +197,7 @@ unit-free:
 ```yaml
 setup:
   ee_apertures: {value: [50.0, 100.0], unit: mas}
-  ngs_magnitude_zeropoint: {value: 3.0e10, unit: photon / s}
+  ngs_magnitude_zeropoint: {value: 3.0e10, unit: photon / (m2 s)}
 ```
 
 ### `options`

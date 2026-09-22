@@ -239,7 +239,7 @@ class TiptopConfigBackedSimulation(ConfigBackedSimulation):
                 parser,
                 self._get_ngs_photometry_config(
                     parser,
-                    setup_payload[self.KEY_SETUP_NGS_MAGNITUDE_ZEROPOINT].to_value(u.photon / u.s),
+                    setup_payload[self.KEY_SETUP_NGS_MAGNITUDE_ZEROPOINT],
                 ),
             )
             if default_ngs_options is not None:
@@ -363,18 +363,14 @@ class TiptopConfigBackedSimulation(ConfigBackedSimulation):
     def _get_ngs_photometry_config(
         cls,
         parser: ConfigParser,
-        ngs_magnitude_zeropoint: float | u.Quantity,
+        ngs_magnitude_zeropoint: u.Quantity,
     ) -> WFSPhotometryConfig:
         """Read parser-backed inputs needed for NGS magnitude/photon conversions."""
         return WFSPhotometryConfig(
             telescope_diameter=cls._get_telescope_diameter_m(parser) * u.m,
             n_channels=cls._get_n_lenslets_lo(parser),
             frame_rate=cls._get_frame_rate_lo(parser) * u.Hz,
-            zeropoint=float(
-                ngs_magnitude_zeropoint.to_value(u.photon / u.s)
-                if isinstance(ngs_magnitude_zeropoint, u.Quantity)
-                else ngs_magnitude_zeropoint
-            ) * (u.photon / u.s),
+            zeropoint=ngs_magnitude_zeropoint.to(u.photon / (u.m**2 * u.s)),
         )
 
     def _get_default_r0_m_from_ini(self, parser: ConfigParser) -> float:

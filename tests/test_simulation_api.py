@@ -49,7 +49,7 @@ def _base_request(tmp_path: Path) -> InitDatasetRequest:
             peak_method=schema.DEFAULT_SETUP_PEAK_METHOD,
             fwhm_summary=schema.DEFAULT_SETUP_FWHM_SUMMARY,
             specific_fields={
-                "ngs_magnitude_zeropoint": (1.1e13 / 368.0) * u.photon / u.s
+                "ngs_magnitude_zeropoint": (1.1e13 / 368.0) * u.photon / (u.m**2 * u.s)
             },
         ),
         options=OptionsConfig(
@@ -290,6 +290,28 @@ def test_api_validate_dataset_matches_request_accepts_matching_payloads(tmp_path
     sim_api.validate_dataset_matches_request(request.dataset_path, request)
 
 
+def test_legacy_zeropoint_matches_request_and_loads_for_analysis(tmp_path: Path):
+    request = _base_request(tmp_path)
+    sim_api.init_dataset(request)
+    with h5py.File(request.dataset_path, "r+") as f:
+        f["setup/ngs_magnitude_zeropoint"].attrs["units"] = "ph / s"
+
+    sim_api.validate_dataset_matches_request(request.dataset_path, request)
+    analysis = load_analysis_dataset(request.dataset_path)
+    assert analysis.setup["ngs_magnitude_zeropoint"].unit == u.photon / (u.m**2 * u.s)
+
+
+def test_api_rejects_new_zeropoint_with_rate_units(tmp_path: Path):
+    request = _base_request(tmp_path)
+    setup = replace(
+        request.setup,
+        specific_fields={"ngs_magnitude_zeropoint": 3.0e10 * u.photon / u.s},
+    )
+    with pytest.raises(ValueError, match="ngs_magnitude_zeropoint"):
+        sim_api.init_dataset(replace(request, setup=setup))
+    assert not Path(request.dataset_path).exists()
+
+
 @pytest.mark.parametrize(
     ("path", "value", "expected"),
     [
@@ -375,7 +397,7 @@ def test_api_init_persists_explicit_setup_stats_selectors(tmp_path: Path):
             peak_method=schema.STATS_PEAK_METHOD_PIXEL_MAX,
             fwhm_summary=schema.STATS_FWHM_SUMMARY_MAX,
             ee_geometry=schema.STATS_EE_GEOMETRY_ENCIRCLED,
-            specific_fields={"ngs_magnitude_zeropoint": (1.1e13 / 368.0) * u.photon / u.s},
+            specific_fields={"ngs_magnitude_zeropoint": (1.1e13 / 368.0) * u.photon / (u.m**2 * u.s)},
         ),
         options=request.options,
     )
@@ -401,7 +423,7 @@ def test_api_init_upgrades_legacy_sr_method_to_peak_method(tmp_path: Path):
         setup={
             "ee_apertures": [50.0, 100.0] * u.mas,
             "sr_method": "pixel_fit",
-            "ngs_magnitude_zeropoint": (1.1e13 / 368.0) * u.photon / u.s,
+            "ngs_magnitude_zeropoint": (1.1e13 / 368.0) * u.photon / (u.m**2 * u.s),
         },
     )
 
@@ -424,7 +446,7 @@ def test_api_init_rejects_conflicting_peak_method_names(tmp_path: Path):
             "ee_apertures": [50.0, 100.0] * u.mas,
             "peak_method": "pixel_max",
             "sr_method": "pixel_fit",
-            "ngs_magnitude_zeropoint": (1.1e13 / 368.0) * u.photon / u.s,
+            "ngs_magnitude_zeropoint": (1.1e13 / 368.0) * u.photon / (u.m**2 * u.s),
         },
     )
 
@@ -471,7 +493,7 @@ def test_api_init_rejects_invalid_setup_stats_selector(tmp_path: Path):
         setup=SetupConfig(
             ee_apertures=[50.0, 100.0] * u.mas,
             peak_method="bad_selector",
-            specific_fields={"ngs_magnitude_zeropoint": (1.1e13 / 368.0) * u.photon / u.s},
+            specific_fields={"ngs_magnitude_zeropoint": (1.1e13 / 368.0) * u.photon / (u.m**2 * u.s)},
         ),
         options=request.options,
     )
@@ -603,7 +625,7 @@ def test_api_init_accepts_seeing_alias_columns(tmp_path: Path):
         simulation=SimulationConfig(name="Tiptop", base_path=str(Path(ini_path).parent), specific_fields={"config_path": str(ini_path)}),
         setup=SetupConfig(
             ee_apertures=[50.0, 100.0] * u.mas,
-            specific_fields={"ngs_magnitude_zeropoint": (1.1e13 / 368.0) * u.photon / u.s},
+            specific_fields={"ngs_magnitude_zeropoint": (1.1e13 / 368.0) * u.photon / (u.m**2 * u.s)},
         ),
         options=OptionsConfig(
             option_arrays={
@@ -639,7 +661,7 @@ def test_api_init_accepts_options_input_config_table(tmp_path: Path):
         simulation=SimulationConfig(name="Tiptop", base_path=str(Path(ini_path).parent), specific_fields={"config_path": str(ini_path)}),
         setup=SetupConfig(
             ee_apertures=[50.0, 100.0] * u.mas,
-            specific_fields={"ngs_magnitude_zeropoint": (1.1e13 / 368.0) * u.photon / u.s},
+            specific_fields={"ngs_magnitude_zeropoint": (1.1e13 / 368.0) * u.photon / (u.m**2 * u.s)},
         ),
         options=TableOptionsConfig(
             broadcast={},
@@ -688,7 +710,7 @@ def test_api_init_accepts_ragged_ngs_table_input(tmp_path: Path):
         simulation=SimulationConfig(name="Tiptop", base_path=str(Path(ini_path).parent), specific_fields={"config_path": str(ini_path)}),
         setup=SetupConfig(
             ee_apertures=[50.0, 100.0] * u.mas,
-            specific_fields={"ngs_magnitude_zeropoint": (1.1e13 / 368.0) * u.photon / u.s},
+            specific_fields={"ngs_magnitude_zeropoint": (1.1e13 / 368.0) * u.photon / (u.m**2 * u.s)},
         ),
         options=TableOptionsConfig(
             broadcast={},
@@ -750,7 +772,7 @@ def test_api_init_rejects_non_columnar_options_mapping(tmp_path: Path):
     request = InitDatasetRequest(
         dataset_path=dataset_path,
         simulation={"name": "Tiptop", "config_path": str(ini_path)},
-        setup={"ee_apertures": [50.0, 100.0] * u.mas, "ngs_magnitude_zeropoint": (1.1e13 / 368.0) * u.photon / u.s},
+        setup={"ee_apertures": [50.0, 100.0] * u.mas, "ngs_magnitude_zeropoint": (1.1e13 / 368.0) * u.photon / (u.m**2 * u.s)},
         options={
             "broadcast": {},
             "columns": [
@@ -780,7 +802,7 @@ def test_api_init_rejects_non_columnar_table_payload(tmp_path: Path):
     request = InitDatasetRequest(
         dataset_path=dataset_path,
         simulation={"name": "Tiptop", "config_path": str(ini_path)},
-        setup={"ee_apertures": [50.0, 100.0] * u.mas, "ngs_magnitude_zeropoint": (1.1e13 / 368.0) * u.photon / u.s},
+        setup={"ee_apertures": [50.0, 100.0] * u.mas, "ngs_magnitude_zeropoint": (1.1e13 / 368.0) * u.photon / (u.m**2 * u.s)},
         options={
             "broadcast": {},
             "columns": [
@@ -812,7 +834,7 @@ def test_api_init_rejects_inconsistent_r0_and_seeing(tmp_path: Path):
         simulation=SimulationConfig(name="Tiptop", base_path=str(Path(ini_path).parent), specific_fields={"config_path": str(ini_path)}),
         setup=SetupConfig(
             ee_apertures=[50.0, 100.0] * u.mas,
-            specific_fields={"ngs_magnitude_zeropoint": (1.1e13 / 368.0) * u.photon / u.s},
+            specific_fields={"ngs_magnitude_zeropoint": (1.1e13 / 368.0) * u.photon / (u.m**2 * u.s)},
         ),
         options=OptionsConfig(
             option_arrays={
@@ -841,7 +863,7 @@ def test_api_init_rejects_non_positive_seeing_values(tmp_path: Path):
         simulation=SimulationConfig(name="Tiptop", base_path=str(Path(ini_path).parent), specific_fields={"config_path": str(ini_path)}),
         setup=SetupConfig(
             ee_apertures=[50.0, 100.0] * u.mas,
-            specific_fields={"ngs_magnitude_zeropoint": (1.1e13 / 368.0) * u.photon / u.s},
+            specific_fields={"ngs_magnitude_zeropoint": (1.1e13 / 368.0) * u.photon / (u.m**2 * u.s)},
         ),
         options=OptionsConfig(
             option_arrays={
@@ -869,7 +891,7 @@ def test_api_init_rejects_seeing_length_mismatch(tmp_path: Path):
         simulation=SimulationConfig(name="Tiptop", base_path=str(Path(ini_path).parent), specific_fields={"config_path": str(ini_path)}),
         setup=SetupConfig(
             ee_apertures=[50.0, 100.0] * u.mas,
-            specific_fields={"ngs_magnitude_zeropoint": (1.1e13 / 368.0) * u.photon / u.s},
+            specific_fields={"ngs_magnitude_zeropoint": (1.1e13 / 368.0) * u.photon / (u.m**2 * u.s)},
         ),
         options=OptionsConfig(
             option_arrays={
@@ -899,7 +921,7 @@ def test_api_init_accepts_partial_r0_with_seeing_fill(tmp_path: Path):
         simulation=SimulationConfig(name="Tiptop", base_path=str(Path(ini_path).parent), specific_fields={"config_path": str(ini_path)}),
         setup=SetupConfig(
             ee_apertures=[50.0, 100.0] * u.mas,
-            specific_fields={"ngs_magnitude_zeropoint": (1.1e13 / 368.0) * u.photon / u.s},
+            specific_fields={"ngs_magnitude_zeropoint": (1.1e13 / 368.0) * u.photon / (u.m**2 * u.s)},
         ),
         options=OptionsConfig(
             option_arrays={
@@ -934,7 +956,7 @@ def test_api_init_rejects_scalar_column_value(tmp_path: Path):
         simulation=SimulationConfig(name="Tiptop", base_path=str(Path(ini_path).parent), specific_fields={"config_path": str(ini_path)}),
         setup=SetupConfig(
             ee_apertures=[50.0, 100.0] * u.mas,
-            specific_fields={"ngs_magnitude_zeropoint": (1.1e13 / 368.0) * u.photon / u.s},
+            specific_fields={"ngs_magnitude_zeropoint": (1.1e13 / 368.0) * u.photon / (u.m**2 * u.s)},
         ),
         options=OptionsConfig(
             option_arrays={
@@ -962,7 +984,7 @@ def test_api_init_rejects_first_dimension_mismatch(tmp_path: Path):
         simulation=SimulationConfig(name="Tiptop", base_path=str(Path(ini_path).parent), specific_fields={"config_path": str(ini_path)}),
         setup=SetupConfig(
             ee_apertures=[50.0, 100.0] * u.mas,
-            specific_fields={"ngs_magnitude_zeropoint": (1.1e13 / 368.0) * u.photon / u.s},
+            specific_fields={"ngs_magnitude_zeropoint": (1.1e13 / 368.0) * u.photon / (u.m**2 * u.s)},
         ),
         options=OptionsConfig(
             option_arrays={
@@ -990,7 +1012,7 @@ def test_api_init_rejects_non_lowercase_mapping_keys(tmp_path: Path):
         simulation={"Name": "Tiptop", "config_path": str(ini_path)},
         setup={
             "ee_apertures": [50.0, 100.0] * u.mas,
-            "ngs_magnitude_zeropoint": (1.1e13 / 368.0) * u.photon / u.s,
+            "ngs_magnitude_zeropoint": (1.1e13 / 368.0) * u.photon / (u.m**2 * u.s),
         },
         options={
             "wavelength": np.array([1.65], dtype=float) * u.um,

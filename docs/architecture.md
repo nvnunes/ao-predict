@@ -75,6 +75,15 @@ column name. HDF5 stores quantity datasets in canonical units and records the
 generic Astropy unit string in each quantity dataset's `units` attribute;
 dimensionless scientific values use `1`.
 
+`setup.ngs_magnitude_zeropoint` is a photon flux per collection area in
+`photon / (m2 s)`. The magnitude conversion produces flux in the same unit;
+the nominal LO-WFS subaperture area `(telescope_diameter / n_channels)^2`
+converts it to an effective photon rate. Dividing by LO frame rate gives
+photons per frame for TIPTOP. The Hybrid request carries the effective rate
+in `photon / s`. Instrument-specific magnitude standards and calibration
+values are supplied by the simulation implementation and its setup, not
+selected by AO Predict's generic photometry conversion.
+
 Simulation-owned scalar metadata declarations map each field name to its
 Astropy unit. A declaration value of `None` identifies an ordinary numeric
 scalar such as a count; its `/meta` dataset has no `units` attribute and loads

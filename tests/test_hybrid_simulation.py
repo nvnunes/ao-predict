@@ -260,6 +260,7 @@ def test_hybrid_provider_uses_artifact_pixel_scale_and_preserves_flux(tmp_path: 
     sim.load_simulation_payload(payload)
     sim.load_setup_payload(_setup_payload())
     resolved = sim._resolve_hybrid_inputs(sim.create(0, _options()))
+    assert resolved.request.ngs_flux.to_value(u.photon / u.s)[0] == pytest.approx(18839.148236321827)
     result = resolved.science_provider.predict(
         zenith_angle=resolved.request.zenith_angle,
         wavelength=resolved.request.wavelength,
@@ -594,7 +595,7 @@ def test_hybrid_run_persists_jitter_through_public_dataset_path(tmp_path: Path, 
                     "atm_profiles": _setup_payload()["atm_profiles"],
                     "lgs_r": np.array([]) * u.arcsec,
                     "lgs_theta": np.array([]) * u.deg,
-                    "ngs_magnitude_zeropoint": 3.0e10 * u.photon / u.s,
+                    "ngs_magnitude_zeropoint": 3.0e10 * u.photon / (u.m**2 * u.s),
                     "sci_r": np.array([0.0, 1.0]) * u.arcsec,
                     "sci_theta": np.array([0.0, 0.0]) * u.deg,
                 },
@@ -731,7 +732,7 @@ def test_hybrid_validation_diagnostics_are_persisted_and_readable(
                     "atm_profiles": _setup_payload()["atm_profiles"],
                     "lgs_r": np.array([]) * u.arcsec,
                     "lgs_theta": np.array([]) * u.deg,
-                    "ngs_magnitude_zeropoint": 3.0e10 * u.photon / u.s,
+                    "ngs_magnitude_zeropoint": 3.0e10 * u.photon / (u.m**2 * u.s),
                     "sci_r": np.array([0.0, 1.0]) * u.arcsec,
                     "sci_theta": np.array([0.0, 0.0]) * u.deg,
                 },
@@ -815,7 +816,7 @@ def test_hybrid_debug_string_diagnostics_read_as_text(tmp_path: Path, monkeypatc
                     "atm_profiles": _setup_payload()["atm_profiles"],
                     "lgs_r": np.array([]) * u.arcsec,
                     "lgs_theta": np.array([]) * u.deg,
-                    "ngs_magnitude_zeropoint": 3.0e10 * u.photon / u.s,
+                    "ngs_magnitude_zeropoint": 3.0e10 * u.photon / (u.m**2 * u.s),
                     "sci_r": np.array([0.0, 1.0]) * u.arcsec,
                     "sci_theta": np.array([0.0, 0.0]) * u.deg,
                 },
@@ -999,7 +1000,7 @@ def _setup_payload() -> dict[str, object]:
         },
         "lgs_r": np.array([], dtype=float) * u.arcsec,
         "lgs_theta": np.array([], dtype=float) * u.deg,
-        "ngs_magnitude_zeropoint": 3.0e10 * u.photon / u.s,
+        "ngs_magnitude_zeropoint": 3.0e10 * u.photon / (u.m**2 * u.s),
         "sci_r": np.array([0.0, 1.0]) * u.arcsec,
         "sci_theta": np.array([0.0, 0.0]) * u.deg,
     }

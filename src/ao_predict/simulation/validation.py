@@ -326,6 +326,17 @@ def validate_setup_payload_core(setup: Mapping[str, Any]) -> None:
     if not np.isfinite(atm_wavelength) or atm_wavelength <= 0.0:
         raise ValueError(f"setup['{schema.KEY_SETUP_ATM_WAVELENGTH}'] must be a positive finite scalar.")
 
+    ngs_magnitude_zeropoint = as_float_scalar(
+        quantity_value(
+            setup[schema.KEY_SETUP_NGS_MAGNITUDE_ZEROPOINT],
+            schema.SETUP_FIELD_UNITS[schema.KEY_SETUP_NGS_MAGNITUDE_ZEROPOINT],
+            label=f"setup['{schema.KEY_SETUP_NGS_MAGNITUDE_ZEROPOINT}']",
+        ),
+        label=f"setup['{schema.KEY_SETUP_NGS_MAGNITUDE_ZEROPOINT}']",
+    )
+    if not np.isfinite(ngs_magnitude_zeropoint) or ngs_magnitude_zeropoint <= 0.0:
+        raise ValueError("setup['ngs_magnitude_zeropoint'] must be a positive finite scalar.")
+
     sci_r = quantity_value(
         setup[schema.KEY_SETUP_SCI_R],
         schema.SETUP_FIELD_UNITS[schema.KEY_SETUP_SCI_R],

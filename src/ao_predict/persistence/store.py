@@ -9,7 +9,7 @@ import h5py
 import numpy as np
 from astropy import units as u
 
-from .._units import UNITS_ATTRIBUTE, parse_unit, quantity_from_value, quantity_value, unit_string
+from .._units import UNITS_ATTRIBUTE, parse_unit, quantity_from_value, quantity_value, require_quantity, unit_string
 from ..simulation import schema
 from ..simulation.atm import ATM_PROFILE_FIELD_UNITS
 from ..simulation.validation import (
@@ -69,6 +69,24 @@ def _read_node(node: h5py.Group | h5py.Dataset) -> Any:
         return {k: _read_node(node[k]) for k in node.keys()}
 
     return _read_dataset_value(node)
+
+
+def _read_stored_setup(group: h5py.Group) -> tuple[dict[str, Any], bool]:
+    """Resolve stored setup and identify the one supported legacy unit label."""
+    setup = _read_node(group)
+    key = schema.KEY_SETUP_NGS_MAGNITUDE_ZEROPOINT
+    zeropoint = group.get(key)
+    legacy_zeropoint_unit = (
+        isinstance(zeropoint, h5py.Dataset)
+        and zeropoint.attrs.get(UNITS_ATTRIBUTE) == unit_string(u.photon / u.s)
+    )
+    if legacy_zeropoint_unit:
+        # The stored numbers are flux per area; only their unit label is wrong.
+        setup[key] = quantity_from_value(
+            setup[key].value,
+            schema.SETUP_FIELD_UNITS[key],
+        )
+    return resolve_setup_payload_for_load(setup), legacy_zeropoint_unit
 
 
 def _decode_value(data: Any) -> Any:
@@ -696,6 +714,12 @@ class SimulationStore:
 
         validate_simulation_payload_core(simulation)
         setup = resolve_setup_payload_for_load(setup)
+        zeropoint_key = schema.KEY_SETUP_NGS_MAGNITUDE_ZEROPOINT
+        setup[zeropoint_key] = require_quantity(
+            setup[zeropoint_key],
+            schema.SETUP_FIELD_UNITS[zeropoint_key],
+            label=f"setup['{zeropoint_key}']",
+        )
         m_sci = get_num_sci(setup)
         num_sims = validate_options_payload_core(options, expected_num_sci=m_sci)
         validate_atm_profile_ids(setup, options)
@@ -814,9 +838,8 @@ class SimulationStore:
         """
 
         with h5py.File(self.path, "r") as f:
-            return resolve_setup_payload_for_load(
-                _read_node(f[schema.KEY_SETUP_SECTION])
-            )
+            setup, _ = _read_stored_setup(f[schema.KEY_SETUP_SECTION])
+            return setup
 
     def read_simulation(self) -> dict[str, Any]:
         """Read ``/simulation`` as a validated final-contract payload.
@@ -1192,12 +1215,11 @@ class SimulationStore:
                 diagnostic_field_specs = {}
 
             try:
-                setup_data = resolve_setup_payload_for_load(
-                    _read_node(f[schema.KEY_SETUP_SECTION])
-                )
+                setup_data, legacy_zeropoint_unit = _read_stored_setup(f[schema.KEY_SETUP_SECTION])
             except Exception as exc:
                 issues.append(f"Invalid /setup payload: {exc}")
                 setup_data = None
+                legacy_zeropoint_unit = False
 
             try:
                 options_data = _read_node(f[schema.KEY_OPTION_SECTION])
@@ -1212,6 +1234,8 @@ class SimulationStore:
                 issues.append(f"Invalid /options payload: {exc}")
 
             for name, unit in schema.SETUP_FIELD_UNITS.items():
+                if name == schema.KEY_SETUP_NGS_MAGNITUDE_ZEROPOINT and legacy_zeropoint_unit:
+                    continue
                 _collect_dataset_unit_issue(
                     f,
                     f"{schema.KEY_SETUP_SECTION}/{name}",

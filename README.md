@@ -85,7 +85,7 @@ request = InitDatasetRequest(
     ),
     setup=SetupConfig(
         ee_apertures=np.array([50.0, 100.0]) * u.mas,
-        specific_fields={"ngs_magnitude_zeropoint": 3.0e10 * u.photon / u.s},
+        specific_fields={"ngs_magnitude_zeropoint": 3.0e10 * u.photon / (u.m**2 * u.s)},
     ),
     options=TableOptionsConfig(
         broadcast={"zenith_angle": 20.0 * u.deg},
