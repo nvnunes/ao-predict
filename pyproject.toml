@@ -18,6 +18,7 @@ dependencies = [
     "numpy>=2.2.0",
     "h5py>=3.11.0",
     "hybrid-ao-psf>=0.1.0",
+    "ngs-photometry>=0.1.0",
     "joblib>=1.4.0",
     "matplotlib>=3.9.0",
     "PyYAML>=6.0",

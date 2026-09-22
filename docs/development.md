@@ -17,16 +17,18 @@ behavior in this document remain the source of truth for this repo.
 Use the bootstrap script to configure a fresh clone:
 
 ```bash
-AO_PREDICT_HYBRID_SOURCE=../hybrid-ao-psf ./scripts/bootstrap.sh
+AO_PREDICT_HYBRID_SOURCE=../hybrid-ao-psf \
+./scripts/bootstrap.sh
 ```
 
-`hybrid-ao-psf>=0.1.0` is a required distribution dependency. Until that
-distribution is available from the configured package index, set
-`AO_PREDICT_HYBRID_SOURCE` to a sibling checkout or an explicit Git source at
-a verified revision. The example above uses a sibling checkout.
-The bootstrap installs that source first, then AO Predict and its extras. A
-plain `./scripts/bootstrap.sh` remains sufficient when the distribution is
-available from the index.
+`hybrid-ao-psf>=0.1.0` and `ngs-photometry>=0.1.0` are required distribution
+dependencies. Bootstrap installs NGS Photometry from its GitHub repository
+before AO Predict and its extras. Set `AO_PREDICT_NGS_PHOTOMETRY_SOURCE` to a
+sibling checkout for editable development, or to a Git URL at a verified
+revision. Set `AO_PREDICT_HYBRID_SOURCE` to a sibling checkout or Git source
+when Hybrid AO PSF is unavailable from the configured package index. Plain
+`./scripts/bootstrap.sh` is sufficient when Hybrid AO PSF is available from
+that index.
 
 The script will:
 - create `.conda` if missing
@@ -47,11 +49,12 @@ After bootstrap, prefer commands from the local environment instead of bare
 ./.conda/bin/mkdocs serve
 ```
 
-When developing against a sibling Hybrid AO PSF checkout, refresh that
-editable installation separately after upstream changes:
+When developing against sibling dependency checkouts, refresh their editable
+installations separately after upstream changes:
 
 ```bash
 ./.conda/bin/python -m pip install -e ../hybrid-ao-psf
+./.conda/bin/python -m pip install -e ../ngs-photometry
 ```
 
 Run the CLI from the same environment:

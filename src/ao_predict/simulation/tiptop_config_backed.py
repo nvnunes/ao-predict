@@ -9,12 +9,12 @@ from typing import Any, Mapping
 
 import numpy as np
 from astropy import units as u
+from ngs_photometry import WFSPhotometryConfig, photons_per_frame_to_magnitudes
 
 from . import atm
 from . import schema
 from .config_backed import ConfigBackedSimulation
 from .helpers import seeing_to_r0
-from .photometry import WFSPhotometryConfig, photons_per_frame_to_magnitudes
 from .._units import quantity_value
 
 

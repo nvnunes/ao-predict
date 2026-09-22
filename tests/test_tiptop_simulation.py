@@ -143,7 +143,7 @@ def test_tiptop_create_context(tmp_path: Path):
     simulation_payload = _prepare_simulation_payload(sim, {"config_path": str(ini_path)})
     setup = {
         "ee_apertures": np.array([50.0, 100.0]) * u.mas,
-        "ngs_magnitude_zeropoint": 1.1e13 / 368.0 * u.photon / (u.m**2 * u.s),
+        "ngs_magnitude_zeropoint": 3.0e10 * u.photon / (u.m**2 * u.s),
         "sci_r": np.array([0.0, 1.0]) * u.arcsec,
         "atm_profiles": {
             "0": {
@@ -172,7 +172,7 @@ def test_tiptop_create_context(tmp_path: Path):
         "r0": 0.12 * u.m,
         "ngs_r": np.array([10.0, np.nan, 20.0]) * u.arcsec,
         "ngs_theta": np.array([0.0, np.nan, 180.0]) * u.deg,
-        "ngs_magnitude": np.array([14.0, np.nan, 15.0]) * u.mag,
+        "ngs_magnitude": np.array([0.0, np.nan, 14.0]) * u.mag,
         "ngs_used": np.array([True, False, True]),
         "atm_profile_id": 1,
         "sci_dx": np.array([1.0, 2.0], dtype=np.float32) * u.arcsec,
@@ -219,7 +219,7 @@ def test_tiptop_create_context(tmp_path: Path):
     np.testing.assert_array_equal(ctx.options["ngs_used"], np.array([True, False, True]))
     photons = np.fromstring(ctx.runtime["effective_parser"]["sensor_LO"]["NumberPhotons"].strip("[]"), sep=",")
     assert photons.size == 2
-    np.testing.assert_array_equal(photons, np.array([38.0, 15.0]))
+    np.testing.assert_array_equal(photons, np.array([15000000.0, 38.0]))
     # Selected atmospheric profile is applied; effective config carries Seeing (not r0_Value).
     assert "r0_Value" not in ctx.runtime["effective_parser"]["atmosphere"]
     assert float(ctx.runtime["effective_parser"]["atmosphere"]["Seeing"]) > 0.0
@@ -338,6 +338,8 @@ def test_tiptop_prepare_options_payload_loads_ngs_defaults_from_ini(tmp_path: Pa
     np.testing.assert_allclose(
         options_payload["ngs_magnitude"].to_value(u.mag),
         np.full((2, 1), 12.940228147639203),
+        rtol=0,
+        atol=1e-12,
     )
 
 

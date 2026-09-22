@@ -260,7 +260,10 @@ def test_hybrid_provider_uses_artifact_pixel_scale_and_preserves_flux(tmp_path: 
     sim.load_simulation_payload(payload)
     sim.load_setup_payload(_setup_payload())
     resolved = sim._resolve_hybrid_inputs(sim.create(0, _options()))
-    assert resolved.request.ngs_flux.to_value(u.photon / u.s)[0] == pytest.approx(18839.148236321827)
+    np.testing.assert_array_equal(
+        resolved.request.ngs_flux.to_value(u.photon / u.s),
+        np.array([18839.148236321827]),
+    )
     result = resolved.science_provider.predict(
         zenith_angle=resolved.request.zenith_angle,
         wavelength=resolved.request.wavelength,
@@ -468,7 +471,7 @@ def test_hybrid_run_calls_mastsel_with_metrics_and_converts_units(tmp_path: Path
     assert parser["atmosphere"]["WindDirection"] == "[0,90]"
     np.testing.assert_allclose(science_coords, np.array([[0.0, 0.0], [1.0, 0.0]]), atol=1.0e-12)
     np.testing.assert_allclose(ngs_coords, np.array([[0.0, 0.0]]), atol=1.0e-12)
-    assert np.all(ngs_flux > 0.0)
+    np.testing.assert_array_equal(ngs_flux, np.array([18839.148236321827]))
     np.testing.assert_allclose(ngs_frequency, np.array([500.0]))
     np.testing.assert_allclose(sr, np.array([0.1]))
     np.testing.assert_allclose(ee, np.array([0.3]))

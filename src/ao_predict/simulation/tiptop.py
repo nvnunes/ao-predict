@@ -11,13 +11,13 @@ from typing import Any, Mapping
 
 import numpy as np
 from astropy import units as u
+from ngs_photometry import magnitudes_to_photons_per_frame
 
 from . import atm
 from . import schema
 from .base import BaseSimulationSetup, PsfParameters
 from .helpers import r0_to_seeing
 from .interfaces import SimulationContext, SimulationSetup
-from .photometry import magnitudes_to_photons_per_frame
 from .tiptop_config_backed import (
     TiptopConfigBackedSimulation,
     _format_ini_array,

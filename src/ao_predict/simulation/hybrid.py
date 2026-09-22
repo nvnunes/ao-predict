@@ -28,13 +28,13 @@ from hybrid_ao_psf import (
     validate_science_ho_psf_interpolator,
     validate_science_ho_psf_query,
 )
+from ngs_photometry import magnitudes_to_effective_photons_per_second
 
 from .._units import quantity_value, unit_string
 from . import atm, schema
 from .base import BaseSimulationSetup, PsfParameters
 from .coordinates import polar_to_cartesian
 from .interfaces import SimulationContext, SimulationSetup
-from .photometry import magnitudes_to_photons_per_frame
 from .tiptop_config_backed import (
     TiptopConfigBackedSimulation,
     _serialize_parser,
@@ -816,8 +816,7 @@ class HybridSimulation(TiptopConfigBackedSimulation):
     def _ngs_flux_from_config(self, parser: ConfigParser, ngs_magnitude: u.Quantity, setup: HybridSetup) -> u.Quantity:
         """Return active NGS flux in photons per second for MASTSEL."""
         photometry = self._get_ngs_photometry_config(parser, setup.ngs_magnitude_zeropoint)
-        photons_per_frame = magnitudes_to_photons_per_frame(ngs_magnitude, photometry)
-        return photons_per_frame.to_value(u.photon) * photometry.frame_rate.to_value(u.Hz) * (u.photon / u.s)
+        return magnitudes_to_effective_photons_per_second(ngs_magnitude, photometry)
 
     # Path and option helpers
 

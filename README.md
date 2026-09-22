@@ -9,21 +9,18 @@ those models for bounded physical prediction and aggregate evaluation.
 
 ## Installation
 
-To install the package from a local checkout:
-
-If the required `hybrid-ao-psf` distribution is not available from your
-package index, first install it from a sibling checkout:
-
-```bash
-python -m pip install -e ../hybrid-ao-psf
-```
-
-The [development setup](docs/development.md#bootstrap) also accepts an
-explicit Git source for local bootstrap.
+To install AO Predict from a local checkout, install NGS Photometry from its
+GitHub repository first. If `hybrid-ao-psf` is unavailable from your package
+index, install it from a sibling checkout as well:
 
 ```bash
+python -m pip install "git+https://github.com/nvnunes/ngs-photometry.git"
+# If needed: python -m pip install -e ../hybrid-ao-psf
 python -m pip install .
 ```
+
+The [development setup](docs/development.md#bootstrap) can instead use a
+sibling NGS Photometry checkout.
 
 That path is intended for package use. For local development in this repo, use
 the canonical workflow in `Local Development Setup` below.
@@ -145,13 +142,14 @@ environment.
 Bootstrap a fresh clone with:
 
 ```bash
-AO_PREDICT_HYBRID_SOURCE=../hybrid-ao-psf ./scripts/bootstrap.sh
+AO_PREDICT_HYBRID_SOURCE=../hybrid-ao-psf \
+./scripts/bootstrap.sh
 ```
 
-The source override uses a sibling Hybrid AO PSF checkout while its
-distribution is unavailable from the configured package index. Once it is
-available, plain `./scripts/bootstrap.sh` is sufficient. See the
-[development setup](docs/development.md#bootstrap) for other source choices.
+Bootstrap installs NGS Photometry from GitHub by default. Set
+`AO_PREDICT_NGS_PHOTOMETRY_SOURCE=../ngs-photometry` to use a sibling editable
+checkout. See the [development setup](docs/development.md#bootstrap) for
+source choices and the Hybrid dependency.
 
 That script creates `./.conda`, installs the package with `dev` and `docs`
 extras, configures the git hooks path, runs the test suite, and builds the
