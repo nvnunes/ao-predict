@@ -26,7 +26,7 @@ ao-predict provides:
   - [TIPTOP Simulation](reference/simulation/tiptop.md)
   - [Hybrid Simulation](reference/simulation/hybrid.md)
   - [Validation](reference/simulation/validation.md)
-  - [Hybrid interpolation ownership](reference/interpolation.md)
+  - [Hybrid interpolation](reference/interpolation.md)
   - [Persistence Store](reference/persistence/store.md)
   - [Training](reference/training.md)
   - [Prediction](reference/prediction.md)

@@ -23,9 +23,8 @@ Keep one obvious owner for each major concern:
   simulation setup and persisted dataset contracts that select and store those
   values.
 - Hybrid science-HO-PSF and NGS-HO-metric interpolation products belong to the
-  direct `hybrid-ao-psf` dependency. The former `interpolation/*` implementation
-  remains temporarily for bounded parity and the coordinated GIRMOS migration;
-  it is not the source for new AO Predict Hybrid datasets.
+  direct `hybrid-ao-psf` dependency. AO Predict owns the Hybrid dataset adapter,
+  not interpolation builders, artifacts, or evaluation.
 - Persistence and storage concerns belong under `persistence/*`.
 - Model-training data, lifecycle, and package publication belong under
   `training/*` rather than growing out of simulation or persistence modules.
@@ -351,15 +350,12 @@ Keep one clear owner per rule:
 Avoid split ownership where builders, validators, and subclasses all partially
 enforce the same persisted rule.
 
-## Current Persisted Contract And Peak-method Upgrade
+## Persisted Simulation Contract
 
 Dataset creation and loading both require the complete current persisted
-contract. The one bounded field-name upgrade accepts legacy setup
-`sr_method=pixel_fit` as `peak_method=gaussian_fit` and
-`sr_method=pixel_max` as `peak_method=pixel_max`. New datasets write only
-`peak_method`, and conflicting legacy and canonical values are rejected. AO
-Predict does not contain other compatibility upgrades for older field names,
-missing unit attributes, or earlier interpolator payloads. The Hybrid
+contract. New datasets write `peak_method` for peak estimation. AO Predict
+requires supported field names, explicit unit attributes, and Hybrid AO
+PSF-format interpolation artifacts for execution. The Hybrid
 adapter's absent `non_psd_policy` field is read as its `error` default; this
 does not change existing field meanings. Completed datasets remain readable
 without loading referenced interpolation files. Other contract changes require
@@ -387,12 +383,12 @@ follows that lifecycle.
 
 ### Hybrid Adapter Boundary
 
-`HybridSimulation` retains AO Predict's public class and persisted dataset
-identity. It owns configured upstream artifact references and provenance,
-setup/options resolution, photometry, reusable loaded-provider binding, AO
-statistics, diagnostic field paths, and result persistence. One protected
-`_resolve_hybrid_inputs()` hook returns an atomic upstream request, science
-provider, NGS provider, and AO active-star slot mask. Downstream instrument
+`HybridSimulation` is AO Predict's public Hybrid dataset adapter and defines
+its persisted dataset identity. It owns configured upstream artifact references
+and provenance, setup/options resolution, photometry, reusable loaded-provider
+binding, AO statistics, diagnostic field paths, and result persistence. One
+protected `_resolve_hybrid_inputs()` hook returns an atomic upstream request,
+science provider, NGS provider, and AO active-star slot mask. Downstream instrument
 adapters may replace instrument-resolved request values or wrap a provider;
 the AO Predict base adapter alone calls `hybrid_ao_psf.simulate()` once per
 option row and maps its result to AO fields.
@@ -405,12 +401,9 @@ diagnostics. The AO adapter does not recompute these outputs. Its
 and debug diagnostics persist `hybrid/psd_clipped` per science field alongside
 the validity mask of the conditioned covariance.
 
-Completed AO Predict datasets remain readable with their existing class
-identity and field meanings without loading their former interpolation files.
-They do not require resume or re-execution compatibility. The downstream
-GIRMOS subclass, builders, and artifact references change together in the
-next coordinated migration stage; no temporary bridge for its old private
-Hybrid hooks is part of this adapter.
+Completed AO Predict datasets are readable with their persisted class identity
+and field meanings without loading the referenced interpolation artifacts.
+Execution requires interpolation artifacts in Hybrid AO PSF's formats.
 
 ## Per-Simulation Science Coordinates
 

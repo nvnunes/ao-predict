@@ -447,10 +447,6 @@ Notes:
 - If explicit NGS input is omitted, the selected simulation must supply the persisted NGS triplet during options preparation.
 - During execution, ao-predict derives a runtime-only `ngs_used` boolean vector from the persisted NGS triplet. This field is not persisted in `/options`.
 - If omitted, setup defaults `peak_method` to `gaussian_fit`, `fwhm_summary` to `geom`, and `ee_geometry` to `ensquared`.
-- Legacy mapping or persisted setup input named `sr_method` is silently
-  canonicalized at ingestion. `pixel_fit` becomes `gaussian_fit`, `pixel_max`
-  is unchanged, and new datasets persist only `peak_method`. Supplying both
-  names with conflicting values is an error.
 
 Atmospheric input note:
 - `r0` is the canonical persisted per-sim atmospheric option.

@@ -90,24 +90,16 @@ def test_statistics_api_has_moved_to_ao_stats() -> None:
         assert not hasattr(simulation, name)
 
 
-def test_interpolation_submodule_exports_without_root_exports() -> None:
+def test_interpolation_exports_belong_to_hybrid_ao_psf() -> None:
     package = importlib.import_module("ao_predict")
-    interpolation = importlib.import_module("ao_predict.interpolation")
+    interpolation = importlib.import_module("hybrid_ao_psf")
 
     assert interpolation.ScienceHoPsfSamples.__name__ == "ScienceHoPsfSamples"
-    assert interpolation.NgsHoPsfSamples.__name__ == "NgsHoPsfSamples"
     assert interpolation.NgsHoMetricSamples.__name__ == "NgsHoMetricSamples"
-    assert (
-        interpolation.RegularGridInterpolationConfig.__name__
-        == "RegularGridInterpolationConfig"
-    )
-    assert interpolation.RbfInterpolationConfig.__name__ == "RbfInterpolationConfig"
     assert not hasattr(package, "ScienceHoPsfSamples")
     assert not hasattr(package, "NgsHoMetricSamples")
-    assert not hasattr(package, "save_science_ho_psf_inputs")
-    assert not hasattr(interpolation, "save_science_ho_psf_inputs")
-    assert not hasattr(interpolation, "save_ngs_ho_psf_inputs")
-    assert not hasattr(interpolation, "save_ngs_ho_metric_inputs")
+    assert not hasattr(package, "build_science_ho_psf_interpolator")
+    assert not hasattr(package, "build_ngs_ho_metric_interpolator")
 
 
 def test_training_root_and_submodule_exports() -> None:
