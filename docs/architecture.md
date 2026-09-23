@@ -82,10 +82,13 @@ dimensionless scientific values use `1`.
 `photon / (m2 s)`. The magnitude conversion produces flux in the same unit;
 the nominal LO-WFS subaperture area `(telescope_diameter / n_channels)^2`
 converts it to an effective photon rate. Dividing by LO frame rate gives
-photons per frame for TIPTOP. The Hybrid request carries the effective rate
-in `photon / s`. Instrument-specific magnitude standards and calibration
-values are supplied by the simulation implementation and its setup, not
-selected by NGS Photometry.
+photons per frame for TIPTOP. AO Predict passes active magnitudes and its
+setup zeropoint to Hybrid AO PSF, which resolves the WFS-effective
+`photon / s` rate before MASTSEL and records it in the Hybrid result. Direct
+Hybrid requests may instead supply the effective rate. The TIPTOP adapter
+converts magnitudes in AO Predict.
+Instrument-specific magnitude standards and calibration values are supplied
+by the simulation implementation and its setup, not selected by NGS Photometry.
 
 Simulation-owned scalar metadata declarations map each field name to its
 Astropy unit. A declaration value of `None` identifies an ordinary numeric

@@ -28,7 +28,6 @@ from hybrid_ao_psf import (
     validate_science_ho_psf_interpolator,
     validate_science_ho_psf_query,
 )
-from ngs_photometry import magnitudes_to_effective_photons_per_second
 
 from .._units import quantity_value, unit_string
 from . import atm, schema
@@ -446,18 +445,14 @@ class HybridSimulation(TiptopConfigBackedSimulation):
         if not isinstance(parser, ConfigParser):
             raise TypeError("context.runtime['effective_parser'] must be a ConfigParser. Did create() run?")
         science_x, science_y = polar_to_cartesian(setup.sci_r, setup.sci_theta)
-        ngs_flux = self._ngs_flux_from_config(
-            parser,
-            active_ngs.magnitude,
-            setup,
-        )
         return HybridResolvedInputs(
             request=HybridRequest(
                 science_x=science_x,
                 science_y=science_y,
                 ngs_x=active_ngs.x,
                 ngs_y=active_ngs.y,
-                ngs_flux=ngs_flux,
+                ngs_magnitude=active_ngs.magnitude,
+                ngs_magnitude_zeropoint=setup.ngs_magnitude_zeropoint,
                 wavelength=_require_option_scalar(
                     options,
                     schema.KEY_OPTION_WAVELENGTH,
@@ -812,11 +807,6 @@ class HybridSimulation(TiptopConfigBackedSimulation):
         atmosphere["r0_Value"] = f"{r0.to_value(u.m):.6g}"
         if "Seeing" in atmosphere:
             del atmosphere["Seeing"]
-
-    def _ngs_flux_from_config(self, parser: ConfigParser, ngs_magnitude: u.Quantity, setup: HybridSetup) -> u.Quantity:
-        """Return active NGS flux in photons per second for MASTSEL."""
-        photometry = self._get_ngs_photometry_config(parser, setup.ngs_magnitude_zeropoint)
-        return magnitudes_to_effective_photons_per_second(ngs_magnitude, photometry)
 
     # Path and option helpers
 

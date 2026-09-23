@@ -254,16 +254,15 @@ def test_hybrid_load_simulation_payload_failure_does_not_partially_bind(tmp_path
         _ = sim.base_config
 
 
-def test_hybrid_provider_uses_artifact_pixel_scale_and_preserves_flux(tmp_path: Path) -> None:
+def test_hybrid_provider_uses_artifact_pixel_scale_and_passes_magnitude(tmp_path: Path) -> None:
     sim = HybridSimulation()
     payload = _simulation_payload(tmp_path)
     sim.load_simulation_payload(payload)
     sim.load_setup_payload(_setup_payload())
     resolved = sim._resolve_hybrid_inputs(sim.create(0, _options()))
-    np.testing.assert_array_equal(
-        resolved.request.ngs_flux.to_value(u.photon / u.s),
-        np.array([18839.148236321827]),
-    )
+    assert resolved.request.ngs_flux is None
+    np.testing.assert_array_equal(resolved.request.ngs_magnitude.to_value(u.mag), [14.0])
+    assert resolved.request.ngs_magnitude_zeropoint == _setup_payload()["ngs_magnitude_zeropoint"]
     result = resolved.science_provider.predict(
         zenith_angle=resolved.request.zenith_angle,
         wavelength=resolved.request.wavelength,
