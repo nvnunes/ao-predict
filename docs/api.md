@@ -237,6 +237,16 @@ public signatures and result fields.
 
 ## Lifecycle Functions
 
+### `generate_options(request: GenerateOptionsRequest) -> OptionsConfig`
+
+Prepare simulation and setup, invoke each declared field owner once, then
+return complete canonical option arrays without creating a dataset. Pass the
+result directly as `InitDatasetRequest.options` to inspect a population before
+initialization. Alternatively, pass `GenerateOptionsConfig` to initialization
+so that generation runs in the same preparation lifecycle. Config-guarded
+checking and resume regenerate expected options and compare all persisted
+values exactly.
+
 ### `init_dataset(request: InitDatasetRequest) -> int`
 
 Initialize an HDF5 simulation dataset from code-provided config.
@@ -394,6 +404,48 @@ During execution, `SimulationContext.setup` remains invariant and the
 effective polar field is available through `resolved_sci_r` and
 `resolved_sci_theta`.
 
+### `GenerateOptionsConfig` and `GenerateOptionsRequest`
+
+`GenerateOptionsConfig` has `count`, `num_ngs`, `fields`, optional integer
+`seed` (default `0`), and optional `broadcast`. `fields` maps canonical option
+names to full sampler definitions or a direct `"@owner"` reference. Each full
+definition has a built-in short name or external class path in `sampler`, a
+required positive integer `version`, a `parameters` mapping, and `unit` for
+physical fields. A version mismatch fails before drawing; versions assert the
+current implementation rather than retaining old generators.
+
+`GenerateOptionsRequest` combines `simulation`, `setup`, and the generation
+config. Its result is ordinary `OptionsConfig` with canonical quantities and
+arrays; HDF5 stores only the realized `/options` values. Retain the recipe and
+software environment for regeneration. An omitted root seed is deterministic,
+and each owner field derives a separate stable seed. Individual new catalog
+rows need not match older shared-stream generation workflows.
+
+The supported built-ins are:
+
+| Sampler | Parameters | Output |
+| --- | --- | --- |
+| `uniform` | finite `minimum`, `maximum` | Bounded independent draws for one field. |
+| `weighted_discrete` | ordered `values`, nonnegative `weights` with positive sum | Selection with replacement from caller-supplied values. |
+| `uniform_mean_mag` | `minimum`, `maximum` in `mag` | One-, two-, or three-NGS magnitude tuples with uniform means. |
+| `uniform_area_radius` | positive `maximum` | Area-uniform NGS radii. |
+| `uniform_theta` | empty mapping | Full-turn NGS angles. |
+| `stratified_science_offsets` | empty mapping | Joint `sci_dx`/`sci_dy` offsets over a regular Cartesian setup grid. |
+
+Numeric parameters for a physical field use that definition's `unit`. Weights
+are dimensionless. The number of NGS slots comes from `num_ngs`, without a
+per-field shape declaration. All generated physical outputs are Astropy
+quantities; nonphysical outputs are NumPy arrays.
+
+External samplers subclass `Sampler`, declare a positive integer `version`,
+and implement `sample(request: SamplerRequest)`. They receive one owner-specific
+seed, read-only prepared simulation/setup context, unchanged sampler-owned
+parameters, and the exact declared output fields. They must return exactly
+those fields, avoid process-global random state, and replay from their seed.
+Use `package.module:ClassName` or `package.module.ClassName` in `sampler`.
+AO Predict validates the returned units, shapes, names, and finite values; the
+external package owns deterministic replay tests for its implementation.
+
 ### `TableOptionsConfig`
 
 - `broadcast: dict[str, object] = {}`
@@ -411,7 +463,7 @@ carry units directly as quantities.
 - `dataset_path: str | Path`
 - `simulation: SimulationConfig | Mapping[str, object]`
 - `setup: SetupConfig | Mapping[str, object]`
-- `options: OptionsConfig | TableOptionsConfig | Mapping[str, np.ndarray | u.Quantity]`
+- `options: OptionsConfig | TableOptionsConfig | GenerateOptionsConfig | Mapping[str, np.ndarray | u.Quantity]`
 - `overwrite: bool = False`
 - `save_psfs: bool = False`
 
@@ -432,11 +484,12 @@ carry units directly as quantities.
 
 ## Options Input Modes
 
-`init_dataset` supports three options payload styles:
+`init_dataset` supports four options payload styles:
 
 1. `OptionsConfig(option_arrays=...)` typed columnar input.
 2. `TableOptionsConfig(...)` typed table/broadcast input.
 3. Raw direct columnar mapping (`{key: ndarray_or_quantity}`).
+4. `GenerateOptionsConfig(...)` typed generation input.
 
 Notes:
 - Inputs must be columnar per-option arrays with first dimension `N` (one entry per simulation).
@@ -534,6 +587,36 @@ See also:
 - `examples/simulate_tiptop_cli_example2.csv`
 - `examples/simulate_tiptop_cli.sh`
 - `examples/sample_tiptop.ini`
+
+## Generated Option Populations
+
+For a complete YAML example, use `examples/simulate_tiptop_generate.yaml`.
+The following code reuses the preceding working example's simulation and setup
+configuration to generate a different population. To initialize it, construct
+a new `InitDatasetRequest` with these `options`:
+
+```python
+from ao_predict import GenerateOptionsConfig, GenerateOptionsRequest, generate_options
+
+generation = GenerateOptionsConfig(
+    count=2,
+    num_ngs=2,
+    seed=23,
+    broadcast={"wavelength": 1.65 * u.um, "zenith_angle": 20 * u.deg},
+    fields={
+        "ngs_r": {"sampler": "uniform_area_radius", "version": 1, "unit": "arcsec", "parameters": {"maximum": 30}},
+        "ngs_theta": {"sampler": "uniform_theta", "version": 1, "unit": "deg", "parameters": {}},
+        "ngs_magnitude": {"sampler": "uniform_mean_mag", "version": 1, "unit": "mag", "parameters": {"minimum": 12, "maximum": 15}},
+    },
+)
+options = generate_options(GenerateOptionsRequest(request.simulation, request.setup, generation))
+```
+
+Inspect `options.option_arrays`, then pass `options` to initialization; or
+pass `generation` directly as `InitDatasetRequest.options` to generate during
+initialization. The same root seed and normalized recipe replay exactly within
+the producing software environment. The `uniform_mean_mag` built-in currently
+accepts one, two, or three NGS values; other arities fail before drawing.
 
 ## Hybrid Interpolation Inputs
 

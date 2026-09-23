@@ -443,7 +443,25 @@ point count.
   effective coordinates in those surfaces is a separate change.
 
 The offset matrices are an `OptionsConfig` API capability. The CLI does not
-provide a dedicated input surface for them.
+provide a dedicated table input surface for them. The generic generation
+surface can create both axes jointly from a regular Cartesian setup grid.
+
+## Simulation-Option Generation
+
+`ao_predict.simulation.sampling` owns deterministic field sampling, built-in
+instrument-independent policies, external `Sampler` resolution, and assembly
+of generated option arrays. It prepares simulation and setup before drawing,
+then routes completed arrays through the existing option-preparation path.
+The Python `generate_options(...)` operation and YAML `options.generate` branch
+use that same path. Generated populations therefore enter the same validation,
+initialization, config-checking, and guarded-resume lifecycle as caller-supplied
+arrays or tables.
+
+The caller owns scientific ranges, empirical-source construction, asterism
+constraints, campaign selection, and sidecar provenance. Generation stores no
+recipe or sampler metadata in HDF5; only realized canonical `/options` arrays
+are persisted. Existing datasets remain executable from those arrays without
+resolving their original samplers.
 
 ## Extension Points And Hooks
 

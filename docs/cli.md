@@ -202,7 +202,7 @@ setup:
 
 ### `options`
 
-Three supported inputs:
+Four supported inputs:
 
 1. Broadcast defaults (single values):
 ```yaml
@@ -239,6 +239,65 @@ options:
       zenith_angle: deg
 ```
 
+4. Generated population:
+```yaml
+options:
+  broadcast:
+    wavelength: {value: 1.65, unit: um}
+    zenith_angle: {value: 20, unit: deg}
+  generate:
+    count: 2
+    num_ngs: 2
+    seed: 23
+    fields:
+      ngs_r:
+        sampler: uniform_area_radius
+        version: 1
+        unit: arcsec
+        parameters: {maximum: 30}
+      ngs_theta:
+        sampler: uniform_theta
+        version: 1
+        unit: deg
+        parameters: {}
+      ngs_magnitude:
+        sampler: uniform_mean_mag
+        version: 1
+        unit: mag
+        parameters: {minimum: 12, maximum: 15}
+```
+
+`options.generate` and `options.table` are mutually exclusive. `count` is the
+positive row count; `num_ngs` is the positive width of all generated NGS fields.
+An omitted `seed` uses the fixed root seed `0`; an explicit integer chooses a
+different reproducible population. Each field has a private deterministic
+stream keyed by its canonical name, so field order and unrelated fields do not
+change existing draws. The required positive `version` asserts the resolved
+sampler's current algorithm version; it does not select an older implementation.
+
+`fields` uses canonical option names, not flattened table column names. A
+definition contains `sampler`, `version`, a `parameters` mapping, and `unit` for
+physical values. A joint sampler can expose another field by a direct quoted
+reference; for example `sci_dy: "@sci_dx"` shares one
+`stratified_science_offsets` draw owned by `sci_dx`. The prepared setup must
+then contain a regular Cartesian science grid. Supported built-ins and their
+parameters are in the [Python API guide](api.md#generated-option-populations).
+
+The complete generated TIPTOP example at
+`examples/simulate_tiptop_generate.yaml` can be initialized, executed, and
+checked with:
+
+```bash
+ao-predict simulate init examples/simulate_tiptop_generate.yaml
+ao-predict simulate run examples/sims/simulate_tiptop_generate.h5
+ao-predict simulate check examples/sims/simulate_tiptop_generate.h5 --config examples/simulate_tiptop_generate.yaml
+```
+
+Generation creates ordinary `/options` values, not sampler metadata in HDF5.
+Keep the YAML recipe to regenerate or check the population. Instrument-specific
+sampling ranges, empirical-source provenance, and acceptance/rejection rules
+remain the caller's responsibility.
+
 Rule:
 - `options.table.path` is mutually exclusive with inline `columns` and `rows`.
 - `options.table.units` must name every physical table column and must omit
@@ -253,6 +312,9 @@ Precedence:
 - table values first
 - broadcast values fill missing values
 - simulation completion logic fills remaining required option keys from simulation defaults
+
+For generation, sampled fields and broadcast fields must not overlap; both enter
+the same simulation-completion and persisted-option validation path.
 
 Atmospheric input note:
 - `r0` is the canonical persisted option in `/options`.

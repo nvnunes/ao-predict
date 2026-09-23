@@ -2,8 +2,9 @@
 
 AO Predict: a framework for fast AO performance prediction
 
-AO Predict provides batched TIPTOP and Hybrid AO PSF simulation with resumable
-HDF5 persistence and an instrument-independent PyTorch lifecycle for training
+AO Predict provides seeded generation of representative simulation-option
+populations, batched TIPTOP and Hybrid AO PSF simulation with resumable HDF5
+persistence, and an instrument-independent PyTorch lifecycle for training
 dense surrogate models from named feature and target arrays, then loading
 those models for bounded physical prediction and aggregate evaluation.
 
@@ -185,6 +186,7 @@ git config core.hooksPath .githooks
 
 - API script: `examples/simulate_tiptop_api.py`
 - CLI YAML config: `examples/simulate_tiptop_cli_example1.yaml`
+- CLI YAML config with generated options: `examples/simulate_tiptop_generate.yaml`
 - CLI YAML config with CSV table: `examples/simulate_tiptop_cli_example2.yaml`
 - CLI CSV options table: `examples/simulate_tiptop_cli_example2.csv`
 - CLI shell script: `examples/simulate_tiptop_cli.sh` (`1` by default, pass `2` for the CSV-table example)

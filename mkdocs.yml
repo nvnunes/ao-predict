@@ -33,6 +33,7 @@ nav:
       - Simulation Base: reference/simulation/base.md
       - Simulation API: reference/simulation/api.md
       - Simulation Options: reference/simulation/options.md
+      - Simulation Sampling: reference/simulation/sampling.md
       - Simulation Runner: reference/simulation/runner.md
       - TIPTOP Simulation: reference/simulation/tiptop.md
       - Hybrid Simulation: reference/simulation/hybrid.md

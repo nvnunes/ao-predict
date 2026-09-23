@@ -40,6 +40,13 @@ from .simulation.api import (
     validate_dataset_matches_request,
 )
 from .simulation.runner import RunSummary
+from .simulation.sampling import (
+    GenerateOptionsConfig,
+    GenerateOptionsRequest,
+    Sampler,
+    SamplerRequest,
+    generate_options,
+)
 from .training import (
     ModelTrainingDataConfig,
     ModelTrainingValidationError,
@@ -64,6 +71,8 @@ __all__ = [
     "DatasetConfigMismatchError",
     "DatasetStatus",
     "DatasetValidationError",
+    "GenerateOptionsConfig",
+    "GenerateOptionsRequest",
     "HybridSimulation",
     "InitDatasetRequest",
     "ModelEvaluationResult",
@@ -72,6 +81,8 @@ __all__ = [
     "ModelTrainingValidationError",
     "OptionsConfig",
     "RunSummary",
+    "Sampler",
+    "SamplerRequest",
     "SetupConfig",
     "Simulation",
     "SimulationConfig",
@@ -88,6 +99,7 @@ __all__ = [
     "TrainingValidationRecord",
     "__version__",
     "check_dataset",
+    "generate_options",
     "init_dataset",
     "load_analysis_dataset",
     "load_model_predictor",

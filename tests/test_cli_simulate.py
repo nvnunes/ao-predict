@@ -11,6 +11,7 @@ from astropy import units as u
 
 import ao_predict.cli as cli
 import ao_predict.simulation.api as sim_api
+from ao_predict.simulation.sampling import GenerateOptionsConfig, GenerateOptionsRequest, Sampler, generate_options
 from ao_predict import __version__
 from ao_predict.simulation.helpers import normalize_psf_pixel_sum
 from ao_predict.simulation import (
@@ -120,6 +121,84 @@ def _cli_init_dataset(monkeypatch, config_yaml: Path, dataset_path: Path) -> Non
         sys, "argv", ["ao-predict", "simulate", "init", str(config_yaml), "--dataset", str(dataset_path)]
     )
     assert cli.main() == 0
+
+
+def test_cli_generate_uses_same_population_as_python_api(tmp_path: Path, monkeypatch) -> None:
+    dataset_path, config_yaml = _prepare_cli_paths(tmp_path)
+    _write_config_yaml(
+        config_yaml,
+        tmp_path / "tiptop.ini",
+        options_cfg={
+            "broadcast": {"wavelength": {"value": 1.65, "unit": "um"}},
+            "generate": {
+                "count": 3,
+                "num_ngs": 2,
+                "seed": 23,
+                "fields": {
+                    "ngs_r": {"sampler": "uniform", "version": 1, "unit": "arcsec", "parameters": {"minimum": 1, "maximum": 20}},
+                    "ngs_theta": {"sampler": "uniform", "version": 1, "unit": "deg", "parameters": {"minimum": 0, "maximum": 360}},
+                    "ngs_magnitude": {"sampler": "uniform", "version": 1, "unit": "mag", "parameters": {"minimum": 10, "maximum": 16}},
+                },
+            },
+        },
+    )
+    request = cli._load_init_request(str(config_yaml), str(dataset_path))
+    assert isinstance(request.options, GenerateOptionsConfig)
+    python_options = generate_options(GenerateOptionsRequest(request.simulation, request.setup, request.options))
+
+    _cli_init_dataset(monkeypatch, config_yaml, dataset_path)
+    sim_api.validate_dataset_matches_request(dataset_path, request)
+    with h5py.File(dataset_path, "r") as store:
+        for name, value in python_options.option_arrays.items():
+            np.testing.assert_array_equal(store["options"][name][()], np.asarray(value))
+
+
+def test_cli_rejects_table_and_generate_together(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        cli._prepare_options_config({"table": {}, "generate": {"count": 1}}, tmp_path)
+
+
+class OpaqueParameterSampler(Sampler):
+    version = 1
+
+    def sample(self, request):
+        assert request.parameters["bandID"] == "H"
+        assert request.parameters["nested"]["KeepCase"] == 3
+        return {"ngs_r": np.full((request.count, request.num_ngs), 5.0) * u.arcsec}
+
+
+def test_cli_preserves_sampler_owned_parameter_keys(tmp_path: Path) -> None:
+    dataset_path, config_yaml = _prepare_cli_paths(tmp_path)
+    _write_config_yaml(
+        config_yaml,
+        tmp_path / "tiptop.ini",
+        options_cfg={
+            "broadcast": {"wavelength": {"value": 1.65, "unit": "um"}},
+            "generate": {
+                "count": 2, "num_ngs": 1,
+                "fields": {
+                    "ngs_r": {"sampler": "test_cli_simulate:OpaqueParameterSampler", "version": 1, "unit": "arcsec",
+                              "parameters": {"bandID": "H", "nested": {"KeepCase": 3}}},
+                    "ngs_theta": {"sampler": "uniform_theta", "version": 1, "unit": "deg", "parameters": {}},
+                    "ngs_magnitude": {"sampler": "uniform_mean_mag", "version": 1, "unit": "mag",
+                                      "parameters": {"minimum": 12, "maximum": 15}},
+                },
+            },
+        },
+    )
+    request = cli._load_init_request(str(config_yaml), str(dataset_path))
+    assert sim_api.init_dataset(request) == 2
+
+
+def test_published_generation_example_runs_to_completion(tmp_path: Path) -> None:
+    example = Path(__file__).resolve().parents[1] / "examples" / "simulate_tiptop_generate.yaml"
+    dataset = tmp_path / "generated-example.h5"
+    request = cli._load_init_request(str(example), str(dataset))
+    assert sim_api.init_dataset(request) == 2
+    summary = sim_api.run_simulations_by_state(dataset, state=SimulationState.PENDING)
+    assert (summary.attempted, summary.succeeded, summary.failed) == (2, 2, 0)
+    sim_api.validate_dataset_matches_request(dataset, request)
+    assert sim_api.check_dataset(dataset).ok
 
 
 def _success_result(m: int = 3, *, with_stats: bool = True, with_psfs: bool = True) -> SimulationResult:

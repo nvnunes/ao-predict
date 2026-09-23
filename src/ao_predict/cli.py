@@ -28,6 +28,7 @@ from .simulation.api import (
     run_simulations_by_state,
     validate_dataset_matches_request,
 )
+from .simulation.sampling import GenerateOptionsConfig
 
 
 # YAML/config parsing helpers
@@ -50,21 +51,25 @@ def _load_yaml(path: str) -> dict[str, Any]:
     return data
 
 
-def _lowercase_keys_recursive(value: Any) -> Any:
-    """Recursively lowercase mapping keys for YAML/CSV user inputs."""
+def _lowercase_keys_recursive(value: Any, *, path: tuple[str, ...] = ()) -> Any:
+    """Lowercase config keys while preserving opaque sampler parameters."""
+    if len(path) == 5 and path[:3] == ("options", "generate", "fields") and path[-1] == "parameters":
+        return value
     if isinstance(value, dict):
         out: dict[Any, Any] = {}
         for key, item in value.items():
             norm_key = key.lower() if isinstance(key, str) else key
-            out[norm_key] = _lowercase_keys_recursive(item)
+            out[norm_key] = _lowercase_keys_recursive(item, path=path + (norm_key,))
         return out
     if isinstance(value, list):
-        return [_lowercase_keys_recursive(item) for item in value]
+        return [_lowercase_keys_recursive(item, path=path) for item in value]
     return value
 
 
 def _decode_quantity_values(value: Any, *, path: str = "config") -> Any:
     """Decode YAML ``{value, unit}`` mappings into Astropy quantities."""
+    if path.startswith("config.options.generate.fields.") and ".parameters" in path:
+        return value
     if isinstance(value, dict):
         if set(value) == {"value", "unit"}:
             try:
@@ -109,7 +114,7 @@ def _parse_table_from_csv(path: str) -> tuple[list[str], list[list[Any]]]:
 
 
 def _prepare_options_config(options_cfg: dict[str, Any], config_dir: Path) -> dict[str, Any]:
-    """Normalize raw YAML ``options`` into ``broadcast/columns/rows`` format.
+    """Normalize raw YAML options into the table or generation input form.
 
     Args:
         options_cfg: Raw ``options`` mapping from YAML.
@@ -118,6 +123,22 @@ def _prepare_options_config(options_cfg: dict[str, Any], config_dir: Path) -> di
     Returns:
         Normalized options config consumed by the API layer.
     """
+    if schema.KEY_CFG_OPTION_GENERATE in options_cfg:
+        if schema.KEY_CFG_OPTION_TABLE in options_cfg:
+            raise ValueError("options.table and options.generate are mutually exclusive.")
+        generate = options_cfg[schema.KEY_CFG_OPTION_GENERATE]
+        if not isinstance(generate, dict):
+            raise ValueError("options.generate must be a mapping/object.")
+        unexpected = set(options_cfg) - {
+            schema.KEY_CFG_OPTION_GENERATE,
+            schema.KEY_CFG_OPTION_BROADCAST,
+        }
+        if unexpected:
+            raise ValueError(f"Unsupported options keys with generate: {sorted(unexpected)}.")
+        broadcast = options_cfg.get(schema.KEY_CFG_OPTION_BROADCAST, {})
+        if not isinstance(broadcast, dict):
+            raise ValueError("options.broadcast must be a mapping/object.")
+        return {schema.KEY_CFG_OPTION_GENERATE: dict(generate), schema.KEY_CFG_OPTION_BROADCAST: dict(broadcast)}
     table_cfg = options_cfg.get(schema.KEY_CFG_OPTION_TABLE)
     if isinstance(table_cfg, dict):
         columns = table_cfg.get(schema.KEY_CFG_OPTION_COLUMNS)
@@ -174,16 +195,30 @@ def _load_init_request(
 ) -> InitDatasetRequest:
     """Load a CLI config into an initialization request."""
     simulation_cfg, setup_cfg, options_cfg = _load_config(config_yaml)
-    return InitDatasetRequest(
-        dataset_path=dataset_path,
-        simulation=simulation_cfg,
-        setup=setup_cfg,
-        options=TableOptionsConfig(
+    if schema.KEY_CFG_OPTION_GENERATE in options_cfg:
+        generate = options_cfg[schema.KEY_CFG_OPTION_GENERATE]
+        allowed = {"count", "num_ngs", "seed", "fields"}
+        if set(generate) - allowed:
+            raise ValueError(f"Unsupported options.generate keys: {sorted(set(generate) - allowed)}.")
+        options: TableOptionsConfig | GenerateOptionsConfig = GenerateOptionsConfig(
+            count=generate.get("count"),
+            num_ngs=generate.get("num_ngs"),
+            seed=generate.get("seed"),
+            fields=generate.get("fields"),
+            broadcast=options_cfg.get(schema.KEY_CFG_OPTION_BROADCAST, {}),
+        )
+    else:
+        options = TableOptionsConfig(
             broadcast=dict(options_cfg.get(schema.KEY_CFG_OPTION_BROADCAST, {})),
             columns=options_cfg.get(schema.KEY_CFG_OPTION_COLUMNS),
             units=dict(options_cfg.get(schema.KEY_CFG_OPTION_UNITS, {})),
             rows=options_cfg.get(schema.KEY_CFG_OPTION_ROWS),
-        ),
+        )
+    return InitDatasetRequest(
+        dataset_path=dataset_path,
+        simulation=simulation_cfg,
+        setup=setup_cfg,
+        options=options,
         overwrite=overwrite,
         save_psfs=save_psfs,
     )

@@ -1,0 +1,32 @@
+simulation:
+  name: Tiptop
+  config_path: sample_tiptop.ini
+
+setup:
+  ee_apertures: {value: [50.0, 100.0], unit: mas}
+  ngs_magnitude_zeropoint: {value: 3.0e10, unit: photon / (m2 s)}
+
+options:
+  broadcast:
+    wavelength: {value: 1.65, unit: um}
+    zenith_angle: {value: 20.0, unit: deg}
+  generate:
+    count: 2
+    num_ngs: 2
+    seed: 23
+    fields:
+      ngs_r:
+        sampler: uniform_area_radius
+        version: 1
+        unit: arcsec
+        parameters: {maximum: 30}
+      ngs_theta:
+        sampler: uniform_theta
+        version: 1
+        unit: deg
+        parameters: {}
+      ngs_magnitude:
+        sampler: uniform_mean_mag
+        version: 1
+        unit: mag
+        parameters: {minimum: 12, maximum: 15}

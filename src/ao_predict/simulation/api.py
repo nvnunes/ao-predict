@@ -19,6 +19,7 @@ from .config import (
 from .interfaces import Simulation, SimulationState
 from . import schema
 from . import runner
+from .sampling import GenerateOptionsConfig, prepare_generated_options
 from .runner import (
     RunSummary,
     create_simulation_from_config,
@@ -117,7 +118,7 @@ class InitDatasetRequest:
         dataset_path: Output dataset path.
         simulation: Simulation config (typed or mapping form).
         setup: Setup config (typed or mapping form).
-        options: Options input (columnar arrays or config-style table/broadcast).
+        options: Columnar arrays, table/broadcast input, or a generation config.
         overwrite: Whether to overwrite an existing dataset file.
         save_psfs: Whether to allocate and persist ``/psfs/data``.
     """
@@ -125,7 +126,7 @@ class InitDatasetRequest:
     dataset_path: str | Path
     simulation: SimulationConfig | ConfigMapping
     setup: SetupConfig | ConfigMapping
-    options: OptionsConfig | TableOptionsConfig | OptionArrayMapping
+    options: OptionsConfig | TableOptionsConfig | GenerateOptionsConfig | OptionArrayMapping
     overwrite: bool = False
     save_psfs: bool = False
 
@@ -214,14 +215,16 @@ def _prepare_setup_payload(simulation: Simulation, setup_cfg: ConfigMapping) -> 
 
 def _prepare_options_payload(
     simulation: Simulation,
+    simulation_payload: ConfigMapping,
     setup_payload: ConfigMapping,
-    options: OptionsConfig | TableOptionsConfig | OptionArrayMapping,
+    options: OptionsConfig | TableOptionsConfig | GenerateOptionsConfig | OptionArrayMapping,
 ) -> dict[str, np.ndarray | u.Quantity]:
     """Prepare options payload for dataset initialization.
 
-    Supports typed ``OptionsConfig``, typed ``TableOptionsConfig``, and
-    direct columnar mappings.
+    Supports typed array, table, and generation configs, plus direct arrays.
     """
+    if isinstance(options, GenerateOptionsConfig):
+        return prepare_generated_options(simulation, simulation_payload, setup_payload, options).option_arrays
     if isinstance(options, OptionsConfig):
         return prepare_options_payload_from_arrays(
             simulation,
@@ -259,7 +262,7 @@ def _prepare_dataset_payloads(request: InitDatasetRequest) -> _PreparedDatasetPa
 
     simulation, simulation_payload = _prepare_simulation_payload(simulation_cfg)
     setup_payload = _prepare_setup_payload(simulation, setup_cfg)
-    options_payload = _prepare_options_payload(simulation, setup_payload, request.options)
+    options_payload = _prepare_options_payload(simulation, simulation_payload, setup_payload, request.options)
     return _PreparedDatasetPayloads(
         simulation=simulation_payload,
         setup=setup_payload,
@@ -442,6 +445,19 @@ def validate_dataset_matches_request(dataset_path: str | Path, request: InitData
         + _payload_mismatches(expected.options, store.read_options(), prefix="/options")
     )
     if mismatches:
+        if isinstance(request.options, GenerateOptionsConfig):
+            from .sampling import external_sampler_fields
+
+            external_fields = external_sampler_fields(request.options)
+            if any(
+                mismatch.startswith(f"/options/{field_name}")
+                for mismatch in mismatches
+                for field_name in external_fields
+            ):
+                mismatches.append(
+                    "An external sampler owns a mismatched field; check its determinism "
+                    "for the supplied seed and parameters."
+                )
         raise DatasetConfigMismatchError(mismatches)
 
 

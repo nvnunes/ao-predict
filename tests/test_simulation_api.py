@@ -21,6 +21,7 @@ from ao_predict.simulation import (
     schema,
 )
 from ao_predict.simulation.api import InitDatasetRequest, OptionsConfig, SetupConfig, SimulationConfig, TableOptionsConfig
+from ao_predict.simulation.sampling import GenerateOptionsConfig, GenerateOptionsRequest, Sampler, _field_seed, generate_options
 
 TIPTOP_INI_TEXT = (
     "[main]\nvalue=1\n"
@@ -64,6 +65,143 @@ def _base_request(tmp_path: Path) -> InitDatasetRequest:
             }
         ),
     )
+
+
+def _uniform_generation() -> GenerateOptionsConfig:
+    return GenerateOptionsConfig(
+        count=3,
+        num_ngs=2,
+        seed=23,
+        fields={
+            "ngs_r": {"sampler": "uniform", "version": 1, "unit": "arcsec", "parameters": {"minimum": 1, "maximum": 20}},
+            "ngs_theta": {"sampler": "uniform", "version": 1, "unit": "deg", "parameters": {"minimum": 0, "maximum": 360}},
+            "ngs_magnitude": {"sampler": "uniform", "version": 1, "unit": "mag", "parameters": {"minimum": 10, "maximum": 16}},
+        },
+        broadcast={"wavelength": 1.65 * u.um},
+    )
+
+
+class PairSampler(Sampler):
+    version = 1
+
+    def sample(self, request):
+        assert request.setup["ee_apertures"].flags.writeable is False
+        with pytest.raises(ValueError, match="WRITEABLE"):
+            request.setup["ee_apertures"].setflags(write=True)
+        with pytest.raises(TypeError):
+            request.parameters["unexpected"] = 1
+        return {
+            "ngs_r": np.full((request.count, request.num_ngs), 10.0 + (request.seed % 13) / 100) * u.arcsec,
+            "ngs_theta": np.full((request.count, request.num_ngs), 45.0) * u.deg,
+        }
+
+
+class WrongShapeSampler(Sampler):
+    version = 1
+
+    def sample(self, request):
+        return {request.owner_field: np.ones((request.count,)) * u.arcsec}
+
+
+def test_generate_options_uses_stable_owner_streams_and_persisted_options(tmp_path: Path) -> None:
+    base = _base_request(tmp_path)
+    config = _uniform_generation()
+    generated = generate_options(GenerateOptionsRequest(base.simulation, base.setup, config))
+    reordered = replace(config, fields=dict(reversed(list(config.fields.items()))))
+    repeated = generate_options(GenerateOptionsRequest(base.simulation, base.setup, reordered))
+
+    assert _field_seed(0, "wavelength") == 918462468
+    assert _field_seed(23, "ngs_magnitude") == 913818404
+    assert _field_seed(23, "sci_dx") == 1802891221
+    for name in generated.option_arrays:
+        np.testing.assert_array_equal(generated.option_arrays[name], repeated.option_arrays[name])
+    np.testing.assert_array_equal(
+        generated.option_arrays["ngs_r"],
+        np.random.RandomState(_field_seed(23, "ngs_r")).uniform(1, 20, size=(3, 2)) * u.arcsec,
+    )
+
+    request = replace(base, options=config)
+    assert sim_api.init_dataset(request) == 3
+    sim_api.validate_dataset_matches_request(base.dataset_path, request)
+    with h5py.File(base.dataset_path, "r") as store:
+        assert "sampling" not in store
+        for name, value in generated.option_arrays.items():
+            np.testing.assert_array_equal(store["options"][name][()], np.asarray(value))
+
+
+def test_generate_options_default_seed_and_early_validation(tmp_path: Path) -> None:
+    base = _base_request(tmp_path)
+    config = _uniform_generation()
+    defaulted = replace(config, seed=None)
+    explicit = replace(config, seed=0)
+    left = generate_options(GenerateOptionsRequest(base.simulation, base.setup, defaulted))
+    right = generate_options(GenerateOptionsRequest(base.simulation, base.setup, explicit))
+    np.testing.assert_array_equal(left.option_arrays["ngs_r"], right.option_arrays["ngs_r"])
+
+    for invalid, match in [
+        (replace(config, count=0), "count"),
+        (replace(config, seed=True), "seed"),
+        (replace(config, fields={"ngs_r": "@missing"}), "refer directly"),
+        (replace(config, fields={"ngs_r": {"sampler": "uniform", "version": 2, "unit": "arcsec", "parameters": {"minimum": 0, "maximum": 1}}}), "version"),
+    ]:
+        with pytest.raises(ValueError, match=match):
+            sim_api.init_dataset(replace(base, options=invalid))
+        assert not base.dataset_path.exists()
+
+
+def test_generate_options_direct_reference_and_guarded_resume(tmp_path: Path, monkeypatch) -> None:
+    base = _base_request(tmp_path)
+    config = replace(
+        _uniform_generation(),
+        fields={
+            "ngs_r": {"sampler": "test_simulation_api:PairSampler", "version": 1, "unit": "arcsec", "parameters": {}},
+            "ngs_theta": "@ngs_r",
+            "ngs_magnitude": {"sampler": "uniform", "version": 1, "unit": "mag", "parameters": {"minimum": 10, "maximum": 16}},
+        },
+    )
+    request = replace(base, options=config)
+    assert sim_api.init_dataset(request) == 3
+    monkeypatch.setattr(
+        sim_api.runner,
+        "run_simulations_by_state",
+        lambda *args, **kwargs: sim_api.RunSummary(attempted=0, succeeded=0, failed=0),
+    )
+    summary = sim_api.resume_simulations(base.dataset_path, expected_request=request)
+    assert summary.attempted == 0
+
+    changed = replace(request, options=replace(config, seed=24))
+    with pytest.raises(sim_api.DatasetConfigMismatchError, match="check its determinism") as error:
+        sim_api.resume_simulations(base.dataset_path, expected_request=changed)
+    assert "/options/ngs_magnitude" in str(error.value)
+    assert "/options/ngs_r" in str(error.value)
+    sim_api.validate_dataset_matches_request(base.dataset_path, request)
+
+
+@pytest.mark.parametrize(
+    ("definition", "message"),
+    [
+        ({"sampler": "pathlib:Path", "version": 1, "unit": "arcsec", "parameters": {}}, "Sampler subclass"),
+        ({"sampler": "test_simulation_api:WrongShapeSampler", "version": 1, "unit": "arcsec", "parameters": {}}, "shape"),
+        ({"sampler": "uniform", "version": 1, "unit": "m", "parameters": {"minimum": 1, "maximum": 2}}, "unit"),
+        ({"sampler": "uniform", "version": 1, "unit": "arcsec", "parameters": {"minimum": 2, "maximum": 1}}, "minimum < maximum"),
+    ],
+)
+def test_generate_options_rejects_invalid_sampler_inputs_before_dataset_creation(tmp_path: Path, definition, message) -> None:
+    base = _base_request(tmp_path)
+    config = replace(_uniform_generation(), fields={"ngs_r": definition})
+    with pytest.raises(ValueError, match=message):
+        sim_api.init_dataset(replace(base, options=config))
+    assert not base.dataset_path.exists()
+
+
+def test_generate_options_rejects_broadcast_conflict_and_reference_chain(tmp_path: Path) -> None:
+    base = _base_request(tmp_path)
+    config = _uniform_generation()
+    with pytest.raises(ValueError, match="conflicts"):
+        generate_options(GenerateOptionsRequest(base.simulation, base.setup, replace(config, broadcast={"ngs1_r": 1 * u.arcsec})))
+    chained = replace(config, fields={"ngs_r": "@ngs_theta", "ngs_theta": "@ngs_magnitude", "ngs_magnitude": config.fields["ngs_magnitude"]})
+    with pytest.raises(ValueError, match="refer directly"):
+        generate_options(GenerateOptionsRequest(base.simulation, base.setup, chained))
 
 
 def _success_result(m: int = 3, *, with_stats: bool = True, with_psfs: bool = True) -> SimulationResult:
