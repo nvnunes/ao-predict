@@ -16,7 +16,7 @@ def _grid_geometry(setup: Mapping[str, object]) -> tuple[float, np.ndarray, np.n
     r = np.asarray(setup[schema.KEY_SETUP_SCI_R].to_value(u.arcsec), dtype=float)
     theta = np.asarray(setup[schema.KEY_SETUP_SCI_THETA].to_value(u.deg), dtype=float)
     if r.ndim != 1 or theta.shape != r.shape or r.size < 4:
-        raise ValueError("stratified_science_offsets requires at least four science-grid points.")
+        raise ValueError("Stratified science offsets require at least four science-grid points.")
     radians = np.deg2rad(theta)
     x = r * np.cos(radians)
     y = r * np.sin(radians)
@@ -94,6 +94,73 @@ def _raw_axis_offsets(rng: np.random.Generator, count: int, num_points: int, spa
     return offsets
 
 
+def _validate_grid_coverage(spacing: float, base: np.ndarray, halfspaces: np.ndarray) -> None:
+    """Require source cells to cover the convex support without interior gaps."""
+    if len(_convex_hull_vertices(base)) < 3:
+        raise ValueError("Redistributed science offsets require convex grid support with positive area.")
+    lower = base.min(axis=0).astype(float)
+    indices = np.rint((base - lower) / spacing).astype(int)
+    occupied = set(map(tuple, indices))
+    half_cell = spacing / 2.0
+    for x_index in range(int(indices[:, 0].max()) + 1):
+        for y_index in range(int(indices[:, 1].max()) + 1):
+            if (x_index, y_index) in occupied:
+                continue
+            center = lower + spacing * np.asarray([x_index, y_index])
+            polygon = center + half_cell * np.asarray([[-1, -1], [1, -1], [1, 1], [-1, 1]])
+            for a, b, c in halfspaces.astype(float):
+                clipped = []
+                for start, stop in zip(polygon, np.roll(polygon, -1, axis=0), strict=True):
+                    start_distance = a * start[0] + b * start[1] + c
+                    stop_distance = a * stop[0] + b * stop[1] + c
+                    if start_distance <= 0.0:
+                        clipped.append(start)
+                    if (start_distance <= 0.0) != (stop_distance <= 0.0):
+                        clipped.append(start + start_distance / (start_distance - stop_distance) * (stop - start))
+                polygon = np.asarray(clipped)
+                if len(polygon) < 3:
+                    break
+            if len(polygon) >= 3:
+                polygon -= center
+                area = abs(
+                    np.dot(polygon[:, 0], np.roll(polygon[:, 1], -1))
+                    - np.dot(polygon[:, 1], np.roll(polygon[:, 0], -1))
+                ) / 2.0
+                if area > 1e-5 * spacing**2:
+                    raise ValueError(
+                        "Redistributed science offsets require grid cells to cover the convex grid support without gaps."
+                    )
+
+
+def _redistribute_offsets(
+    dx: np.ndarray,
+    dy: np.ndarray,
+    base: np.ndarray,
+    halfspaces: np.ndarray,
+    rng: np.random.Generator,
+) -> None:
+    """Replace exterior draws uniformly within support, retaining interior offsets."""
+    x = base[np.newaxis, :, 0] + dx
+    y = base[np.newaxis, :, 1] + dy
+    outside = np.zeros(dx.shape, dtype=bool)
+    for a, b, c in halfspaces:
+        outside |= a * x + b * y + c > 0.0
+    rows, columns = np.nonzero(outside)
+    lower = base.min(axis=0).astype(float)
+    upper = base.max(axis=0).astype(float)
+    while rows.size:
+        positions = rng.uniform(lower, upper, size=(rows.size, 2))
+        offsets = np.asarray(positions - base[columns], dtype=np.float32)
+        positions = base[columns] + offsets
+        inside = np.ones(rows.size, dtype=bool)
+        for a, b, c in halfspaces:
+            inside &= a * positions[:, 0] + b * positions[:, 1] + c <= 0.0
+        dx[rows[inside], columns[inside]] = offsets[inside, 0]
+        dy[rows[inside], columns[inside]] = offsets[inside, 1]
+        rows = rows[~inside]
+        columns = columns[~inside]
+
+
 def _reflect_offsets(
     dx: np.ndarray,
     dy: np.ndarray,
@@ -157,17 +224,26 @@ def _reflect_offsets(
         raise ValueError("Science-coordinate reflection left its source grid cell.")
 
 
+def _validate_science_offset_declaration(request: SamplerRequest, name: str) -> None:
+    if request.fields != (schema.KEY_OPTION_SCI_DX, schema.KEY_OPTION_SCI_DY):
+        raise ValueError(f"{name} requires sci_dx owner and sci_dy: '@sci_dx'.")
+    if request.parameters:
+        raise ValueError(f"{name} parameters must be empty.")
+
+
 class StratifiedScienceOffsetsSampler(Sampler):
-    """Draw joint ``sci_dx``/``sci_dy`` offsets over a regular science grid."""
+    """Draw joint grid-cell offsets, reflecting exterior points within support.
+
+    The regular grid's convex hull defines the field boundary. Reflected offsets
+    remain within half a grid spacing per axis of their source point. Outputs
+    are float32 arcsecond matrices with one column per science point.
+    """
 
     version = 1
 
     @classmethod
     def validate_declaration(cls, request: SamplerRequest) -> None:
-        if request.fields != (schema.KEY_OPTION_SCI_DX, schema.KEY_OPTION_SCI_DY):
-            raise ValueError("stratified_science_offsets requires sci_dx owner and sci_dy: '@sci_dx'.")
-        if request.parameters:
-            raise ValueError("stratified_science_offsets parameters must be empty.")
+        _validate_science_offset_declaration(request, "stratified_science_offsets")
         _grid_geometry(request.setup)
 
     def sample(self, request: SamplerRequest) -> Mapping[str, np.ndarray | u.Quantity]:
@@ -176,6 +252,36 @@ class StratifiedScienceOffsetsSampler(Sampler):
         dx = _raw_axis_offsets(rng, request.count, base.shape[0], spacing)
         dy = _raw_axis_offsets(rng, request.count, base.shape[0], spacing)
         _reflect_offsets(dx, dy, base, halfspaces, spacing / 2.0)
+        return {
+            schema.KEY_OPTION_SCI_DX: dx * u.arcsec,
+            schema.KEY_OPTION_SCI_DY: dy * u.arcsec,
+        }
+
+
+class StratifiedScienceOffsetsRedistributedSampler(Sampler):
+    """Draw joint grid-cell offsets, redistributing exterior points within support.
+
+    Source cells must cover the regular grid's convex hull without gaps.
+    Interior offsets are retained; exterior points are replaced by area-uniform
+    positions inside that hull. Replacement offsets may leave their source cell.
+    Outputs are float32 arcsecond matrices with one column per science point.
+    """
+
+    version = 1
+
+    @classmethod
+    def validate_declaration(cls, request: SamplerRequest) -> None:
+        _validate_science_offset_declaration(request, "stratified_science_offsets_redistributed")
+        spacing, base, halfspaces = _grid_geometry(request.setup)
+        _validate_grid_coverage(spacing, base, halfspaces)
+
+    def sample(self, request: SamplerRequest) -> Mapping[str, np.ndarray | u.Quantity]:
+        spacing, base, halfspaces = _grid_geometry(request.setup)
+        _validate_grid_coverage(spacing, base, halfspaces)
+        rng = np.random.default_rng(request.seed)
+        dx = _raw_axis_offsets(rng, request.count, base.shape[0], spacing)
+        dy = _raw_axis_offsets(rng, request.count, base.shape[0], spacing)
+        _redistribute_offsets(dx, dy, base, halfspaces, rng)
         return {
             schema.KEY_OPTION_SCI_DX: dx * u.arcsec,
             schema.KEY_OPTION_SCI_DY: dy * u.arcsec,

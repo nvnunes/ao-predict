@@ -21,7 +21,10 @@ from . import schema
 from .config import _parse_broadcast_defaults, prepare_options_payload_from_arrays
 from .interfaces import Simulation
 from .sampling_base import Sampler, SamplerRequest
-from .sampling_offsets import StratifiedScienceOffsetsSampler
+from .sampling_offsets import (
+    StratifiedScienceOffsetsRedistributedSampler,
+    StratifiedScienceOffsetsSampler,
+)
 
 if TYPE_CHECKING:
     from .api import OptionsConfig, SetupConfig, SimulationConfig
@@ -541,4 +544,5 @@ _BUILTINS: dict[str, type[Sampler]] = {
     "uniform_area_radius": UniformAreaRadiusSampler,
     "uniform_theta": UniformThetaSampler,
     "stratified_science_offsets": StratifiedScienceOffsetsSampler,
+    "stratified_science_offsets_redistributed": StratifiedScienceOffsetsRedistributedSampler,
 }

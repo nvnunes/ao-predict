@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from hashlib import sha256
 
 import numpy as np
@@ -101,11 +102,12 @@ def test_retained_joint_science_offset_boundaries(width, points, margin, shape, 
         np.testing.assert_array_equal(dx[0, :4], [-2.3663101196289062, 2.327198028564453, -0.9318637847900391, 1.6974983215332031])
 
 
-def test_irregular_science_grid_is_rejected() -> None:
+@pytest.mark.parametrize("name", ["stratified_science_offsets", "stratified_science_offsets_redistributed"])
+def test_irregular_science_grid_is_rejected(name) -> None:
     setup = _science_setup(20.0, 3)
     setup["sci_r"][0] += 0.2 * u.arcsec
     request = _request(
-        "stratified_science_offsets",
+        name,
         owner="sci_dx",
         count=2,
         unit=u.arcsec,
@@ -113,7 +115,7 @@ def test_irregular_science_grid_is_rejected() -> None:
         setup=setup,
     )
     with pytest.raises(ValueError, match="uniform Cartesian grid spacing"):
-        _BUILTINS["stratified_science_offsets"].validate_declaration(request)
+        _BUILTINS[name].validate_declaration(request)
 
 
 def test_full_science_grid_replays_within_inferred_support() -> None:
@@ -135,14 +137,120 @@ def test_full_science_grid_replays_within_inferred_support() -> None:
     assert np.all(np.abs(y) <= 5.00001)
 
 
-def test_repeating_decimal_grid_spacing_is_supported() -> None:
+@pytest.mark.parametrize("name", ["stratified_science_offsets", "stratified_science_offsets_redistributed"])
+def test_repeating_decimal_grid_spacing_is_supported(name) -> None:
     request = _request(
-        "stratified_science_offsets", owner="sci_dx", count=2, unit=u.arcsec,
+        name, owner="sci_dx", count=2, unit=u.arcsec,
         fields=("sci_dx", "sci_dy"), setup=_science_setup(20.0, 4),
     )
-    sampler = _BUILTINS["stratified_science_offsets"]
+    sampler = _BUILTINS[name]
     sampler.validate_declaration(request)
     assert sampler().sample(request)["sci_dx"].shape == (2, 16)
+
+
+@pytest.mark.parametrize("name", ["stratified_science_offsets", "stratified_science_offsets_redistributed"])
+@pytest.mark.parametrize(
+    ("fields", "parameters", "message"),
+    [
+        (("sci_dx",), {}, "sci_dx owner"),
+        (("sci_dy", "sci_dx"), {}, "sci_dx owner"),
+        (("sci_dx", "sci_dy"), {"maximum": 1}, "parameters must be empty"),
+    ],
+)
+def test_science_offset_declarations_are_validated(name, fields, parameters, message) -> None:
+    request = _request(name, owner="sci_dx", count=1, fields=fields, parameters=parameters, setup=_science_setup(20, 3))
+    with pytest.raises(ValueError, match=message):
+        _BUILTINS[name].validate_declaration(request)
+
+
+@pytest.mark.parametrize(("width", "points", "margin"), [(20, 9, None), (40, 9, 1), (120, 11, 1)])
+@pytest.mark.parametrize("seed", [0, 23, 123])
+def test_redistributed_science_offsets_preserve_interior_draws_and_replay(width, points, margin, seed) -> None:
+    setup = _science_setup(width, points, margin)
+    request = _request(
+        "stratified_science_offsets_redistributed", owner="sci_dx", count=200,
+        fields=("sci_dx", "sci_dy"), unit=u.arcsec, setup=setup, seed=seed,
+    )
+    sampler = _BUILTINS["stratified_science_offsets_redistributed"]
+    before = np.random.get_state()
+    sampler.validate_declaration(request)
+    first = sampler().sample(request)
+    second = sampler().sample(request)
+    changed = sampler().sample(replace(request, seed=seed + 1))
+    after = np.random.get_state()
+    assert before[0] == after[0]
+    np.testing.assert_array_equal(before[1], after[1])
+    assert before[2:] == after[2:]
+    for axis in ("sci_dx", "sci_dy"):
+        assert first[axis].unit == u.arcsec
+        assert first[axis].dtype == np.float32
+        assert first[axis].shape == (200, len(setup["sci_r"]))
+        assert np.all(np.isfinite(first[axis]))
+        np.testing.assert_array_equal(first[axis], second[axis])
+        assert not np.array_equal(first[axis], changed[axis])
+
+    theta = setup["sci_theta"].to_value(u.rad)
+    base_x = np.round(setup["sci_r"].value * np.cos(theta), 6).astype(np.float32)
+    base_y = np.round(setup["sci_r"].value * np.sin(theta), 6).astype(np.float32)
+    spacing = width / (points - 1)
+    rng = np.random.default_rng(seed)
+    raw_dx = rng.random(first["sci_dx"].shape, dtype=np.float32) * np.float32(spacing) - np.float32(spacing / 2)
+    raw_dy = rng.random(first["sci_dy"].shape, dtype=np.float32) * np.float32(spacing) - np.float32(spacing / 2)
+    raw_x, raw_y = base_x + raw_dx, base_y + raw_dy
+    interior = (np.abs(raw_x) < width / 2 - 1e-4) & (np.abs(raw_y) < width / 2 - 1e-4)
+    x, y = base_x + first["sci_dx"].value, base_y + first["sci_dy"].value
+    assert np.all(np.abs(x) <= width / 2 + 1e-5)
+    assert np.all(np.abs(y) <= width / 2 + 1e-5)
+    if margin is not None:
+        diagonal_limit = np.max(np.abs(base_x) + np.abs(base_y))
+        interior &= np.abs(raw_x) + np.abs(raw_y) < diagonal_limit - 1e-4
+        assert np.all(np.abs(x) + np.abs(y) <= diagonal_limit + 1e-5)
+    np.testing.assert_array_equal(first["sci_dx"].value[interior], raw_dx[interior])
+    np.testing.assert_array_equal(first["sci_dy"].value[interior], raw_dy[interior])
+    assert np.any(np.abs(first["sci_dx"].value) > spacing / 2)
+
+
+@pytest.mark.parametrize("seed", [0, 23, 123])
+@pytest.mark.parametrize("margin", [None, 1])
+def test_redistributed_science_positions_have_uniform_area_coverage(seed, margin) -> None:
+    request = _request(
+        "stratified_science_offsets_redistributed", owner="sci_dx", count=5_000,
+        fields=("sci_dx", "sci_dy"), unit=u.arcsec, setup=_science_setup(20, 9, margin), seed=seed,
+    )
+    result = _BUILTINS["stratified_science_offsets_redistributed"]().sample(request)
+    theta = request.setup["sci_theta"].to_value(u.rad)
+    x = request.setup["sci_r"].value * np.cos(theta) + result["sci_dx"].value
+    y = request.setup["sci_r"].value * np.sin(theta) + result["sci_dy"].value
+    cells, _, _ = np.histogram2d(x.ravel(), y.ravel(), bins=8, range=((-10, 10), (-10, 10)))
+    assert abs(cells.sum() / x.size - 1) < 1e-5
+    areas = np.ones((8, 8))
+    if margin is not None:
+        areas[0, 0] = areas[0, -1] = areas[-1, 0] = areas[-1, -1] = 0.5
+    assert np.max(np.abs(cells / x.size - areas / areas.sum())) < 0.001
+
+
+@pytest.mark.parametrize("geometry", ["hole", "sloping_gap", "line"])
+def test_redistributed_science_offsets_reject_uncovered_or_zero_area_support(geometry) -> None:
+    setup = _science_setup(20, 5)
+    theta = setup["sci_theta"].to_value(u.rad)
+    x = np.round(setup["sci_r"].value * np.cos(theta), 6)
+    y = np.round(setup["sci_r"].value * np.sin(theta), 6)
+    if geometry == "hole":
+        keep = (x != 0) | (y != 0)
+    elif geometry == "sloping_gap":
+        keep = y <= x / 2 + 5
+    else:
+        keep = x == y
+    setup = {axis: values[keep] for axis, values in setup.items()}
+    request = _request(
+        "stratified_science_offsets_redistributed", owner="sci_dx", count=2,
+        fields=("sci_dx", "sci_dy"), unit=u.arcsec, setup=setup,
+    )
+    sampler = _BUILTINS["stratified_science_offsets_redistributed"]
+    with pytest.raises(ValueError, match="cover.*without gaps|positive area"):
+        sampler.validate_declaration(request)
+    with pytest.raises(ValueError, match="cover.*without gaps|positive area"):
+        sampler().sample(request)
 
 
 @pytest.mark.parametrize(

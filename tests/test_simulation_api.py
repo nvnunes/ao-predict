@@ -149,6 +149,37 @@ def test_generate_options_default_seed_and_early_validation(tmp_path: Path) -> N
         assert not base.dataset_path.exists()
 
 
+@pytest.mark.parametrize("name", ["stratified_science_offsets", "stratified_science_offsets_redistributed"])
+def test_generate_science_offsets_use_joint_owner_stream_and_persist(tmp_path: Path, name) -> None:
+    base = _base_request(tmp_path)
+    x, y = np.meshgrid([-10.0, 0.0, 10.0], [-10.0, 0.0, 10.0])
+    setup = replace(base.setup, specific_fields={
+        **base.setup.specific_fields,
+        "sci_r": np.hypot(x, y).ravel() * u.arcsec,
+        "sci_theta": np.arctan2(y, x).ravel() * u.rad,
+    })
+    config = replace(_uniform_generation(), seed=None, fields={
+        **_uniform_generation().fields,
+        "sci_dx": {"sampler": name, "version": 1, "unit": "mas", "parameters": {}},
+        "sci_dy": "@sci_dx",
+    })
+    generated = generate_options(GenerateOptionsRequest(base.simulation, setup, config))
+    reordered = replace(config, seed=0, fields=dict(reversed(list(config.fields.items()))))
+    repeated = generate_options(GenerateOptionsRequest(base.simulation, setup, reordered))
+    for field in generated.option_arrays:
+        np.testing.assert_array_equal(generated.option_arrays[field], repeated.option_arrays[field])
+    assert generated.option_arrays["sci_dx"].shape == (3, 9)
+    assert generated.option_arrays["sci_dx"].dtype == np.float32
+    assert generated.option_arrays["sci_dx"].unit == u.arcsec
+    request = replace(base, setup=setup, options=config)
+    assert sim_api.init_dataset(request) == 3
+    sim_api.validate_dataset_matches_request(base.dataset_path, request)
+    with h5py.File(base.dataset_path, "r") as store:
+        for field in ("sci_dx", "sci_dy"):
+            np.testing.assert_array_equal(store["options"][field][()], generated.option_arrays[field].value)
+            assert store["options"][field].attrs["units"] == "arcsec"
+
+
 def test_generate_options_direct_reference_and_guarded_resume(tmp_path: Path, monkeypatch) -> None:
     base = _base_request(tmp_path)
     config = replace(

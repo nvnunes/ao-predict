@@ -430,12 +430,37 @@ The supported built-ins are:
 | `uniform_mean_mag` | `minimum`, `maximum` in `mag` | One-, two-, or three-NGS magnitude tuples with uniform means. |
 | `uniform_area_radius` | positive `maximum` | Area-uniform NGS radii. |
 | `uniform_theta` | empty mapping | Full-turn NGS angles. |
-| `stratified_science_offsets` | empty mapping | Joint `sci_dx`/`sci_dy` offsets over a regular Cartesian setup grid. |
+| `stratified_science_offsets` | empty mapping | Joint grid-cell `sci_dx`/`sci_dy` jitter with reflection at the grid boundary. |
+| `stratified_science_offsets_redistributed` | empty mapping | Joint grid-cell `sci_dx`/`sci_dy` jitter with area-uniform replacement of exterior points. |
 
 Numeric parameters for a physical field use that definition's `unit`. Weights
 are dimensionless. The number of NGS slots comes from `num_ngs`, without a
 per-field shape declaration. All generated physical outputs are Astropy
 quantities; nonphysical outputs are NumPy arrays.
+
+Both science-offset samplers infer equal x/y cell spacing and the convex field
+boundary from a square regular Cartesian setup lattice. Under
+`options.generate.fields`, declare `sci_dx` as the owner with an angular
+`unit`, and `sci_dy: "@sci_dx"` as its joint output:
+
+```yaml
+sci_dx:
+  sampler: stratified_science_offsets_redistributed
+  version: 1
+  unit: arcsec
+  parameters: {}
+sci_dy: "@sci_dx"
+```
+
+The existing `stratified_science_offsets` sampler reflects exterior draws back
+inside, keeping each offset within half a grid spacing per axis. The
+redistributed sampler leaves interior draws unchanged and replaces exterior
+positions uniformly within the convex field boundary. It preserves point
+count, but replacement points can leave their original grid cells. Its source
+cells must cover that convex field without gaps; grids with uncovered regions
+are rejected. Pooled positions are area-uniform in expectation, not guaranteed
+to contain one point per original cell. Both samplers return `[count, M]`
+offset matrices in arcseconds and replay deterministically from the seed.
 
 External samplers subclass `Sampler`, declare a positive integer `version`,
 and implement `sample(request: SamplerRequest)`. They receive one owner-specific

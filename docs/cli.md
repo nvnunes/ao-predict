@@ -279,7 +279,8 @@ sampler's current algorithm version; it does not select an older implementation.
 definition contains `sampler`, `version`, a `parameters` mapping, and `unit` for
 physical values. A joint sampler can expose another field by a direct quoted
 reference; for example `sci_dy: "@sci_dx"` shares one
-`stratified_science_offsets` draw owned by `sci_dx`. The prepared setup must
+`stratified_science_offsets` or `stratified_science_offsets_redistributed`
+draw owned by `sci_dx`. The prepared setup must
 then contain a regular Cartesian science grid. Supported built-ins and their
 parameters are in the [Python API guide](api.md#generated-option-populations).
 

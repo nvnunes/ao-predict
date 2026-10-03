@@ -123,7 +123,8 @@ def _cli_init_dataset(monkeypatch, config_yaml: Path, dataset_path: Path) -> Non
     assert cli.main() == 0
 
 
-def test_cli_generate_uses_same_population_as_python_api(tmp_path: Path, monkeypatch) -> None:
+@pytest.mark.parametrize("science_sampler", [None, "stratified_science_offsets", "stratified_science_offsets_redistributed"])
+def test_cli_generate_uses_same_population_as_python_api(tmp_path: Path, monkeypatch, science_sampler) -> None:
     dataset_path, config_yaml = _prepare_cli_paths(tmp_path)
     _write_config_yaml(
         config_yaml,
@@ -142,6 +143,16 @@ def test_cli_generate_uses_same_population_as_python_api(tmp_path: Path, monkeyp
             },
         },
     )
+    if science_sampler is not None:
+        config = yaml.safe_load(config_yaml.read_text(encoding="utf-8"))
+        x, y = np.meshgrid([-10.0, 0.0, 10.0], [-10.0, 0.0, 10.0])
+        config["setup"]["sci_r"] = {"value": np.hypot(x, y).ravel().tolist(), "unit": "arcsec"}
+        config["setup"]["sci_theta"] = {"value": np.rad2deg(np.arctan2(y, x)).ravel().tolist(), "unit": "deg"}
+        config["options"]["generate"]["fields"].update({
+            "sci_dx": {"sampler": science_sampler, "version": 1, "unit": "arcsec", "parameters": {}},
+            "sci_dy": "@sci_dx",
+        })
+        config_yaml.write_text(yaml.safe_dump(config), encoding="utf-8")
     request = cli._load_init_request(str(config_yaml), str(dataset_path))
     assert isinstance(request.options, GenerateOptionsConfig)
     python_options = generate_options(GenerateOptionsRequest(request.simulation, request.setup, request.options))
