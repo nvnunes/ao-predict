@@ -11,6 +11,7 @@ import pytest
 from ao_stats import PsfMetadata
 from astropy import units as u
 from hybrid_ao_psf import (
+    HybridCtotCorrection,
     HybridResult,
     NgsHoMetricSamples,
     RbfInterpolationConfig,
@@ -365,7 +366,7 @@ def test_hybrid_subclass_can_replace_resolved_provider(
             )
 
     monkeypatch.setattr(
-        "hybrid_ao_psf.engine._load_mavis_lo",
+        "hybrid_ao_psf._mastsel._load_mavis_lo",
         lambda: _fake_mavis_lo(np.zeros((2, 2, 2), dtype=float)),
     )
 
@@ -436,7 +437,7 @@ def test_hybrid_run_calls_mastsel_with_metrics_and_converts_units(tmp_path: Path
             )
             return np.stack([np.eye(2), 4.0 * np.eye(2)])
 
-    monkeypatch.setattr("hybrid_ao_psf.engine._load_mavis_lo", lambda: FakeMavisLO)
+    monkeypatch.setattr("hybrid_ao_psf._mastsel._load_mavis_lo", lambda: FakeMavisLO)
 
     context = sim.create(0, _options())
     sim.run(context)
@@ -491,12 +492,13 @@ def test_hybrid_run_calls_upstream_engine_once(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        "hybrid_ao_psf.engine._load_mavis_lo",
+        "hybrid_ao_psf._mastsel._load_mavis_lo",
         lambda: _fake_mavis_lo(np.zeros((2, 2, 2), dtype=float)),
     )
     calls: list[tuple[object, object, object]] = []
 
-    def observed_simulate(request, science_provider, ngs_provider):
+    def observed_simulate(request, science_provider, ngs_provider, *, ctot_correction=None):
+        assert ctot_correction is None
         calls.append((request, science_provider, ngs_provider))
         return hybrid_ao_psf.simulate(request, science_provider, ngs_provider)
 
@@ -515,6 +517,39 @@ def test_hybrid_run_calls_upstream_engine_once(
     assert science_provider is sim.science_ho_psf_interpolator
     assert ngs_provider is sim.ngs_ho_metric_interpolator
     assert isinstance(context.runtime[HybridSimulation.KEY_RUNTIME_RESULT], HybridResult)
+
+
+def test_hybrid_subclass_forwards_exact_correction_once(tmp_path, monkeypatch):
+    correction = HybridCtotCorrection(lambda ctot, context: None, {"test": "hook"})
+
+    class CorrectedHybrid(HybridSimulation):
+        def _resolve_hybrid_inputs(self, context):
+            return replace(super()._resolve_hybrid_inputs(context), ctot_correction=correction)
+
+    sim = CorrectedHybrid()
+    sim.load_simulation_payload(_simulation_payload(tmp_path))
+    sim.load_setup_payload(_setup_payload())
+    context = sim.create(0, _options())
+    original = HybridSimulation._resolve_hybrid_inputs(sim, context)
+    assert original.ctot_correction is None
+    with pytest.raises(TypeError, match="ctot_correction"):
+        replace(original, ctot_correction=object())
+    calls = []
+    sentinel = object()
+
+    def engine(request, science_provider, ngs_provider, *, ctot_correction):
+        calls.append(ctot_correction)
+        assert request is not None
+        assert science_provider is original.science_provider
+        assert ngs_provider is original.ngs_provider
+        return sentinel
+
+    monkeypatch.setattr("ao_predict.simulation.hybrid.simulate", engine)
+    sim.run(context)
+    assert calls == [correction]
+    assert calls[0] is correction
+    assert context.runtime[HybridSimulation.KEY_RUNTIME_RESULT] is sentinel
+    np.testing.assert_array_equal(context.runtime[HybridSimulation.KEY_RUNTIME_NGS_USED], original.ngs_used)
 
 
 def test_hybrid_adapter_runs_real_mastsel(tmp_path: Path) -> None:
@@ -576,7 +611,7 @@ def test_hybrid_run_persists_jitter_through_public_dataset_path(tmp_path: Path, 
             del args, kwargs
             return np.stack([np.eye(2), 4.0 * np.eye(2)])
 
-    monkeypatch.setattr("hybrid_ao_psf.engine._load_mavis_lo", lambda: FakeMavisLO)
+    monkeypatch.setattr("hybrid_ao_psf._mastsel._load_mavis_lo", lambda: FakeMavisLO)
 
     ao_predict.init_dataset(
         InitDatasetRequest(
@@ -672,7 +707,7 @@ def test_hybrid_stats_preprocessing_receives_psf_metadata_without_source_meta(
             observed_meta.append(tuple(sorted(meta)))
             return super().prepare_psfs_for_stats(psfs, setup, meta)
 
-    monkeypatch.setattr("hybrid_ao_psf.engine._load_mavis_lo", lambda: FakeMavisLO)
+    monkeypatch.setattr("hybrid_ao_psf._mastsel._load_mavis_lo", lambda: FakeMavisLO)
     sim = ObservingHybrid()
     sim.load_simulation_payload(_simulation_payload(tmp_path))
     sim.load_setup_payload(_setup_payload())
@@ -711,7 +746,7 @@ def test_hybrid_validation_diagnostics_are_persisted_and_readable(
                 second[1, 1] = -1.0
             return np.stack([np.eye(2), second])
 
-    monkeypatch.setattr("hybrid_ao_psf.engine._load_mavis_lo", lambda: FakeMavisLO)
+    monkeypatch.setattr("hybrid_ao_psf._mastsel._load_mavis_lo", lambda: FakeMavisLO)
 
     ao_predict.init_dataset(
         InitDatasetRequest(
@@ -796,7 +831,7 @@ def test_hybrid_debug_string_diagnostics_read_as_text(tmp_path: Path, monkeypatc
             del args, kwargs
             return np.stack([np.eye(2), 4.0 * np.eye(2)])
 
-    monkeypatch.setattr("hybrid_ao_psf.engine._load_mavis_lo", lambda: FakeMavisLO)
+    monkeypatch.setattr("hybrid_ao_psf._mastsel._load_mavis_lo", lambda: FakeMavisLO)
 
     ao_predict.init_dataset(
         InitDatasetRequest(
@@ -851,7 +886,7 @@ def test_hybrid_debug_diagnostics_include_full_ctot_and_runtime_ini(
 ) -> None:
     ctot_nm2 = np.stack([np.eye(2), 2.0 * np.eye(2)])
     monkeypatch.setattr(
-        "hybrid_ao_psf.engine._load_mavis_lo",
+        "hybrid_ao_psf._mastsel._load_mavis_lo",
         lambda: _fake_mavis_lo(ctot_nm2),
     )
     sim = HybridSimulation()
@@ -929,7 +964,7 @@ def test_hybrid_diagnostic_extension_fields_are_appended(
             return {"project/custom_scalar": np.float32(12.5)}
 
     monkeypatch.setattr(
-        "hybrid_ao_psf.engine._load_mavis_lo",
+        "hybrid_ao_psf._mastsel._load_mavis_lo",
         lambda: _fake_mavis_lo(np.stack([np.eye(2), 2.0 * np.eye(2)])),
     )
     sim = ExtendedHybrid()

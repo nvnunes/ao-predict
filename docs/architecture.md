@@ -403,10 +403,14 @@ its persisted dataset identity. It owns configured upstream artifact references
 and provenance, setup/options resolution, photometry, reusable loaded-provider
 binding, AO statistics, diagnostic field paths, and result persistence. One
 protected `_resolve_hybrid_inputs()` hook returns an atomic upstream request,
-science provider, NGS provider, and AO active-star slot mask. Downstream instrument
-adapters may replace instrument-resolved request values or wrap a provider;
+science provider, NGS provider, AO active-star slot mask, and optional
+`HybridCtotCorrection`. Downstream instrument adapters may replace
+instrument-resolved request values, wrap a provider, or supply a correction;
 the AO Predict base adapter alone calls `hybrid_ao_psf.simulate()` once per
 option row and maps its result to AO fields.
+It forwards the correction unchanged. Hybrid AO PSF owns callback execution,
+runtime context, conditioning and convolution; downstream owns the correction
+and any simulation-level metadata it appends during payload preparation.
 
 Hybrid AO PSF owns interpolation evaluation, effective MASTSEL translation
 and execution, Ctot conditioning, finite-field blur, jitter, and scientific

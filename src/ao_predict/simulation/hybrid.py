@@ -13,6 +13,7 @@ import numpy as np
 from astropy import units as u
 from hybrid_ao_psf import (
     DiagnosticsLevel,
+    HybridCtotCorrection,
     HybridRequest,
     HybridResult,
     NgsHoMetricInterpolator,
@@ -77,12 +78,15 @@ class HybridResolvedInputs:
         science_provider: Loaded reusable science-HO-PSF provider.
         ngs_provider: Loaded reusable NGS-HO-metric provider.
         ngs_used: AO slot mask corresponding to the active request vectors.
+        ctot_correction: Optional downstream covariance callback and static
+            metadata, forwarded unchanged to Hybrid AO PSF. Not persisted here.
     """
 
     request: HybridRequest
     science_provider: SciencePsfProvider
     ngs_provider: NgsMetricProvider
     ngs_used: np.ndarray
+    ctot_correction: HybridCtotCorrection | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.request, HybridRequest):
@@ -91,6 +95,10 @@ class HybridResolvedInputs:
             raise TypeError("science_provider must implement SciencePsfProvider.")
         if not isinstance(self.ngs_provider, NgsMetricProvider):
             raise TypeError("ngs_provider must implement NgsMetricProvider.")
+        if self.ctot_correction is not None and not isinstance(
+            self.ctot_correction, HybridCtotCorrection
+        ):
+            raise TypeError("ctot_correction must be a HybridCtotCorrection or None.")
         ngs_used = np.asarray(self.ngs_used, dtype=bool).reshape(-1).copy()
         if int(np.count_nonzero(ngs_used)) != self.request.ngs_x.size:
             raise ValueError("ngs_used active count must match the Hybrid request.")
@@ -409,6 +417,7 @@ class HybridSimulation(TiptopConfigBackedSimulation):
             resolved.request,
             resolved.science_provider,
             resolved.ngs_provider,
+            ctot_correction=resolved.ctot_correction,
         )
         context.runtime[self.KEY_RUNTIME_RESULT] = result
         context.runtime[self.KEY_RUNTIME_NGS_USED] = resolved.ngs_used
@@ -420,7 +429,8 @@ class HybridSimulation(TiptopConfigBackedSimulation):
         """Resolve the one protected downstream extension bundle.
 
         Subclasses may call this implementation and return a replaced request
-        or wrapped provider for instrument-owned policy. They must not execute
+        or wrapped provider, or supply a Ctot correction for instrument-owned
+        policy. They must not execute
         the engine or reinterpret its result. This method borrows the loaded
         immutable providers and does not mutate persisted setup or options.
 
