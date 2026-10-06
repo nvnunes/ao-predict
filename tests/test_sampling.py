@@ -73,6 +73,80 @@ def _science_setup(width: float, points_per_axis: int, margin: float | None = No
     return {"sci_r": radius * u.arcsec, "sci_theta": theta * u.deg}
 
 
+def test_weighted_uniform_interval_mass_and_conditional_distribution() -> None:
+    request = _request(
+        "weighted_uniform", owner="ngs_magnitude", count=20000, unit=u.mag,
+        parameters={"values": [[8, 16], [16, 18.5]], "weights": [10, 90]},
+    )
+    sampler = _BUILTINS["weighted_uniform"]()
+    sampler.validate_declaration(request)
+    before = np.random.get_state()
+    values = sampler.sample(request)["ngs_magnitude"].value.ravel()
+    np.testing.assert_array_equal(values, sampler.sample(request)["ngs_magnitude"].value.ravel())
+    after = np.random.get_state()
+    np.testing.assert_array_equal(before[1], after[1])
+    assert before[2:] == after[2:]
+    assert abs(np.mean(values < 16) - .1) <= .02
+    for lo, hi in ((8, 16), (16, 18.5)):
+        selected = np.sort(values[(values >= lo) & (values < hi)])
+        positions = (selected - lo) / (hi - lo)
+        departure = max(
+            np.max(np.arange(1, len(selected) + 1) / len(selected) - positions),
+            np.max(positions - np.arange(len(selected)) / len(selected)),
+        )
+        assert departure <= .03
+
+
+@pytest.mark.parametrize("owner,unit,num_ngs", [("wavelength", u.um, 1), ("ngs_magnitude", u.mag, 3), ("atm_profile_id", None, 1)])
+def test_weighted_uniform_single_interval_matches_uniform(owner, unit, num_ngs) -> None:
+    request = _request(
+        "weighted_uniform", owner=owner, count=20, num_ngs=num_ngs, unit=unit,
+        parameters={"values": [[8, 16]], "weights": [7]},
+    )
+    result = _BUILTINS["weighted_uniform"]().sample(request)[owner]
+    expected = _BUILTINS["uniform"]().sample(replace(request, parameters={"minimum": 8, "maximum": 16}))[owner]
+    np.testing.assert_array_equal(result, expected)
+    assert result.shape == ((20, num_ngs) if owner == "ngs_magnitude" else (20,))
+
+
+def test_weighted_uniform_preserves_order_gaps_overlap_and_zero_weights() -> None:
+    request = _request(
+        "weighted_uniform", owner="wavelength", count=500, unit=u.um,
+        parameters={"values": [[10, 12], [-100, 100], [1, 2]], "weights": [4, 0, 6]},
+    )
+    result = _BUILTINS["weighted_uniform"]().sample(request)["wavelength"].value
+    draws = np.random.RandomState(23).random_sample(500)
+    np.testing.assert_allclose(result, np.where(draws < .4, 10 + 2 * draws / .4, 1 + (draws - .4) / .6), rtol=0, atol=2e-15)
+    for intervals in ([[1, 2], [1, 2]], [[1, 3], [2, 4]]):
+        result = _BUILTINS["weighted_uniform"]().sample(replace(request, parameters={"values": intervals, "weights": [1, 1]}))["wavelength"].value
+        expected = np.where(draws < .5, intervals[0][0] + (intervals[0][1] - intervals[0][0]) * draws / .5,
+                            intervals[1][0] + (intervals[1][1] - intervals[1][0]) * (draws - .5) / .5)
+        np.testing.assert_array_equal(result, expected)
+
+
+@pytest.mark.parametrize("parameters", [
+    {}, {"values": [], "weights": []}, {"values": [1, 2], "weights": [1]},
+    {"values": [[1, 1]], "weights": [1]}, {"values": [[2, 1]], "weights": [1]},
+    {"values": [[1, np.inf]], "weights": [1]}, {"values": [[1, 2]], "weights": [-1]},
+    {"values": [[1, 2]], "weights": [0]}, {"values": [[1, 2]], "weights": [np.nan]},
+    {"values": [[1, 2]], "weights": [np.inf]}, {"values": [[1, 2]], "weights": [1, 2]},
+    {"values": [[1, 2], [2, 3]], "weights": [1e308, 1e308]},
+    {"values": [["bad", 2]], "weights": [1]},
+    {"values": [[1, 2]], "weights": [1], "extra": 1},
+])
+def test_weighted_uniform_invalid_inputs(parameters) -> None:
+    request = _request("weighted_uniform", owner="wavelength", count=2, unit=u.um, parameters=parameters)
+    with pytest.raises(ValueError):
+        _BUILTINS["weighted_uniform"].validate_declaration(request)
+
+
+def test_weighted_uniform_rejects_joint_declaration() -> None:
+    request = _request("weighted_uniform", owner="sci_dx", count=2, unit=u.arcsec,
+                       fields=("sci_dx", "sci_dy"), parameters={"values": [[1, 2]], "weights": [1]})
+    with pytest.raises(ValueError, match="exactly one field"):
+        _BUILTINS["weighted_uniform"].validate_declaration(request)
+
+
 @pytest.mark.parametrize(
     ("width", "points", "margin", "shape", "digest"),
     [

@@ -12,3 +12,8 @@
       members:
         - Sampler
         - SamplerRequest
+
+::: ao_predict.simulation.sampling_balancing
+    options:
+      members:
+        - balance_options

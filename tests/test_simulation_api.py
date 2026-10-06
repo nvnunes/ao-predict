@@ -129,6 +129,37 @@ def test_generate_options_uses_stable_owner_streams_and_persisted_options(tmp_pa
             np.testing.assert_array_equal(store["options"][name][()], np.asarray(value))
 
 
+def test_weighted_generation_and_public_balancing_persist_ordinary_options(tmp_path: Path) -> None:
+    from ao_predict import balance_options
+    base = _base_request(tmp_path)
+    config = _uniform_generation()
+    fields = dict(config.fields)
+    fields["ngs_magnitude"] = {
+        "sampler": "weighted_uniform", "version": 1, "unit": "mag",
+        "parameters": {"values": [[8, 16], [16, 18.5]], "weights": [10, 90]},
+    }
+    generated = generate_options(GenerateOptionsRequest(base.simulation, base.setup, replace(config, fields=fields)))
+    reordered = generate_options(GenerateOptionsRequest(base.simulation, base.setup, replace(config, fields=dict(reversed(list(fields.items()))))))
+    for name in generated.option_arrays:
+        np.testing.assert_array_equal(generated.option_arrays[name], reordered.option_arrays[name])
+    original = generate_options(GenerateOptionsRequest(base.simulation, base.setup, config))
+    for name in generated.option_arrays.keys() - {"ngs_magnitude"}:
+        np.testing.assert_array_equal(generated.option_arrays[name], original.option_arrays[name])
+    # A downstream quantity aligned with every star; the core does not evaluate it.
+    widths = np.arange(6).reshape(3, 2) * u.mas
+    balanced = balance_options(generated, field="ngs_magnitude", balance_field=widths, mode="entries", groups=2)
+    request = replace(base, options=balanced)
+    assert sim_api.init_dataset(request) == 3
+    sim_api.validate_dataset_matches_request(base.dataset_path, request)
+    with h5py.File(base.dataset_path, "r") as store:
+        assert set(store["options"]) == set(generated.option_arrays)
+        assert "sampling" not in store and "balancing" not in store
+        for name, value in balanced.option_arrays.items():
+            np.testing.assert_array_equal(store["options"][name][()], np.asarray(value))
+            if name != "ngs_magnitude":
+                assert value is generated.option_arrays[name]
+
+
 def test_generate_options_default_seed_and_early_validation(tmp_path: Path) -> None:
     base = _base_request(tmp_path)
     config = _uniform_generation()

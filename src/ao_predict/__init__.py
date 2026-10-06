@@ -47,6 +47,7 @@ from .simulation.sampling import (
     SamplerRequest,
     generate_options,
 )
+from .simulation.sampling_balancing import balance_options
 from .training import (
     ModelTrainingDataConfig,
     ModelTrainingValidationError,
@@ -98,6 +99,7 @@ __all__ = [
     "TrainingTerminationReason",
     "TrainingValidationRecord",
     "__version__",
+    "balance_options",
     "check_dataset",
     "generate_options",
     "init_dataset",

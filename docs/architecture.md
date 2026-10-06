@@ -463,6 +463,14 @@ recipe or sampler metadata in HDF5; only realized canonical `/options` arrays
 are persisted. Existing datasets remain executable from those arrays without
 resolving their original samplers.
 
+`ao_predict.simulation.sampling_balancing` owns direct population reassignment
+through `balance_options(...)`. It returns a new `OptionsConfig`, changing only
+one selected field and borrowing the others. Entry mode redistributes scalar
+values; row mode preserves complete target rows and optimizes equal-priority
+column distributions. Downstream supplies the fixed balancing values and owns
+any interpolation, scientific policy or coupled-field recalculation. Balancing
+is not part of YAML generation, does not draw values and adds no persisted keys.
+
 ## Extension Points And Hooks
 
 Subclass hooks should prepare simulation-specific inputs and runtime state.

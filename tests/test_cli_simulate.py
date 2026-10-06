@@ -124,7 +124,8 @@ def _cli_init_dataset(monkeypatch, config_yaml: Path, dataset_path: Path) -> Non
 
 
 @pytest.mark.parametrize("science_sampler", [None, "stratified_science_offsets", "stratified_science_offsets_redistributed"])
-def test_cli_generate_uses_same_population_as_python_api(tmp_path: Path, monkeypatch, science_sampler) -> None:
+@pytest.mark.parametrize("magnitude_sampler", ["uniform", "weighted_uniform"])
+def test_cli_generate_uses_same_population_as_python_api(tmp_path: Path, monkeypatch, science_sampler, magnitude_sampler) -> None:
     dataset_path, config_yaml = _prepare_cli_paths(tmp_path)
     _write_config_yaml(
         config_yaml,
@@ -138,7 +139,11 @@ def test_cli_generate_uses_same_population_as_python_api(tmp_path: Path, monkeyp
                 "fields": {
                     "ngs_r": {"sampler": "uniform", "version": 1, "unit": "arcsec", "parameters": {"minimum": 1, "maximum": 20}},
                     "ngs_theta": {"sampler": "uniform", "version": 1, "unit": "deg", "parameters": {"minimum": 0, "maximum": 360}},
-                    "ngs_magnitude": {"sampler": "uniform", "version": 1, "unit": "mag", "parameters": {"minimum": 10, "maximum": 16}},
+                    "ngs_magnitude": {
+                        "sampler": magnitude_sampler, "version": 1, "unit": "mag",
+                        "parameters": {"minimum": 10, "maximum": 16} if magnitude_sampler == "uniform" else
+                                      {"values": [[8, 16], [16, 18.5]], "weights": [10, 90]},
+                    },
                 },
             },
         },

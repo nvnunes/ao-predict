@@ -395,6 +395,61 @@ def _weighted_input(request: SamplerRequest) -> tuple[np.ndarray, np.ndarray]:
     return values, weights / total
 
 
+class WeightedUniformSampler(Sampler):
+    """Draw from ordered uniform intervals with caller-supplied relative masses.
+
+    ``values`` contains finite [minimum, maximum] pairs in the owner field's
+    declared unit; ``weights`` contains matching nonnegative interval masses
+    with a positive finite total. Intervals may overlap, repeat or have gaps.
+    Zero-weight intervals contribute no draws. Return one field with the
+    ordinary scalar or NGS shape, using a private owner-seeded random stream.
+    """
+
+    version = 1
+
+    @classmethod
+    def validate_declaration(cls, request: SamplerRequest) -> None:
+        if len(request.fields) != 1:
+            raise ValueError("weighted_uniform sampler returns exactly one field.")
+        _weighted_intervals(request)
+
+    def sample(self, request: SamplerRequest) -> Mapping[str, np.ndarray | u.Quantity]:
+        intervals, weights = _weighted_intervals(request)
+        shape = _field_shape(request.owner_field, request.count, request.num_ngs, request.setup)
+        probabilities = np.random.RandomState(request.seed).random_sample(shape)
+        cumulative = np.cumsum(weights)
+        cumulative[-1] = 1.0
+        selected = np.searchsorted(cumulative, probabilities, side="right")
+        lower = np.r_[0.0, cumulative[:-1]]
+        minimum = intervals[selected][..., 0]
+        maximum = intervals[selected][..., 1]
+        values = minimum + (maximum - minimum) * (probabilities - lower[selected]) / weights[selected]
+        return {request.owner_field: values * request.unit if request.unit is not None else values}
+
+
+def _weighted_intervals(request: SamplerRequest) -> tuple[np.ndarray, np.ndarray]:
+    """Validate ordered interval masses and omit intervals that cannot be drawn."""
+    if set(request.parameters) != {"values", "weights"}:
+        raise ValueError(f"{request.owner_field} weighted_uniform requires values and weights.")
+    try:
+        intervals = np.asarray(request.parameters["values"], dtype=float)
+        weights = np.asarray(request.parameters["weights"], dtype=float)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{request.owner_field} values and weights must be numeric arrays.") from exc
+    if intervals.ndim != 2 or intervals.shape[1] != 2 or not len(intervals) or weights.shape != (len(intervals),):
+        raise ValueError(f"{request.owner_field} requires nonempty interval pairs and matching weights.")
+    if not np.all(np.isfinite(intervals)) or np.any(intervals[:, 0] >= intervals[:, 1]):
+        raise ValueError(f"{request.owner_field} intervals require finite minimum < maximum.")
+    if not np.all(np.isfinite(weights)) or np.any(weights < 0):
+        raise ValueError(f"{request.owner_field} weights must be finite and nonnegative.")
+    with np.errstate(over="ignore"):
+        total = float(weights.sum())
+    if not np.isfinite(total) or total <= 0:
+        raise ValueError(f"{request.owner_field} weights must have a positive finite sum.")
+    positive = weights > 0
+    return intervals[positive], weights[positive] / total
+
+
 class UniformMeanMagnitudeSampler(Sampler):
     """Draw exchangeable one-, two-, or three-NGS tuples with uniform means."""
 
@@ -540,6 +595,7 @@ class UniformThetaSampler(Sampler):
 _BUILTINS: dict[str, type[Sampler]] = {
     "uniform": UniformSampler,
     "weighted_discrete": WeightedDiscreteSampler,
+    "weighted_uniform": WeightedUniformSampler,
     "uniform_mean_mag": UniformMeanMagnitudeSampler,
     "uniform_area_radius": UniformAreaRadiusSampler,
     "uniform_theta": UniformThetaSampler,

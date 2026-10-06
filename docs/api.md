@@ -247,6 +247,54 @@ so that generation runs in the same preparation lifecycle. Config-guarded
 checking and resume regenerate expected options and compare all persisted
 values exactly.
 
+### `balance_options(options, *, field, balance_field, mode, groups, seed=0) -> OptionsConfig`
+
+Reassign one realized options field across equal-count groups of fixed balancing
+values. Supply `balance_field` as another options field name or an external
+NumPy array/quantity; the operation does not evaluate scientific metrics.
+
+| Mode | Target shape | Balancing shape | What moves |
+| --- | --- | --- | --- |
+| `entries` | `(N,)` or `(N, K)` | Exact target shape | All scalar entries together. |
+| `rows` | `(N,)` or `(N, K)` | `(N,)` | Intact rows of the selected field. |
+
+Both `mode` and `groups` are required. Groups contain equal numbers of sorted
+balancing values, differing by at most one; ties use the private seeded stream.
+The group count cannot exceed the number of entries or rows for the mode.
+One group leaves values unchanged. Whole-row mode improves combined squared
+empirical-CDF departure with equal column priority to a pair-swap local optimum;
+individual columns need not improve, and exact or globally optimal balance is
+not guaranteed.
+
+Target and balancing arrays must be nonempty, dense, finite and real numeric.
+Masked arrays and NaN-padded inactive NGS slots are rejected. Known physical
+options fields require compatible quantities; an external balancing array may
+have different units or plain numeric values, including zero and negative
+values. No broadcasting, transposition or row reduction occurs.
+
+```python
+from ao_predict import balance_options
+
+# options is the result of generate_options; fwhm is a downstream (N, K) quantity.
+balanced = balance_options(
+    options, field="ngs_magnitude", balance_field=fwhm,
+    mode="entries", groups=6, seed=0,
+)
+# Pass balanced directly as InitDatasetRequest.options.
+```
+
+The result has a new mapping and owned target array, preserving its dtype,
+unit, shape and entry/row multiset. Other fields are borrowed unchanged, not
+deep-copied; inputs are never mutated. Only the selected field moves, not
+complete options records. The caller owns coupled-field validity and any
+recalculation of derived inputs. Ordinary dataset validation and persistence
+remain unchanged; there is no balancing YAML branch or stored recipe.
+
+The default seed is zero and follows generation's field-specific seed binding.
+Identical inputs replay within the producing environment without changing
+global random state. Changing population size may change earlier assignments;
+balanced populations do not promise count-extension stability.
+
 ### `init_dataset(request: InitDatasetRequest) -> int`
 
 Initialize an HDF5 simulation dataset from code-provided config.
@@ -427,6 +475,7 @@ The supported built-ins are:
 | --- | --- | --- |
 | `uniform` | finite `minimum`, `maximum` | Bounded independent draws for one field. |
 | `weighted_discrete` | ordered `values`, nonnegative `weights` with positive sum | Selection with replacement from caller-supplied values. |
+| `weighted_uniform` | ordered `values` interval pairs, nonnegative `weights` with positive finite sum | Uniform draws within weighted intervals; overlaps, repeats and gaps are allowed. |
 | `uniform_mean_mag` | `minimum`, `maximum` in `mag` | One-, two-, or three-NGS magnitude tuples with uniform means. |
 | `uniform_area_radius` | positive `maximum` | Area-uniform NGS radii. |
 | `uniform_theta` | empty mapping | Full-turn NGS angles. |
@@ -437,6 +486,20 @@ Numeric parameters for a physical field use that definition's `unit`. Weights
 are dimensionless. The number of NGS slots comes from `num_ngs`, without a
 per-field shape declaration. All generated physical outputs are Astropy
 quantities; nonphysical outputs are NumPy arrays.
+
+For `weighted_uniform`, weights describe relative interval masses, not densities;
+they are normalized internally and zero-weight intervals are skipped. For example,
+this definition gives 10% bright and 90% faint magnitude draws:
+
+```yaml
+ngs_magnitude:
+  sampler: weighted_uniform
+  version: 1
+  unit: mag
+  parameters:
+    values: [[8, 16], [16, 18.5]]
+    weights: [10, 90]
+```
 
 Both science-offset samplers infer equal x/y cell spacing and the convex field
 boundary from a square regular Cartesian setup lattice. Under
