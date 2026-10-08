@@ -475,6 +475,19 @@ column distributions. Downstream supplies the fixed balancing values and owns
 any interpolation, scientific policy or coupled-field recalculation. Balancing
 is not part of YAML generation, does not draw values and adds no persisted keys.
 
+`ao_predict.simulation.sampling_selection` owns direct whole-case selection
+through `select_options(...)`. Unlike balancing, it selects complete rows
+without reassigning their values. Named options fields or aligned external
+measurements define equally weighted uniform or supplied-population targets;
+matrix measurements contribute one pooled distribution. The operation returns
+owned selected arrays in a new `OptionsConfig`. Downstream owns candidate
+generation, measurement/model evaluation, duplicate precision and research
+diagnostics. Opt-in selection deduplication compares combined declared measurements,
+with optional per-field rounding and unordered matrix-row comparison, without
+removing parent rows or changing their distribution weights. Selection is
+deterministic best-effort local search, with no YAML
+branch, seed parameter, persisted recipe or schema change.
+
 ## Extension Points And Hooks
 
 Subclass hooks should prepare simulation-specific inputs and runtime state.

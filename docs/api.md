@@ -295,6 +295,75 @@ Identical inputs replay within the producing environment without changing
 global random state. Changing population size may change earlier assignments;
 balanced populations do not promise count-extension stability.
 
+### `select_options(options, *, count, fields, start_field=None, max_passes=8, dedup=False) -> OptionsConfig`
+
+Select complete cases from realized options, rather than generating values or
+reassigning a field. Declare each measurement's target as `uniform` or `parent`.
+Omitting `values` resolves its name from options; supplying `values` uses an
+aligned external array or quantity. Parent targets always come from the supplied
+population, not a separate reference. Uniform targets span the measurement's
+minimum and maximum unless `bounds` supplies a finite increasing pair with
+compatible units. Bounds are allowed only for uniform targets; candidates are
+not clipped. A constant measurement without bounds contributes zero departure.
+
+Scalar measurements have shape `(N,)`; matrices `(N, K)` contribute one pooled
+distribution across all entries, with one field weight. No broadcasting,
+transposition, row averaging or separate column targets occur. Measurements
+must be unmasked, finite and real; known physical option fields require
+compatible quantities. All carried arrays share their first axis but retain
+their trailing dimensions, units and dtype. Unmeasured inactive-slot NaNs are
+preserved. Ordinary simulation validation remains separate.
+
+```python
+from astropy import units as u
+from ao_predict import select_options
+
+# options is a realized population; performance is a caller-computed (N,) array.
+selected = select_options(
+    options, count=27,
+    fields={
+        "performance": {"values": performance, "target": "uniform"},
+        "ngs_magnitude": {"target": "uniform", "bounds": (15*u.mag, 18.5*u.mag)},
+        "ngs_r": {"target": "parent"},
+    },
+    start_field="performance",
+)
+# Pass selected directly as InitDatasetRequest.options.
+```
+
+Fields have equal priority. The search minimizes their combined squared CDF
+departure at 5%, 10%, ..., 95% of each resolved range. Optional `start_field`
+names a scalar declaration for evenly spaced initialization; omission greedily
+builds a selection using all fields. Whole-row replacement then improves the
+same objective for up to `max_passes` passes (eight by default), stopping when
+a pass makes no improvement greater than `1e-14`. This is a local compromise,
+not exact balance or a global
+optimum; individual fields need not improve.
+
+The result is a new `OptionsConfig` with owned copies of complete selected rows.
+Inputs and global random state remain unchanged. Selection draws no random
+values and uses input order to resolve ties; fixed inputs replay deterministically.
+`count` and `max_passes` must be positive integers, and count cannot exceed the
+population size. Selected row indices are distinct. With `dedup=True`, initialization
+and replacement also exclude cases with the same combined declared field values.
+An optional positive scalar `dedup_step` in each field declaration rounds that
+field to the nearest multiple of the step for duplicate comparison only.
+For example, use `5 * u.arcsec` for 5″ steps or `0.5 * u.mag` for 0.5-mag steps.
+Quantity fields require a step with compatible units; numeric fields require a
+numeric step. Rounding is anchored at zero, with halfway values rounded to the
+nearest even multiple. Omission uses exact values.
+Matrix columns retain their order unless that field declares `dedup_unordered=True`.
+This compares each row's values regardless of column order, retaining repeated
+values: `[1, 1, 2]` differs from `[1, 2, 2]`. Scalar fields are unaffected.
+Each field is compared independently; this does not resolve joint permutations
+across multiple aligned fields. Both deduplication declarations are ignored with
+`dedup=False`.
+The parent distribution still includes every input row, and neither objective
+values nor returned options are rounded. Count cannot exceed the available distinct
+combined field values. This is measurement-based uniqueness, not a physical identity
+test. There is no returned index/diagnostic record,
+count-extension guarantee, YAML branch or additional persisted metadata.
+
 ### `init_dataset(request: InitDatasetRequest) -> int`
 
 Initialize an HDF5 simulation dataset from code-provided config.

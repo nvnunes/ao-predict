@@ -17,3 +17,8 @@
     options:
       members:
         - balance_options
+
+::: ao_predict.simulation.sampling_selection
+    options:
+      members:
+        - select_options

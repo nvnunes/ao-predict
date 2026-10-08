@@ -48,6 +48,7 @@ from .simulation.sampling import (
     generate_options,
 )
 from .simulation.sampling_balancing import balance_options
+from .simulation.sampling_selection import select_options
 from .training import (
     ModelTrainingDataConfig,
     ModelTrainingValidationError,
@@ -108,6 +109,7 @@ __all__ = [
     "reset_simulations",
     "resume_simulations",
     "run_simulations_by_state",
+    "select_options",
     "train_model",
     "validate_dataset",
     "validate_dataset_matches_request",

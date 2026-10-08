@@ -160,6 +160,27 @@ def test_weighted_generation_and_public_balancing_persist_ordinary_options(tmp_p
                 assert value is generated.option_arrays[name]
 
 
+def test_public_selection_persists_complete_generated_rows(tmp_path: Path) -> None:
+    from ao_predict import select_options
+    base = _base_request(tmp_path)
+    generated = generate_options(GenerateOptionsRequest(base.simulation, base.setup, _uniform_generation()))
+    selected = select_options(
+        generated, count=2,
+        fields={"performance": {"values": np.array([0.2, 0.5, 0.8]), "target": "uniform"},
+                "ngs_magnitude": {"target": "parent"}},
+        start_field="performance",
+    )
+    request = replace(base, options=selected)
+    assert sim_api.init_dataset(request) == 2
+    sim_api.validate_dataset_matches_request(base.dataset_path, request)
+    with h5py.File(base.dataset_path, "r") as store:
+        assert set(store["options"]) == set(generated.option_arrays)
+        assert "selection" not in store
+        for name, value in selected.option_arrays.items():
+            np.testing.assert_array_equal(store["options"][name][()], np.asarray(value))
+            assert not np.shares_memory(value, generated.option_arrays[name])
+
+
 def test_generate_options_default_seed_and_early_validation(tmp_path: Path) -> None:
     base = _base_request(tmp_path)
     config = _uniform_generation()
