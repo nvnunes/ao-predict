@@ -257,7 +257,7 @@ def test_hybrid_load_simulation_payload_failure_does_not_partially_bind(tmp_path
 
 def test_hybrid_provider_uses_artifact_pixel_scale_and_passes_magnitude(tmp_path: Path) -> None:
     sim = HybridSimulation()
-    payload = _simulation_payload(tmp_path)
+    payload = {**_simulation_payload(tmp_path), "precision": "float64"}
     sim.load_simulation_payload(payload)
     sim.load_setup_payload(_setup_payload())
     resolved = sim._resolve_hybrid_inputs(sim.create(0, _options()))
@@ -397,7 +397,7 @@ def test_hybrid_subclass_can_replace_resolved_provider(
 
 def test_hybrid_run_calls_mastsel_with_metrics_and_converts_units(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     sim = HybridSimulation()
-    sim.load_simulation_payload(_simulation_payload(tmp_path))
+    sim.load_simulation_payload({**_simulation_payload(tmp_path), "precision": "float64"})
     sim.load_setup_payload(_setup_payload())
     calls: dict[str, object] = {}
 

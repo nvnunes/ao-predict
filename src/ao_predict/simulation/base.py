@@ -7,6 +7,7 @@ from dataclasses import dataclass, replace
 from typing import Any, Mapping, TypeVar
 
 import numpy as np
+from .._precision import real_dtype, diagnostic_precision
 from astropy import units as u
 from ao_stats import clip_and_sum_normalize_psfs
 
@@ -126,8 +127,14 @@ class BaseSimulation(Simulation, ABC):
 
     def __init__(self) -> None:
         """Initialize base simulation state."""
+        self._dtype = np.dtype(np.float32)
         self._setup: BaseSimulationSetup | None = None
         self._diagnostics_level: str = schema.DIAGNOSTICS_LEVEL_NONE
+
+    @property
+    def dtype(self) -> np.dtype:
+        """Return bound real output/statistics precision (float32 if unconfigured)."""
+        return self._dtype
 
     @property
     def setup(self) -> BaseSimulationSetup:
@@ -193,6 +200,8 @@ class BaseSimulation(Simulation, ABC):
                 if str(k) not in exclude_keys
             }
         )
+        if schema.KEY_SIMULATION_PRECISION in simulation_cfg:
+            payload[schema.KEY_SIMULATION_PRECISION] = real_dtype(simulation_cfg[schema.KEY_SIMULATION_PRECISION]).name
         payload[schema.KEY_SIMULATION_DIAGNOSTICS_LEVEL] = diagnostics_level
         if diagnostics_level != schema.DIAGNOSTICS_LEVEL_NONE:
             diagnostic_fields = _normalize_diagnostic_field_specs(
@@ -200,6 +209,8 @@ class BaseSimulation(Simulation, ABC):
             )
             if not diagnostic_fields:
                 raise ValueError(f"{type(self).__name__} diagnostics_level={diagnostics_level!r} declared no diagnostics fields.")
+            if schema.KEY_SIMULATION_PRECISION in payload:
+                diagnostic_fields = diagnostic_precision(diagnostic_fields, real_dtype(payload[schema.KEY_SIMULATION_PRECISION]))
             payload[schema.KEY_SIMULATION_DIAGNOSTIC_FIELDS] = diagnostic_fields
         return payload
 
@@ -214,7 +225,10 @@ class BaseSimulation(Simulation, ABC):
 
     def _load_base_simulation_payload(self, simulation_payload: Mapping[str, Any]) -> None:
         """Bind generic simulation-level state from persisted ``/simulation``."""
-        self._diagnostics_level = self._diagnostics_level_from_payload(simulation_payload)
+        dtype = real_dtype(simulation_payload.get(schema.KEY_SIMULATION_PRECISION, "float32"))
+        level = self._diagnostics_level_from_payload(simulation_payload)
+        self._dtype = dtype
+        self._diagnostics_level = level
 
     def _normalize_diagnostics_level(self, value: Any) -> str:
         """Normalize and validate a requested diagnostics level."""
@@ -243,6 +257,8 @@ class BaseSimulation(Simulation, ABC):
                 f"simulation['{schema.KEY_SIMULATION_DIAGNOSTIC_FIELDS}']."
             )
         expected_fields = dict(self._diagnostic_field_specs(level))
+        if schema.KEY_SIMULATION_PRECISION in simulation_payload:
+            expected_fields = diagnostic_precision(expected_fields, real_dtype(simulation_payload[schema.KEY_SIMULATION_PRECISION]))
         if not expected_fields:
             raise ValueError(f"{type(self).__name__} diagnostics_level={level!r} declared no diagnostics fields.")
         payload_fields = _normalize_diagnostic_field_specs(simulation_payload[schema.KEY_SIMULATION_DIAGNOSTIC_FIELDS])
@@ -820,4 +836,4 @@ class BaseSimulation(Simulation, ABC):
             Preprocessed PSF cube ready for the core stats stages.
         """
         del setup, meta
-        return clip_and_sum_normalize_psfs(psfs)
+        return clip_and_sum_normalize_psfs(psfs, dtype=self.dtype)

@@ -27,7 +27,7 @@ Simulation subcommands:
 Initialize a dataset file from a YAML configuration.
 
 ```bash
-ao-predict simulate init <config_yaml> [--dataset <path>] [--overwrite] [--save-psfs]
+ao-predict simulate init <config_yaml> [--dataset <path>] [--overwrite] [--save-psfs] [--precision {float32,float64}]
 ```
 
 Arguments:
@@ -37,6 +37,7 @@ Options:
 - `--dataset`: explicit output HDF5 path.
 - `--overwrite`: overwrite existing dataset file.
 - `--save-psfs`: allocate `/psfs/data` and persist PSF cubes.
+- `--precision`: override simulation output precision (`float32` or `float64`).
 
 Behavior:
 - If `--dataset` is omitted, dataset path defaults to `<config-dir>/sims/<config-stem>.h5`. The `sims/` folder is created automatically if needed.
@@ -44,6 +45,14 @@ Behavior:
 - Invariant setup values are written under `/setup`.
 - Per-simulation options are written under `/options`.
 - Initial status is `SimulationState.PENDING` (`0`) for all simulations.
+
+### Simulation Output Precision
+
+`ao-predict simulate init CONFIG --precision float32|float64` overrides YAML
+`simulation.precision` and Hybrid INI precision. Omitting the flag preserves
+configuration/default resolution. The dataset stores the effective choice;
+run/retry/resume use it. A supplied resume/check configuration with a conflicting
+precision fails ordinary configuration matching.
 
 ## `simulate run`
 

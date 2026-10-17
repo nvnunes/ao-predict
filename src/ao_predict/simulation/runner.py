@@ -353,7 +353,13 @@ def _populate_result_stats(simulation: Simulation, context: Any) -> None:
         context.result.psfs,
         num_sci,
         f"{type(context.setup).__name__} PSFs",
+        dtype=simulation.dtype,
     )
+
+    context.result.meta = {
+        name: value.astype(simulation.dtype) if isinstance(value, u.Quantity)
+        else value for name,value in context.result.meta.items()
+    }
 
     psf_metadata = PsfMetadata(
         wavelength=context.options[schema.KEY_OPTION_WAVELENGTH],
@@ -368,6 +374,7 @@ def _populate_result_stats(simulation: Simulation, context: Any) -> None:
         peak_method=context.setup.peak_method,
         fwhm_summary=context.setup.fwhm_summary,
         ee_geometry=context.setup.ee_geometry,
+        dtype=simulation.dtype,
         preprocess=lambda psfs: simulation.prepare_psfs_for_stats(
             psfs,
             context.setup,
@@ -413,7 +420,7 @@ def _populate_result_stats(simulation: Simulation, context: Any) -> None:
             raw_extra_stats[name],
             expected_extra_stat_fields[name],
             label=f"extra stat {name!r}",
-            dtype=np.float32,
+            dtype=simulation.dtype,
         ) * u.Unit(expected_extra_stat_fields[name])
         for name in expected_extra_stat_names
     }

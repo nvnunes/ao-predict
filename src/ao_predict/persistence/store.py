@@ -9,6 +9,7 @@ import h5py
 import numpy as np
 from astropy import units as u
 
+from .._precision import real_dtype
 from .._units import UNITS_ATTRIBUTE, parse_unit, quantity_from_value, quantity_value, require_quantity, unit_string
 from ..simulation import schema
 from ..simulation.atm import ATM_PROFILE_FIELD_UNITS
@@ -134,8 +135,18 @@ def _ensure_sim_idx(sim_idx: int) -> int:
     return idx
 
 
+
+def _output_dtype(f: h5py.File) -> np.dtype:
+    """Use the dataset's actual result buffers, preserving unlabelled old runs."""
+    dtype = real_dtype(f[f"{schema.KEY_STATS_SECTION}/{schema.KEY_STATS_SR}"].dtype)
+    precision = f[schema.KEY_SIMULATION_SECTION].get(schema.KEY_SIMULATION_PRECISION)
+    if precision is not None and real_dtype(_read_dataset_value(precision)) != dtype:
+        raise ValueError("simulation.precision disagrees with stored result precision")
+    return dtype
+
 def _ensure_meta_tel_pupil(f: h5py.File, tel_pupil: np.ndarray) -> None:
     """Ensure ``/meta/tel_pupil`` exists and matches the dataset-level shape."""
+    dtype = _output_dtype(f)
     meta = f[schema.KEY_META_SECTION]
     expected = tuple(tel_pupil.shape)
     if schema.KEY_META_TEL_PUPIL in meta:
@@ -151,7 +162,7 @@ def _ensure_meta_tel_pupil(f: h5py.File, tel_pupil: np.ndarray) -> None:
     _set_dataset_unit(
         meta.create_dataset(
             schema.KEY_META_TEL_PUPIL,
-            data=np.full(expected, np.nan, dtype=np.float32),
+            data=np.full(expected, np.nan, dtype=dtype),
         ),
         schema.META_FIELD_UNITS[schema.KEY_META_TEL_PUPIL],
     )
@@ -159,34 +170,35 @@ def _ensure_meta_tel_pupil(f: h5py.File, tel_pupil: np.ndarray) -> None:
 
 def _write_dataset_level_telescope_meta(f: h5py.File, result: SimulationResult) -> None:
     """Persist invariant telescope metadata once and enforce consistency."""
+    dtype = _output_dtype(f)
     meta = f[schema.KEY_META_SECTION]
     tel_diameter = quantity_value(
         result.meta[schema.KEY_META_TEL_DIAMETER],
         schema.META_FIELD_UNITS[schema.KEY_META_TEL_DIAMETER],
         label=f"result.meta.{schema.KEY_META_TEL_DIAMETER}",
-        dtype=np.float32,
+        dtype=dtype,
     )
     tel_pupil = quantity_value(
         result.meta[schema.KEY_META_TEL_PUPIL],
         schema.META_FIELD_UNITS[schema.KEY_META_TEL_PUPIL],
         label=f"result.meta.{schema.KEY_META_TEL_PUPIL}",
-        dtype=np.float32,
+        dtype=dtype,
     )
 
-    tel_diameter_value = np.float32(tel_diameter.item())
-    stored_tel_diameter = np.asarray(meta[schema.KEY_META_TEL_DIAMETER][()], dtype=np.float32)
+    tel_diameter_value = dtype.type(tel_diameter.item())
+    stored_tel_diameter = np.asarray(meta[schema.KEY_META_TEL_DIAMETER][()], dtype=dtype)
     if np.isnan(stored_tel_diameter):
         meta[schema.KEY_META_TEL_DIAMETER][()] = tel_diameter_value
-    elif not np.isclose(float(stored_tel_diameter), float(tel_diameter_value), rtol=0.0, atol=0.0):
+    elif not np.isclose(float(stored_tel_diameter), float(tel_diameter_value), rtol=4*np.finfo(dtype).eps, atol=0.0):
         raise ValueError(
             "result.meta.tel_diameter does not match dataset-level /meta/tel_diameter."
         )
 
     _ensure_meta_tel_pupil(f, tel_pupil)
-    stored_tel_pupil = np.asarray(meta[schema.KEY_META_TEL_PUPIL][...], dtype=np.float32)
+    stored_tel_pupil = np.asarray(meta[schema.KEY_META_TEL_PUPIL][...], dtype=dtype)
     if np.all(np.isnan(stored_tel_pupil)):
         meta[schema.KEY_META_TEL_PUPIL][...] = tel_pupil
-    elif stored_tel_pupil.shape != tel_pupil.shape or not np.array_equal(stored_tel_pupil, tel_pupil, equal_nan=True):
+    elif stored_tel_pupil.shape != tel_pupil.shape or not np.allclose(stored_tel_pupil, tel_pupil, rtol=4*np.finfo(dtype).eps, atol=0.0, equal_nan=True):
         raise ValueError(
             "result.meta.tel_pupil does not match dataset-level /meta/tel_pupil."
         )
@@ -194,6 +206,7 @@ def _write_dataset_level_telescope_meta(f: h5py.File, result: SimulationResult) 
 
 def _ensure_psfs_data(f: h5py.File, psfs: np.ndarray) -> None:
     """Ensure ``/psfs/data`` exists and matches the expected per-simulation shape."""
+    dtype = _output_dtype(f)
     if schema.KEY_PSFS_SECTION not in f:
         f.require_group(schema.KEY_PSFS_SECTION)
     grp = f[schema.KEY_PSFS_SECTION]
@@ -207,7 +220,7 @@ def _ensure_psfs_data(f: h5py.File, psfs: np.ndarray) -> None:
         return
 
     shape = (num_sims,) + tuple(psfs.shape)
-    grp.create_dataset(schema.KEY_PSFS_DATA, data=np.full(shape, np.nan, dtype=np.float32))
+    grp.create_dataset(schema.KEY_PSFS_DATA, data=np.full(shape, np.nan, dtype=dtype))
 
 
 def _read_extra_stat_fields(simulation: Mapping[str, Any]) -> dict[str, u.UnitBase]:
@@ -383,13 +396,14 @@ def _read_meta_values(f: h5py.File) -> dict[str, Any]:
 
 def _write_result_meta_fields(f: h5py.File, sim_idx: int, result: SimulationResult) -> None:
     """Persist declared scalar per-simulation meta fields."""
+    dtype = _output_dtype(f)
     meta = f[schema.KEY_META_SECTION]
     for name, unit in _read_declared_meta_fields(f).items():
         if unit is None:
-            value = np.asarray(result.meta[name], dtype=np.float32)
+            value = np.asarray(result.meta[name], dtype=dtype)
         else:
-            value = quantity_value(result.meta[name], unit, label=f"result.meta.{name}", dtype=np.float32)
-        meta[name][sim_idx] = np.float32(value.item())
+            value = quantity_value(result.meta[name], unit, label=f"result.meta.{name}", dtype=dtype)
+        meta[name][sim_idx] = dtype.type(value.item())
 
 
 def _clear_simulation_outputs(f: h5py.File, sim_idx: int) -> None:
@@ -713,6 +727,7 @@ class SimulationStore:
             raise FileExistsError(f"Dataset already exists: {self.path}")
 
         validate_simulation_payload_core(simulation)
+        dtype = real_dtype(simulation.get(schema.KEY_SIMULATION_PRECISION, "float32"))
         setup = resolve_setup_payload_for_load(setup)
         zeropoint_key = schema.KEY_SETUP_NGS_MAGNITUDE_ZEROPOINT
         setup[zeropoint_key] = require_quantity(
@@ -770,11 +785,11 @@ class SimulationStore:
             )
 
             _set_dataset_unit(
-                g_meta.create_dataset(schema.KEY_META_PIXEL_SCALE, data=np.full((num_sims,), np.nan, dtype=np.float32)),
+                g_meta.create_dataset(schema.KEY_META_PIXEL_SCALE, data=np.full((num_sims,), np.nan, dtype=dtype)),
                 schema.META_FIELD_UNITS[schema.KEY_META_PIXEL_SCALE],
             )
             _set_dataset_unit(
-                g_meta.create_dataset(schema.KEY_META_TEL_DIAMETER, data=np.float32(np.nan)),
+                g_meta.create_dataset(schema.KEY_META_TEL_DIAMETER, data=dtype.type(np.nan)),
                 schema.META_FIELD_UNITS[schema.KEY_META_TEL_DIAMETER],
             )
             tel_pupil_dataset = g_meta.create_dataset(
@@ -782,31 +797,31 @@ class SimulationStore:
                 shape=(0, 0),
                 maxshape=(None, None),
                 chunks=True,
-                dtype=np.float32,
+                dtype=dtype,
             )
             _set_dataset_unit(tel_pupil_dataset, schema.META_FIELD_UNITS[schema.KEY_META_TEL_PUPIL])
             for name, unit in meta_fields.items():
-                dataset = g_meta.create_dataset(name, data=np.full((num_sims,), np.nan, dtype=np.float32))
+                dataset = g_meta.create_dataset(name, data=np.full((num_sims,), np.nan, dtype=dtype))
                 if unit is not None:
                     _set_dataset_unit(dataset, unit)
 
             _set_dataset_unit(
-                g_stats.create_dataset(schema.KEY_STATS_SR, data=np.full((num_sims, m_sci), np.nan, dtype=np.float32)),
+                g_stats.create_dataset(schema.KEY_STATS_SR, data=np.full((num_sims, m_sci), np.nan, dtype=dtype)),
                 schema.STATS_FIELD_UNITS[schema.KEY_STATS_SR],
             )
             _set_dataset_unit(
                 g_stats.create_dataset(
-                    schema.KEY_STATS_EE, data=np.full((num_sims, m_sci, ee.shape[0]), np.nan, dtype=np.float32)
+                    schema.KEY_STATS_EE, data=np.full((num_sims, m_sci, ee.shape[0]), np.nan, dtype=dtype)
                 ),
                 schema.STATS_FIELD_UNITS[schema.KEY_STATS_EE],
             )
             _set_dataset_unit(
-                g_stats.create_dataset(schema.KEY_STATS_FWHM, data=np.full((num_sims, m_sci), np.nan, dtype=np.float32)),
+                g_stats.create_dataset(schema.KEY_STATS_FWHM, data=np.full((num_sims, m_sci), np.nan, dtype=dtype)),
                 schema.STATS_FIELD_UNITS[schema.KEY_STATS_FWHM],
             )
             for name, unit in extra_stat_fields.items():
                 _set_dataset_unit(
-                    g_stats.create_dataset(name, data=np.full((num_sims, m_sci), np.nan, dtype=np.float32)),
+                    g_stats.create_dataset(name, data=np.full((num_sims, m_sci), np.nan, dtype=dtype)),
                     unit,
                 )
             if g_diagnostics is not None:
@@ -1165,6 +1180,19 @@ class SimulationStore:
             status_group = f[schema.KEY_STATUS_SECTION]
             meta_group = f[schema.KEY_META_SECTION]
             stats_group = f[schema.KEY_STATS_SECTION]
+            if schema.KEY_SIMULATION_PRECISION in f[schema.KEY_SIMULATION_SECTION]:
+                try:
+                    dtype = _output_dtype(f)
+                    for group_name in (schema.KEY_STATS_SECTION, schema.KEY_META_SECTION, schema.KEY_PSFS_SECTION):
+                        if group_name in f:
+                            for name, dataset in f[group_name].items():
+                                if isinstance(dataset, h5py.Dataset) and dataset.dtype.kind == "f" and dataset.dtype != dtype:
+                                    issues.append(f"Stored precision mismatch at /{group_name}/{name}")
+                except ValueError as error:
+                    issues.append(str(error))
+                except KeyError:
+                    pass  # Required missing datasets are reported below.
+
 
             for name in schema.REQUIRED_STATUS_KEYS:
                 if name not in status_group:
@@ -1465,6 +1493,7 @@ class SimulationStore:
             meta_fields = _read_declared_meta_fields(f)
             require_psfs = schema.KEY_PSFS_SECTION in f
 
+            dtype = _output_dtype(f)
             validate_successful_result(
                 result,
                 num_sci,
@@ -1472,6 +1501,7 @@ class SimulationStore:
                 extra_stat_fields=extra_stat_fields,
                 meta_fields=meta_fields,
                 require_psfs=require_psfs,
+                dtype=dtype,
             )
 
             # Persist meta values.
@@ -1480,16 +1510,16 @@ class SimulationStore:
                 result.meta[schema.KEY_META_PIXEL_SCALE],
                 schema.META_FIELD_UNITS[schema.KEY_META_PIXEL_SCALE],
                 label="result.meta.pixel_scale",
-                dtype=np.float32,
+                dtype=dtype,
             )
-            meta[schema.KEY_META_PIXEL_SCALE][sim_idx] = np.float32(pixel_scale.item())
+            meta[schema.KEY_META_PIXEL_SCALE][sim_idx] = dtype.type(pixel_scale.item())
             _write_dataset_level_telescope_meta(f, result)
             _write_result_meta_fields(f, sim_idx, result)
 
             # Persist stats arrays.
-            sr = quantity_value(result.stats[schema.KEY_STATS_SR], schema.STATS_FIELD_UNITS[schema.KEY_STATS_SR], label="result.stats.sr", dtype=np.float32)
-            ee = quantity_value(result.stats[schema.KEY_STATS_EE], schema.STATS_FIELD_UNITS[schema.KEY_STATS_EE], label="result.stats.ee", dtype=np.float32)
-            fwhm = quantity_value(result.stats[schema.KEY_STATS_FWHM], schema.STATS_FIELD_UNITS[schema.KEY_STATS_FWHM], label="result.stats.fwhm", dtype=np.float32)
+            sr = quantity_value(result.stats[schema.KEY_STATS_SR], schema.STATS_FIELD_UNITS[schema.KEY_STATS_SR], label="result.stats.sr", dtype=dtype)
+            ee = quantity_value(result.stats[schema.KEY_STATS_EE], schema.STATS_FIELD_UNITS[schema.KEY_STATS_EE], label="result.stats.ee", dtype=dtype)
+            fwhm = quantity_value(result.stats[schema.KEY_STATS_FWHM], schema.STATS_FIELD_UNITS[schema.KEY_STATS_FWHM], label="result.stats.fwhm", dtype=dtype)
             if ee.ndim == 1:
                 ee = ee[:, np.newaxis]
 
@@ -1497,11 +1527,11 @@ class SimulationStore:
             stats[schema.KEY_STATS_EE][sim_idx, :, :] = ee
             stats[schema.KEY_STATS_FWHM][sim_idx, :] = fwhm
             for name in extra_stat_names:
-                stats[name][sim_idx, :] = quantity_value(result.stats[name], extra_stat_fields[name], label=f"result.stats.{name}", dtype=np.float32)
+                stats[name][sim_idx, :] = quantity_value(result.stats[name], extra_stat_fields[name], label=f"result.stats.{name}", dtype=dtype)
 
             # Persist PSFs only when the dataset was configured to store them.
             if require_psfs:
-                psfs = np.asarray(result.psfs, dtype=np.float32)
+                psfs = np.asarray(result.psfs, dtype=dtype)
                 _ensure_psfs_data(f, psfs)
                 f[f"{schema.KEY_PSFS_SECTION}/{schema.KEY_PSFS_DATA}"][sim_idx, ...] = psfs
 

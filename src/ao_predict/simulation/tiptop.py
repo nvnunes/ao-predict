@@ -307,10 +307,10 @@ class TiptopSimulation(TiptopConfigBackedSimulation):
             results = getattr(simulation, "results")
             psfs = np.asarray(
                 [
-                    np.asarray(getattr(item, "sampling", item), dtype=np.float32)
+                    np.asarray(getattr(item, "sampling", item), dtype=self.dtype)
                     for item in results
                 ],
-                dtype=np.float32,
+                dtype=self.dtype,
             )
 
         return psfs
@@ -351,7 +351,7 @@ class TiptopSimulation(TiptopConfigBackedSimulation):
             raise ValueError("Unable to resolve telescope diameter (m) from TIPTOP outputs or INI.")
 
         try:
-            tel_pupil = np.asarray(simulation.fao.ao.tel.pupil, dtype=np.float32)
+            tel_pupil = np.asarray(simulation.fao.ao.tel.pupil, dtype=self.dtype)
         except Exception as exc:
             raise ValueError("Unable to resolve telescope pupil from TIPTOP output object.") from exc
 

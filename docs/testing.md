@@ -80,3 +80,12 @@ If the hooks path is not active in your clone, set it with:
 ```bash
 git config core.hooksPath .githooks
 ```
+
+## Simulation Precision Coverage
+
+`test_simulation_precision.py` checks float32/float64 Hybrid execution across
+two separately resumed rows, PSFs/statistics/metadata/floating diagnostics, INI
+and explicit overrides, conflicting configuration rejection and analysis with
+provider files unavailable. Nonfloating diagnostics keep their declared types.
+The persistence and generic simulation suites retain unconfigured non-Hybrid
+default and failed-row behavior. Training/model precision remains separate.

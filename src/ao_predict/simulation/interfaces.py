@@ -165,6 +165,16 @@ class Simulation(ABC):
         return f"{type(self).__module__}:{type(self).__name__}"
 
     @property
+    def dtype(self) -> np.dtype:
+        """Real precision for shared output/statistics; engines retain native arithmetic.
+
+        Direct implementations that support precision selection must bind and
+        return their persisted simulation.precision. BaseSimulation owns this
+        binding for its subclasses. The existing unconfigured default is float32.
+        """
+        return np.dtype(np.float32)
+
+    @property
     def version(self) -> str:
         return str(type(self)._VERSION)
 

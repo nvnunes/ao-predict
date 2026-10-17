@@ -481,8 +481,17 @@ Raises:
 - `name: str`
 - `base_path: str | None = None`
 - `specific_fields: dict[str, object] = {}`
+- `dtype: DTypeLike | None = None` (keyword-only float32/float64 selection)
 
 Use `specific_fields` for simulation-specific passthrough keys.
+An explicit `dtype` becomes `simulation.precision`; the mapping/YAML equivalent
+is `precision: float32|float64`. For Hybrid, omission resolves `[hybrid] precision`
+from the source INI, then the float32 default. The effective setting is persisted
+and participates in normal dataset mismatch/resume checks. Shared preprocessing,
+statistics, metadata, PSFs and floating diagnostics use it. Native simulation
+arithmetic is separate. Other families keep existing defaults when omitted.
+Analysis reads stored arrays without conversion and does not need the providers.
+
 For `TiptopSimulation`, provide `specific_fields["config_path"]` and optionally
 `base_path` to resolve relative `config_path` values.
 

@@ -211,7 +211,7 @@ def test_published_generation_example_runs_to_completion(tmp_path: Path) -> None
     dataset = tmp_path / "generated-example.h5"
     request = cli._load_init_request(str(example), str(dataset))
     assert sim_api.init_dataset(request) == 2
-    summary = sim_api.run_simulations_by_state(dataset, state=SimulationState.PENDING)
+    summary = sim_api.run_simulations_by_state(dataset, state=SimulationState.PENDING, verbose=True)
     assert (summary.attempted, summary.succeeded, summary.failed) == (2, 2, 0)
     sim_api.validate_dataset_matches_request(dataset, request)
     assert sim_api.check_dataset(dataset).ok

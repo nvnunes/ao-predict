@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Mapping
 
 import numpy as np
+from numpy.typing import DTypeLike
 from astropy import units as u
 
 from ..persistence import SimulationStore
@@ -46,11 +47,14 @@ class SimulationConfig:
         base_path: Optional base directory used by simulations to resolve
             relative paths in ``specific_fields``.
         specific_fields: Additional simulation-specific passthrough fields.
+        dtype: Optional float32/float64 output precision. Omission preserves the
+            engine INI/default resolution; stored as simulation.precision.
     """
 
     name: str
     base_path: str | None = None
     specific_fields: dict[str, object] = field(default_factory=dict)
+    dtype: DTypeLike | None = field(default=None, kw_only=True)
 
 
 @dataclass(frozen=True)

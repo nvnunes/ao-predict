@@ -10,6 +10,7 @@ import re
 from typing import Any, Mapping
 
 import numpy as np
+from .._precision import real_dtype
 from astropy import units as u
 
 from .._units import parse_unit, quantity_value, unit_string
@@ -56,6 +57,8 @@ def validate_simulation_payload_core(
         TypeError: If a field has an invalid type.
     """
     require_keys(simulation, schema.REQUIRED_SIMULATION_KEYS, label="simulation")
+    if schema.KEY_SIMULATION_PRECISION in simulation:
+        real_dtype(simulation[schema.KEY_SIMULATION_PRECISION])
 
     simulation_name = str(simulation[schema.KEY_SIMULATION_NAME]).strip()
     simulation_version = str(simulation[schema.KEY_SIMULATION_VERSION]).strip()
@@ -562,9 +565,9 @@ def validate_atm_profile_ids(setup: Mapping[str, Any], options: Mapping[str, Any
             f"Available ids: {sorted(allowed_ids)}."
         )
 
-def validate_psf_cube(psfs: np.ndarray, num_sci: int, label: str = "PSFs") -> np.ndarray:
+def validate_psf_cube(psfs: np.ndarray, num_sci: int, label: str = "PSFs", *, dtype=np.float32) -> np.ndarray:
     """Validate and return a PSF cube with shape ``[M, Ny, Nx]`` and finite values."""
-    cube = np.asarray(psfs, dtype=np.float32)
+    cube = np.asarray(psfs, dtype=real_dtype(dtype))
     if cube.ndim != 3:
         raise ValueError(f"{label} must be [M, Ny, Nx], got shape {cube.shape}")
     if cube.shape[0] != int(num_sci):
@@ -587,6 +590,7 @@ def validate_successful_result(
     extra_stat_fields: Mapping[str, u.UnitBase] | None = None,
     meta_fields: Mapping[str, u.UnitBase | None] | None = None,
     require_psfs: bool = False,
+    dtype=np.float32,
 ) -> None:
     """Validate one successful simulation result against core persistence rules.
 
@@ -615,17 +619,17 @@ def validate_successful_result(
             "result.stats must include sr, ee, and fwhm for successful results."
         )
 
-    sr = quantity_value(result.stats[schema.KEY_STATS_SR], schema.STATS_FIELD_UNITS[schema.KEY_STATS_SR], label="result.sr", dtype=np.float32)
+    sr = quantity_value(result.stats[schema.KEY_STATS_SR], schema.STATS_FIELD_UNITS[schema.KEY_STATS_SR], label="result.sr", dtype=dtype)
     if sr.shape != (int(num_sci),):
         raise ValueError(f"result.{schema.KEY_STATS_SR} must have shape ({int(num_sci)},), got {sr.shape}")
     if not np.all(np.isfinite(sr)):
         raise ValueError(f"result.{schema.KEY_STATS_SR} must contain only finite values.")
 
-    fwhm = quantity_value(result.stats[schema.KEY_STATS_FWHM], schema.STATS_FIELD_UNITS[schema.KEY_STATS_FWHM], label="result.fwhm", dtype=np.float32)
+    fwhm = quantity_value(result.stats[schema.KEY_STATS_FWHM], schema.STATS_FIELD_UNITS[schema.KEY_STATS_FWHM], label="result.fwhm", dtype=dtype)
     if fwhm.shape != (int(num_sci),):
         raise ValueError(f"result.{schema.KEY_STATS_FWHM} must have shape ({int(num_sci)},), got {fwhm.shape}")
 
-    ee = quantity_value(result.stats[schema.KEY_STATS_EE], schema.STATS_FIELD_UNITS[schema.KEY_STATS_EE], label="result.ee", dtype=np.float32)
+    ee = quantity_value(result.stats[schema.KEY_STATS_EE], schema.STATS_FIELD_UNITS[schema.KEY_STATS_EE], label="result.ee", dtype=dtype)
 
     if ee.ndim == 1:
         if int(num_ee) != 1 or ee.shape != (int(num_sci),):
@@ -651,7 +655,7 @@ def validate_successful_result(
         raise ValueError(f"result.stats contains undeclared stats: {', '.join(unexpected_stat_names)}")
 
     for key in extra_stat_names:
-        value = quantity_value(result.stats[key], extra_stat_fields[key], label=f"result.{key}", dtype=np.float32)
+        value = quantity_value(result.stats[key], extra_stat_fields[key], label=f"result.{key}", dtype=dtype)
         if value.shape != (int(num_sci),):
             raise ValueError(f"result.{key} must have shape ({int(num_sci)},), got {value.shape}")
         if not np.all(np.isfinite(value)):
@@ -663,9 +667,9 @@ def validate_successful_result(
             "result.meta must include pixel_scale, tel_diameter, and tel_pupil for successful results."
         )
 
-    pixel_scale = quantity_value(result.meta[schema.KEY_META_PIXEL_SCALE], schema.META_FIELD_UNITS[schema.KEY_META_PIXEL_SCALE], label="result.meta.pixel_scale", dtype=np.float32)
-    tel_diameter = quantity_value(result.meta[schema.KEY_META_TEL_DIAMETER], schema.META_FIELD_UNITS[schema.KEY_META_TEL_DIAMETER], label="result.meta.tel_diameter", dtype=np.float32)
-    tel_pupil = quantity_value(result.meta[schema.KEY_META_TEL_PUPIL], schema.META_FIELD_UNITS[schema.KEY_META_TEL_PUPIL], label="result.meta.tel_pupil", dtype=np.float32)
+    pixel_scale = quantity_value(result.meta[schema.KEY_META_PIXEL_SCALE], schema.META_FIELD_UNITS[schema.KEY_META_PIXEL_SCALE], label="result.meta.pixel_scale", dtype=dtype)
+    tel_diameter = quantity_value(result.meta[schema.KEY_META_TEL_DIAMETER], schema.META_FIELD_UNITS[schema.KEY_META_TEL_DIAMETER], label="result.meta.tel_diameter", dtype=dtype)
+    tel_pupil = quantity_value(result.meta[schema.KEY_META_TEL_PUPIL], schema.META_FIELD_UNITS[schema.KEY_META_TEL_PUPIL], label="result.meta.tel_pupil", dtype=dtype)
     if pixel_scale.ndim != 0:
         raise ValueError("result.meta.pixel_scale must be a scalar.")
     if tel_diameter.ndim != 0:
@@ -695,9 +699,9 @@ def validate_successful_result(
         if unit is None:
             if isinstance(result.meta[key], u.Quantity):
                 raise TypeError(f"result.meta.{key} must be an ordinary numeric scalar.")
-            value = np.asarray(result.meta[key], dtype=np.float32)
+            value = np.asarray(result.meta[key], dtype=dtype)
         else:
-            value = quantity_value(result.meta[key], unit, label=f"result.meta.{key}", dtype=np.float32)
+            value = quantity_value(result.meta[key], unit, label=f"result.meta.{key}", dtype=dtype)
         if value.ndim != 0:
             raise ValueError(f"result.meta.{key} must be a scalar.")
         if not np.all(np.isfinite(value.reshape(1))):
@@ -708,4 +712,4 @@ def validate_successful_result(
             raise ValueError("result.psfs must be provided when PSFs are required.")
         return
 
-    validate_psf_cube(result.psfs, int(num_sci), label="result.psfs")
+    validate_psf_cube(result.psfs, int(num_sci), label="result.psfs", dtype=dtype)

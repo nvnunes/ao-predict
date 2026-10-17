@@ -192,9 +192,12 @@ def _load_init_request(
     *,
     overwrite: bool = False,
     save_psfs: bool = False,
+    precision: str | None = None,
 ) -> InitDatasetRequest:
     """Load a CLI config into an initialization request."""
     simulation_cfg, setup_cfg, options_cfg = _load_config(config_yaml)
+    if precision is not None:
+        simulation_cfg[schema.KEY_SIMULATION_PRECISION] = precision
     if schema.KEY_CFG_OPTION_GENERATE in options_cfg:
         generate = options_cfg[schema.KEY_CFG_OPTION_GENERATE]
         allowed = {"count", "num_ngs", "seed", "fields"}
@@ -277,6 +280,7 @@ def _handle_simulate_init(args: argparse.Namespace) -> int:
             dataset_path,
             overwrite=bool(args.overwrite),
             save_psfs=bool(args.save_psfs),
+            precision=args.precision,
         )
     )
 
@@ -404,6 +408,7 @@ def _build_parser() -> argparse.ArgumentParser:
     simulate_init_parser = simulate_subparsers.add_parser("init", help=simulate_command_help["init"])
     simulate_init_parser.add_argument("config_yaml", help="single simulation config YAML path")
     simulate_init_parser.add_argument("--dataset", help="dataset HDF5 path (default: inferred from config_yaml path)")
+    simulate_init_parser.add_argument("--precision", choices=("float32", "float64"), help="override simulation output precision")
     simulate_init_parser.add_argument("--overwrite", action="store_true", help="overwrite dataset if it exists")
     simulate_init_parser.add_argument("--save-psfs", action="store_true", help="persist PSF cubes in /psfs/data")
 

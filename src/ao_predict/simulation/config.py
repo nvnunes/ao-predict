@@ -15,6 +15,7 @@ import math
 from typing import Mapping
 
 import numpy as np
+from .._precision import real_dtype
 from astropy import units as u
 
 from .._units import parse_unit, quantity_from_value, quantity_value
@@ -601,7 +602,10 @@ def normalize_simulation_config(simulation: object) -> dict[str, object]:
     """
     if isinstance(simulation, Mapping):
         require_lowercase_mapping_keys(simulation, label=schema.KEY_SIMULATION_SECTION)
-        return {str(k): v for k, v in dict(simulation).items()}
+        out = {str(k): v for k, v in dict(simulation).items()}
+        if schema.KEY_SIMULATION_PRECISION in out:
+            out[schema.KEY_SIMULATION_PRECISION] = real_dtype(out[schema.KEY_SIMULATION_PRECISION]).name
+        return out
 
     # API dataclass-like path (SimulationConfig).
     if hasattr(simulation, schema.KEY_SIMULATION_NAME):
@@ -615,6 +619,11 @@ def normalize_simulation_config(simulation: object) -> dict[str, object]:
                 sim_fields, label=f"{schema.KEY_SIMULATION_SECTION}.specific_fields"
             )
             out.update({str(k): v for k, v in dict(sim_fields).items()})
+        dtype = getattr(simulation, "dtype", None)
+        if dtype is not None:
+            out[schema.KEY_SIMULATION_PRECISION] = real_dtype(dtype).name
+        elif schema.KEY_SIMULATION_PRECISION in out:
+            out[schema.KEY_SIMULATION_PRECISION] = real_dtype(out[schema.KEY_SIMULATION_PRECISION]).name
         return {str(k): v for k, v in dict(out).items()}
 
     raise TypeError("simulation config must be a mapping or SimulationConfig-like object.")

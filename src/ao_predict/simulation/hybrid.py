@@ -190,6 +190,8 @@ class HybridSimulation(TiptopConfigBackedSimulation):
             self._science_ho_psf_interpolator = _get_cached_science_ho_psf_interpolator(
                 self._science_ho_psf_interpolator_path
             )
+        if self._science_ho_psf_interpolator.dtype != self.dtype:
+            self._science_ho_psf_interpolator = self._science_ho_psf_interpolator.prepare(dtype=self.dtype)
         return self._science_ho_psf_interpolator
 
     def _get_ngs_ho_metric_interpolator(self) -> NgsHoMetricInterpolator:
@@ -200,6 +202,8 @@ class HybridSimulation(TiptopConfigBackedSimulation):
             self._ngs_ho_metric_interpolator = _get_cached_ngs_ho_metric_interpolator(
                 self._ngs_ho_metric_interpolator_path
             )
+        if self._ngs_ho_metric_interpolator.dtype != self.dtype:
+            self._ngs_ho_metric_interpolator = self._ngs_ho_metric_interpolator.prepare(dtype=self.dtype)
         return self._ngs_ho_metric_interpolator
 
     # Simulation payload lifecycle
@@ -237,6 +241,10 @@ class HybridSimulation(TiptopConfigBackedSimulation):
             FileNotFoundError: If required config or artifact paths are missing.
         """
         simulation_cfg = dict(simulation_cfg)
+        if schema.KEY_SIMULATION_PRECISION not in simulation_cfg:
+            precision_parser = ConfigParser(interpolation=None)
+            precision_parser.read_string(self._resolve_config_path(simulation_cfg).read_text())
+            simulation_cfg[schema.KEY_SIMULATION_PRECISION] = precision_parser.get("hybrid", "precision", fallback="float32")
         simulation_cfg[self.KEY_NON_PSD_POLICY] = _normalize_non_psd_policy(
             simulation_cfg.get(
                 self.KEY_NON_PSD_POLICY,
@@ -457,6 +465,7 @@ class HybridSimulation(TiptopConfigBackedSimulation):
         science_x, science_y = polar_to_cartesian(setup.sci_r, setup.sci_theta)
         return HybridResolvedInputs(
             request=HybridRequest(
+                dtype=self.dtype,
                 science_x=science_x,
                 science_y=science_y,
                 ngs_x=active_ngs.x,
@@ -492,7 +501,7 @@ class HybridSimulation(TiptopConfigBackedSimulation):
         Raises:
             ValueError: If Hybrid runtime did not produce a result.
         """
-        return np.asarray(_require_hybrid_result(context).psfs, dtype=np.float32)
+        return np.asarray(_require_hybrid_result(context).psfs, dtype=self.dtype)
 
     def prepare_psfs_for_stats(
         self,
@@ -515,7 +524,7 @@ class HybridSimulation(TiptopConfigBackedSimulation):
             raise ValueError("Hybrid PSFs must contain only finite values.")
         if np.any(psfs_array < 0.0):
             raise ValueError("Hybrid PSFs must be non-negative.")
-        flux = np.sum(psfs_array, axis=(-2, -1), dtype=np.float64)
+        flux = np.sum(psfs_array, axis=(-2, -1), dtype=self.dtype)
         if not np.all(np.isfinite(flux)) or np.any(flux <= 0.0):
             raise ValueError("Hybrid PSFs must have positive finite flux.")
         return psfs
@@ -732,12 +741,12 @@ class HybridSimulation(TiptopConfigBackedSimulation):
             )
         used = np.asarray(diagnostics_context.ngs_used, dtype=bool)
         diagnostics: dict[str, Any] = {
-            "hybrid/angle_to_wavefront_scale": np.float32(
+            "hybrid/angle_to_wavefront_scale": self.dtype.type(
                 result.angle_to_wavefront_scale.to_value(u.nm / u.mas)
             )
             * (u.nm / u.mas),
             "hybrid/psd_valid_count": np.int32(upstream.psd_valid_count),
-            "hybrid/psd_valid_fraction": np.float32(
+            "hybrid/psd_valid_fraction": self.dtype.type(
                 upstream.psd_valid_fraction
             )
             * u.dimensionless_unscaled,
@@ -747,22 +756,22 @@ class HybridSimulation(TiptopConfigBackedSimulation):
             ),
             "hybrid/psd_clipped": np.asarray(result.psd_clipped, dtype=bool),
             "hybrid/ctot_angle_trace_min": upstream.ctot_angle_trace_min.astype(
-                np.float32
+                self.dtype.type
             ),
             "hybrid/ctot_angle_trace_max": upstream.ctot_angle_trace_max.astype(
-                np.float32
+                self.dtype.type
             ),
             "hybrid/ctot_angle_trace_mean": upstream.ctot_angle_trace_mean.astype(
-                np.float32
+                self.dtype.type
             ),
             "hybrid/ctot_angle_determinant_min": upstream.ctot_angle_determinant_min.astype(
-                np.float32
+                self.dtype.type
             ),
             "hybrid/ctot_angle_determinant_max": upstream.ctot_angle_determinant_max.astype(
-                np.float32
+                self.dtype.type
             ),
             "hybrid/ctot_angle_determinant_mean": upstream.ctot_angle_determinant_mean.astype(
-                np.float32
+                self.dtype.type
             ),
             "hybrid/ngs_used": used,
             "hybrid/ngs/ee": _slot_aligned(result.ngs_metrics.ee, used),
@@ -775,9 +784,9 @@ class HybridSimulation(TiptopConfigBackedSimulation):
             diagnostics.update(
                 {
                     "hybrid/ctot_wavefront": result.ctot_wavefront.astype(
-                        np.float32
+                        self.dtype.type
                     ),
-                    "hybrid/ctot_angle": result.ctot_angle.astype(np.float32),
+                    "hybrid/ctot_angle": result.ctot_angle.astype(self.dtype.type),
                     "hybrid/runtime_ini_text": result.effective_mastsel_ini,
                 }
             )
@@ -938,12 +947,12 @@ def _ngs_used_mask(options: Mapping[str, Any]) -> np.ndarray:
 
 def _slot_aligned(active_values: u.Quantity, used: np.ndarray) -> u.Quantity:
     """Return NGS slot-aligned values with inactive slots set to ``NaN``."""
-    active = np.asarray(active_values.value, dtype=float).reshape(-1)
+    active = np.asarray(active_values.value).reshape(-1)
     used = np.asarray(used, dtype=bool).reshape(-1)
     if active.shape[0] != int(np.count_nonzero(used)):
         raise ValueError("Hybrid diagnostics active NGS values do not match ngs_used.")
-    out = np.full(used.shape, np.nan, dtype=np.float32)
-    out[used] = active.astype(np.float32)
+    out = np.full(used.shape, np.nan, dtype=active.dtype)
+    out[used] = active
     return out * active_values.unit
 
 

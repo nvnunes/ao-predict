@@ -495,3 +495,20 @@ They should not redefine core persisted contracts.
 
 For docstring expectations on class-contract hooks and published-reference
 docstrings, follow the shared Python-development guidance.
+
+## Simulation Output Precision
+
+`simulation.precision` optionally binds float32 or float64 shared output
+calculations and storage. `SimulationConfig.dtype` maps to that key. Hybrid
+resolves omission from its INI, then the float32 default, and persists the result
+before allocation. Other families keep their existing default when omitted.
+The generic precision validator does not import Hybrid. BaseSimulation binds
+the setting for preprocessing, AO Stats, result metadata and floating diagnostics;
+direct Simulation implementations must expose their bound `dtype`. Native
+engines keep their own arithmetic. Training/prediction precision is unchanged.
+
+New buffers follow the bound precision, including lazy PSF allocation and row
+clearing. Normal configuration matching rejects a changed precision on resume.
+Declared new output buffers are validated against that precision. Existing
+unlabelled datasets load their actual stored arrays without assigning historical
+uniform arithmetic or coercing them to the current default.
