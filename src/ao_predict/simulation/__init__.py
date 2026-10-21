@@ -6,7 +6,7 @@ from .base import BaseSimulation, BaseSimulationSetup
 from .config_backed import ConfigBackedSimulation
 from .hybrid import HybridSimulation
 from .interfaces import Simulation, SimulationContext, SimulationResult, SimulationSetup, SimulationState
-from .tiptop import TiptopSimulation
+from .tiptop import TiptopSimulation, tiptop_full_flux_denominators
 from .tiptop_config_backed import TiptopBaseConfig, TiptopConfigBackedSimulation
 
 __all__ = [
@@ -22,4 +22,5 @@ __all__ = [
     "TiptopBaseConfig",
     "TiptopConfigBackedSimulation",
     "TiptopSimulation",
+    "tiptop_full_flux_denominators",
 ]

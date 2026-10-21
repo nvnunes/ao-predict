@@ -89,3 +89,22 @@ and explicit overrides, conflicting configuration rejection and analysis with
 provider files unavailable. Nonfloating diagnostics keep their declared types.
 The persistence and generic simulation suites retain unconfigured non-Hybrid
 default and failed-row behavior. Training/model precision remains separate.
+
+## TIPTOP Flux Coverage
+
+`tests/test_tiptop_flux.py` runs bounded MASTSEL propagation fixtures for zero
+and nonzero turbulence, resampled fractional pupils, OPD maps, oversampling
+factors 1–3, wavelength-dependent padding, pixel averaging and cropping. It
+checks stock TIPTOP convolution scaling, retained flux below unity, SR/EE on
+the conserved scale, unchanged FWHM under scalar normalization, bounded
+interpolation negatives and rejection of the old execution version.
+
+Run the focused checks with:
+
+```bash
+MASTSEL_DISABLE_GPU=1 ./.conda/bin/python -m pytest -q tests/test_tiptop_flux.py tests/test_tiptop_simulation.py
+```
+
+The fixtures use propagation primitives without running the full AO solver or
+rewriting saved scientific datasets. Gaussian-fit centroids use numerical
+tolerances when testing EE scaling.

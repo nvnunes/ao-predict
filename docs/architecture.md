@@ -43,6 +43,40 @@ Keep one obvious owner for each major concern:
 Core concerns stay in core modules. Simulation-specific behavior stays in
 subclasses or feature modules.
 
+## TIPTOP PSF Flux
+
+`TiptopSimulation` persists science PSFs normalized by complete sampled
+propagation-plane power, before statistics or further cropping. Its statistics
+hook validates this scale without crop sum-normalization. A retained crop can
+therefore contain less than unit flux; SR and EE use the conserved denominator.
+
+The public `ao_predict.tiptop_full_flux_denominators(runtime)` helper owns the
+TIPTOP-specific denominator. It uses retained propagation state and MASTSEL's
+FFT convention: `N_prop**2 * real(OTF_system(0)) / q_eff**2`. The no-OPD branch
+reduces to resampled pupil power divided by the effective averaging factor
+squared. MASTSEL normalizes the telescope OTF in its separate OPD-map branch,
+giving unit DC and a denominator of `N_prop**2 / q_eff**2`. Multi-wavelength PSD
+padding changes the propagation size and effective oversampling per wavelength.
+`skip_reshape=True` omits the averaging divisor. The simulation adapter executes
+one science wavelength per dataset row.
+
+Stock TIPTOP's convolution divides its input by its image sum. The adapter
+restores that known scaling from retained pre-convolution HO pixels before
+applying the conserved denominator. Gaussian convolution transfer functions
+have unit DC. Final-image sums never define the denominator. Boundary loss
+from subpixel shifting and cropping remains visible.
+
+The protected `_normalize_tiptop_psfs` hook accepts raw pixels for downstream
+adapters. It clips interpolation negatives only when no pixel exceeds 1e-6
+and their total is at most 1e-5 of full flux; larger violations fail. Clipping
+precedes persistence and never triggers crop renormalization. Stats reject
+nonfinite/negative pixels, nonpositive flux, and flux above `1 + 1e-5`.
+
+TIPTOP execution version `0.0.2` identifies this normalization. Existing
+datasets retain their stored pixels and statistics and remain readable through
+analysis. Execution version checks prevent resuming the prior normalization
+with the new implementation; loading analysis does not execute that adapter.
+
 ## Cross-Lifecycle API Consistency
 
 Simulation and model-training APIs should express similar problems with the

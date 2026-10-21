@@ -66,6 +66,7 @@ def test_simulation_module_config_backed_exports() -> None:
     assert simulation.TiptopConfigBackedSimulation is TiptopConfigBackedSimulation
     assert simulation.TiptopBaseConfig is TiptopBaseConfig
     assert simulation.TiptopSimulation is TiptopSimulation
+    assert package.tiptop_full_flux_denominators is simulation.tiptop_full_flux_denominators
     assert simulation.HybridSimulation is HybridSimulation
     assert not hasattr(package, "ScienceCoordinates")
     assert not hasattr(package, "resolve_science_coordinates")

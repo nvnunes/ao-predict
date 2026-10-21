@@ -40,6 +40,7 @@ from .simulation.api import (
     validate_dataset_matches_request,
 )
 from .simulation.runner import RunSummary
+from .simulation.tiptop import tiptop_full_flux_denominators
 from .simulation.sampling import (
     GenerateOptionsConfig,
     GenerateOptionsRequest,
@@ -111,6 +112,7 @@ __all__ = [
     "run_simulations_by_state",
     "select_options",
     "train_model",
+    "tiptop_full_flux_denominators",
     "validate_dataset",
     "validate_dataset_matches_request",
 ]

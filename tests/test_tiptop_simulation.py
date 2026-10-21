@@ -369,6 +369,15 @@ def test_tiptop_run_finalize_with_stubbed_tiptop(tmp_path: Path, monkeypatch: py
             self.ee = np.array([0.4, 0.5, 0.6], dtype=np.float32)
             self.fwhm = np.array([50.0, 60.0, 70.0], dtype=np.float32)
             self.results = [_Img(0.1), _Img(0.2), _Img(0.3)]
+            self.N = 6
+            self.mask = types.SimpleNamespace(sampling=np.ones((6, 6)))
+            self.wvl = np.array([1.25e-6])
+            self.nWvl = 1
+            self.overSamp = 1
+            self.opdMap = None
+            self.LOisOn = False
+            self.doConvolve = True
+            self.jitter_FWHM = None
             self.tel_radius = 4.0
             self.psInMas = 2.0
             self.fao = types.SimpleNamespace(
@@ -426,6 +435,8 @@ def test_tiptop_run_finalize_with_stubbed_tiptop(tmp_path: Path, monkeypatch: py
     assert ctx.result.state == 1
     assert ctx.result.psfs is not None
     assert ctx.result.psfs.shape == (3, 4, 4)
+    np.testing.assert_allclose(ctx.result.psfs[:, 0, 0], np.array([0.1, 0.2, 0.3]) / 36)
+    assert sim.prepare_psfs_for_stats(ctx.result.psfs, ctx.setup, ctx.result.meta) is ctx.result.psfs
     assert ctx.result.meta["pixel_scale"] == np.float32(2.0) * u.mas
     assert ctx.result.meta["tel_diameter"] == np.float32(8.0) * u.m
     assert ctx.result.meta["tel_pupil"].shape == (6, 6)

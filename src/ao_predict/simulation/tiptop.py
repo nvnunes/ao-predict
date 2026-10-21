@@ -35,12 +35,101 @@ class TiptopSetup(BaseSimulationSetup):
     """
 
 
+def tiptop_full_flux_denominators(simulation: Any, *, skip_reshape: bool = False) -> np.ndarray:
+    """Return conserved pre-crop TIPTOP power in detector-pixel units.
+
+    Args:
+        simulation: Completed TIPTOP runtime exposing ``N``, the resampled
+            ``mask.sampling``, ``wvl``, ``nWvl``, ``wvlMax``, ``overSamp`` and
+            ``opdMap``. Values follow TIPTOP's native, unit-free conventions.
+        skip_reshape: Whether propagation skipped detector-pixel averaging.
+            Science propagation uses the default ``False``.
+
+    Returns:
+        Float64 vector of length ``nWvl`` in wavelength order. Divide raw
+        PSF pixels by the corresponding value before any additional crop.
+        This is power on the complete sampled propagation plane, not an
+        estimate from an internally cropped output image.
+
+    Raises:
+        ValueError: If retained propagation state is missing or invalid.
+
+    MASTSEL uses an unscaled forward FFT for OTF-to-PSF propagation, giving
+    ``N_prop**2 * OTF(0)`` total power. The turbulence OTF has unit DC. Without
+    an OPD map, the telescope OTF's DC is pupil power divided by ``N_prop**2``.
+    The OPD branch instead divides its telescope OTF by its maximum, giving
+    unit DC. Detector rebinning takes means, so divides power by the square
+    of the effective oversampling. Padding and subpixel-shift boundary losses
+    never change this denominator.
+    """
+    try:
+        n = int(simulation.N)
+        mask = _tiptop_cpu_array(simulation.mask.sampling)
+        wavelengths = np.atleast_1d(np.asarray(simulation.wvl, dtype=np.float64))
+        oversampling = np.broadcast_to(
+            np.asarray(simulation.overSamp, dtype=np.float64), wavelengths.shape,
+        ).copy()
+        n_wavelengths = int(simulation.nWvl)
+        opd_map = simulation.opdMap
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise ValueError("TIPTOP is missing valid retained propagation state.") from exc
+    if n <= 0 or n % 2 or mask.shape != (n, n) or not np.all(np.isfinite(mask)):
+        raise ValueError("TIPTOP propagation requires a finite pupil on an even N by N grid.")
+    pupil_power = np.sum(np.square(np.abs(mask), dtype=np.float64), dtype=np.float64)
+    if not np.isfinite(pupil_power) or pupil_power <= 0.0:
+        raise ValueError("TIPTOP propagated pupil power must be positive and finite.")
+    if (wavelengths.ndim != 1 or wavelengths.size != n_wavelengths
+            or not np.all(np.isfinite(wavelengths) & (wavelengths > 0.0))):
+        raise ValueError("TIPTOP wvl must contain nWvl positive finite wavelengths.")
+    if not np.all(np.isfinite(oversampling) & (oversampling >= 1.0)
+                  & (oversampling == np.floor(oversampling))):
+        raise ValueError("TIPTOP oversampling must contain positive integers.")
+
+    propagation_sizes = np.full(wavelengths.shape, n, dtype=np.float64)
+    if n_wavelengths > 1:
+        try:
+            wavelength_ref = float(simulation.wvlMax)
+        except (AttributeError, TypeError, ValueError) as exc:
+            raise ValueError("TIPTOP multi-wavelength propagation requires wvlMax.") from exc
+        if not np.isfinite(wavelength_ref) or wavelength_ref < np.max(wavelengths):
+            raise ValueError("TIPTOP wvlMax must be finite and at least max(wvl).")
+        ratios = wavelength_ref / wavelengths
+        factors = np.ceil(ratios)
+        # Match psdSetToPsfSet's padPSD branch, including its even-grid rounding.
+        propagation_sizes = np.round(n * (factors / ratios) / 2.0) * 2.0
+        oversampling *= factors
+
+    denominators = propagation_sizes**2 if opd_map is not None else np.full(
+        wavelengths.shape, pupil_power, dtype=np.float64,
+    )
+    if not skip_reshape:
+        denominators /= oversampling**2
+    if not np.all(np.isfinite(denominators) & (denominators > 0.0)):
+        raise ValueError("TIPTOP full-flux denominators must be positive and finite.")
+    return denominators
+
+
+def _tiptop_cpu_array(value: Any) -> np.ndarray:
+    """Read NumPy or CuPy runtime values without changing their precision."""
+    return np.asarray(value.get() if hasattr(value, "get") else value)
+
+
+def _validate_tiptop_psfs(psfs: np.ndarray) -> None:
+    """Require finite, nonnegative crops on the conserved unit-flux scale."""
+    if (psfs.ndim != 3 or psfs.size == 0
+            or not np.all(np.isfinite(psfs)) or np.any(psfs < 0.0)):
+        raise ValueError("TIPTOP PSFs must be a finite nonnegative [M, Ny, Nx] cube.")
+    flux = np.sum(psfs, axis=(-2, -1), dtype=np.float64)
+    if np.any(flux <= 0.0) or np.any(flux > 1.0 + 1.0e-5):
+        raise ValueError("TIPTOP PSF in-frame flux must be positive and <= 1 on the conserved scale.")
+
+
 # Tiptop Simulation
 
 class TiptopSimulation(TiptopConfigBackedSimulation):
     """TIPTOP-backed `Simulation` implementation."""
 
-    _VERSION = "0.0.1"
+    _VERSION = "0.0.2"
 
     KEY_RUNTIME_EFFECTIVE_PARSER = "effective_parser"
     KEY_RUNTIME_SIMULATION = "tiptop_simulation"
@@ -292,27 +381,110 @@ class TiptopSimulation(TiptopConfigBackedSimulation):
             context: Completed simulation context.
 
         Returns:
-            PSF cube with shape ``[M, Ny, Nx]`` or ``None`` when TIPTOP did
-            not expose per-science sampling results.
+            Conserved-flux PSF cube with shape ``[M, Ny, Nx]``.
 
         Raises:
-            ValueError: If the TIPTOP runtime object is missing.
+            ValueError: If runtime outputs or conserved-flux state are invalid.
         """
         simulation = context.runtime.get(self.KEY_RUNTIME_SIMULATION)
         if simulation is None:
             raise ValueError("Missing TIPTOP simulation in context.runtime. Did you call run()?")
 
-        psfs: np.ndarray | None = None
-        if hasattr(simulation, "results"):
-            results = getattr(simulation, "results")
-            psfs = np.asarray(
-                [
-                    np.asarray(getattr(item, "sampling", item), dtype=self.dtype)
-                    for item in results
-                ],
-                dtype=self.dtype,
-            )
+        return self._extract_tiptop_psfs(simulation)
 
+    def _extract_tiptop_psfs(self, simulation: Any) -> np.ndarray:
+        """Extract one wavelength's final PSFs on the conserved flux scale.
+
+        Args:
+            simulation: Completed stock TIPTOP runtime. Its known convolution
+                normalization is reversed using retained pre-convolution HO
+                image power, never final-image power.
+
+        Returns:
+            Independent ``[M, Ny, Nx]`` cube in this simulation's precision.
+            Small interpolation negatives are clipped before persistence,
+            without renormalizing the crop.
+
+        Raises:
+            ValueError: If raw state is unavailable, multiple wavelengths were
+                executed, or pixels violate the conserved-flux contract.
+        """
+        try:
+            if simulation.nWvl != 1:
+                raise ValueError("AO Predict PSF cubes require one TIPTOP science wavelength per simulation.")
+            convolved_lo = simulation.LOisOn and simulation.doConvolve
+            if convolved_lo and not simulation.doConvolveAsterism:
+                raise ValueError("TIPTOP deferred asterism convolution has no final PSFs.")
+            psfs = np.asarray([
+                _tiptop_cpu_array(image.sampling) for image in simulation.results
+            ], dtype=np.float64)
+            # Stock convolve divides its input by its crop sum. Its Gaussian
+            # transfer kernels have unit DC, including a second jitter pass.
+            restore_scale = (
+                convolved_lo or (not simulation.LOisOn and simulation.jitter_FWHM is not None)
+            )
+            if restore_scale:
+                ho_psfs = np.asarray([
+                    _tiptop_cpu_array(image.sampling) for image in simulation.psfLongExpPointingsArr
+                ], dtype=np.float64)
+                if ho_psfs.shape != psfs.shape or not np.all(np.isfinite(ho_psfs)):
+                    raise ValueError("TIPTOP retained HO PSFs do not match final PSFs.")
+                ho_power = np.sum(ho_psfs, axis=(-2, -1), dtype=np.float64)
+                if np.any(ho_power <= 0.0):
+                    raise ValueError("TIPTOP retained HO PSFs must have positive power.")
+                psfs *= ho_power[:, None, None]
+        except AttributeError as exc:
+            raise ValueError("TIPTOP is missing final PSFs or retained pre-convolution state.") from exc
+        return self._normalize_tiptop_psfs(psfs, simulation)
+
+    def _normalize_tiptop_psfs(self, psfs: np.ndarray, simulation: Any) -> np.ndarray:
+        """Normalize raw TIPTOP crops before persistence or further cropping.
+
+        Args:
+            psfs: Unnormalized ``[M, Ny, Nx]`` science PSFs, before TIPTOP's
+                convolution input division or with that scaling restored.
+            simulation: Completed runtime used by
+                :func:`tiptop_full_flux_denominators`.
+
+        Returns:
+            Independent cube in this simulation's precision. Interpolation
+            negatives up to 1e-6 per pixel and 1e-5 integrated full-flux
+            fraction are clipped; the remaining crop is never sum-normalized.
+
+        Raises:
+            ValueError: If wavelengths, negative power or crop flux violate
+                the conserved-flux contract.
+        """
+        denominators = tiptop_full_flux_denominators(simulation)
+        if denominators.size != 1:
+            raise ValueError("AO Predict PSF cubes require one TIPTOP science wavelength per simulation.")
+        psfs = np.array(psfs, dtype=np.float64, copy=True)
+        psfs /= denominators[0]
+        if psfs.ndim != 3 or not np.all(np.isfinite(psfs)):
+            raise ValueError("TIPTOP PSFs must be a finite [M, Ny, Nx] cube.")
+        # Cubic subpixel shifts can introduce negatives beyond roundoff. Bound
+        # both their individual amplitude and integrated full-flux fraction.
+        negative = np.minimum(psfs, 0.0)
+        if np.any(negative < -1.0e-6) or np.any(-negative.sum(axis=(-2, -1)) > 1.0e-5):
+            raise ValueError("TIPTOP PSFs contain significant negative interpolation power.")
+        psfs = np.maximum(psfs, 0.0).astype(self.dtype)
+        _validate_tiptop_psfs(psfs)
+        return psfs
+
+    def prepare_psfs_for_stats(
+        self,
+        psfs: np.ndarray,
+        setup: SimulationSetup | Mapping[str, Any],
+        meta: Mapping[str, Any],
+    ) -> np.ndarray:
+        """Validate conserved-flux TIPTOP crops without rescaling their pixels.
+
+        PSFs must already be finite, nonnegative, and have positive in-frame
+        flux no greater than one (within numerical tolerance). The setup and
+        metadata do not alter this normalization. Returns the original cube.
+        """
+        del setup, meta
+        _validate_tiptop_psfs(np.asarray(psfs))
         return psfs
 
     def _extract_psf_parameters(self, context: SimulationContext) -> PsfParameters:
