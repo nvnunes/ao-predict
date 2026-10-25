@@ -50,8 +50,14 @@ propagation-plane power, before statistics or further cropping. Its statistics
 hook validates this scale without crop sum-normalization. A retained crop can
 therefore contain less than unit flux; SR and EE use the conserved denominator.
 
-The public `ao_predict.tiptop_full_flux_denominators(runtime)` helper owns the
-TIPTOP-specific denominator. It uses retained propagation state and MASTSEL's
+The adapter requests `fullFluxNormalization=True` when TIPTOP exposes that
+constructor option. In this mode MASTSEL normalizes on complete propagation
+and resampling support before cropping, and TIPTOP retains the scale through
+LO and jitter convolution. Science pixels already represent fractions of
+full-plane power. The public `ao_predict.tiptop_full_flux_denominators(runtime)`
+helper returns ones for runtimes explicitly marked with that contract.
+
+For unmarked runtimes, the helper uses retained propagation state and MASTSEL's
 FFT convention: `N_prop**2 * real(OTF_system(0)) / q_eff**2`. The no-OPD branch
 reduces to resampled pupil power divided by the effective averaging factor
 squared. MASTSEL normalizes the telescope OTF in its separate OPD-map branch,
@@ -60,11 +66,12 @@ padding changes the propagation size and effective oversampling per wavelength.
 `skip_reshape=True` omits the averaging divisor. The simulation adapter executes
 one science wavelength per dataset row.
 
-Stock TIPTOP's convolution divides its input by its image sum. The adapter
+For unmarked outputs, TIPTOP's convolution divides its input by its image sum. The adapter
 restores that known scaling from retained pre-convolution HO pixels before
 applying the conserved denominator. Gaussian convolution transfer functions
 have unit DC. Final-image sums never define the denominator. Boundary loss
-from subpixel shifting and cropping remains visible.
+from subpixel shifting and cropping remains visible. Marked full-flux outputs
+are read directly, without applying this correction a second time.
 
 The protected `_normalize_tiptop_psfs` hook accepts raw pixels for downstream
 adapters. It clips interpolation negatives only when no pixel exceeds 1e-6

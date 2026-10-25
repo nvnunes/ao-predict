@@ -94,10 +94,14 @@ default and failed-row behavior. Training/model precision remains separate.
 
 `tests/test_tiptop_flux.py` runs bounded MASTSEL propagation fixtures for zero
 and nonzero turbulence, resampled fractional pupils, OPD maps, oversampling
-factors 1–3, wavelength-dependent padding, pixel averaging and cropping. It
-checks stock TIPTOP convolution scaling, retained flux below unity, SR/EE on
+factors 1–3, wavelength-dependent sampling and cropping. With MASTSEL's optional
+`full_flux` API the fixtures request complete-plane unit normalization;
+otherwise they check the retained FFT/pixel-averaging denominator. They check
+TIPTOP convolution scaling under both contracts, retained flux below unity, SR/EE on
 the conserved scale, unchanged FWHM under scalar normalization, bounded
-interpolation negatives and rejection of the old execution version.
+interpolation negatives and rejection of the old execution version. Explicitly
+marked full-flux outputs must not receive a second convolution correction or
+depend on the older integer-oversampling metadata.
 
 Run the focused checks with:
 

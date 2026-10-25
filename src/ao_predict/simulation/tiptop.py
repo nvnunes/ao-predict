@@ -5,6 +5,7 @@ from __future__ import annotations
 from configparser import ConfigParser
 from copy import deepcopy
 from dataclasses import dataclass
+from inspect import signature
 from pathlib import Path
 import tempfile
 from typing import Any, Mapping
@@ -39,7 +40,10 @@ def tiptop_full_flux_denominators(simulation: Any, *, skip_reshape: bool = False
     """Return conserved pre-crop TIPTOP power in detector-pixel units.
 
     Args:
-        simulation: Completed TIPTOP runtime exposing ``N``, the resampled
+        simulation: Completed TIPTOP runtime. When its explicit
+            ``fullFluxNormalization`` flag is true, science pixels are already
+            fractions of complete-plane power and denominators are one.
+            Otherwise it must expose ``N``, the resampled
             ``mask.sampling``, ``wvl``, ``nWvl``, ``wvlMax``, ``overSamp`` and
             ``opdMap``. Values follow TIPTOP's native, unit-free conventions.
         skip_reshape: Whether propagation skipped detector-pixel averaging.
@@ -54,7 +58,7 @@ def tiptop_full_flux_denominators(simulation: Any, *, skip_reshape: bool = False
     Raises:
         ValueError: If retained propagation state is missing or invalid.
 
-    MASTSEL uses an unscaled forward FFT for OTF-to-PSF propagation, giving
+    For unmarked runtimes, MASTSEL uses an unscaled forward FFT, giving
     ``N_prop**2 * OTF(0)`` total power. The turbulence OTF has unit DC. Without
     an OPD map, the telescope OTF's DC is pupil power divided by ``N_prop**2``.
     The OPD branch instead divides its telescope OTF by its maximum, giving
@@ -63,13 +67,22 @@ def tiptop_full_flux_denominators(simulation: Any, *, skip_reshape: bool = False
     never change this denominator.
     """
     try:
+        wavelengths = np.atleast_1d(np.asarray(simulation.wvl, dtype=np.float64))
+        n_wavelengths = int(simulation.nWvl)
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise ValueError("TIPTOP is missing valid retained propagation state.") from exc
+    if (wavelengths.ndim != 1 or wavelengths.size != n_wavelengths or n_wavelengths <= 0
+            or not np.all(np.isfinite(wavelengths) & (wavelengths > 0.0))):
+        raise ValueError("TIPTOP wvl must contain nWvl positive finite wavelengths.")
+    if getattr(simulation, "fullFluxNormalization", False):
+        return np.ones(n_wavelengths, dtype=np.float64)
+
+    try:
         n = int(simulation.N)
         mask = _tiptop_cpu_array(simulation.mask.sampling)
-        wavelengths = np.atleast_1d(np.asarray(simulation.wvl, dtype=np.float64))
         oversampling = np.broadcast_to(
             np.asarray(simulation.overSamp, dtype=np.float64), wavelengths.shape,
         ).copy()
-        n_wavelengths = int(simulation.nWvl)
         opd_map = simulation.opdMap
     except (AttributeError, TypeError, ValueError) as exc:
         raise ValueError("TIPTOP is missing valid retained propagation state.") from exc
@@ -78,9 +91,6 @@ def tiptop_full_flux_denominators(simulation: Any, *, skip_reshape: bool = False
     pupil_power = np.sum(np.square(np.abs(mask), dtype=np.float64), dtype=np.float64)
     if not np.isfinite(pupil_power) or pupil_power <= 0.0:
         raise ValueError("TIPTOP propagated pupil power must be positive and finite.")
-    if (wavelengths.ndim != 1 or wavelengths.size != n_wavelengths
-            or not np.all(np.isfinite(wavelengths) & (wavelengths > 0.0))):
-        raise ValueError("TIPTOP wvl must contain nWvl positive finite wavelengths.")
     if not np.all(np.isfinite(oversampling) & (oversampling >= 1.0)
                   & (oversampling == np.floor(oversampling))):
         raise ValueError("TIPTOP oversampling must contain positive integers.")
@@ -359,6 +369,10 @@ class TiptopSimulation(TiptopConfigBackedSimulation):
 
             from tiptop.tiptop import baseSimulation  # pylint: disable=import-outside-toplevel
 
+            flux_options = (
+                {"fullFluxNormalization": True}
+                if "fullFluxNormalization" in signature(baseSimulation).parameters else {}
+            )
             simulation = baseSimulation(
                 path2param,
                 parameters_file,
@@ -370,6 +384,7 @@ class TiptopSimulation(TiptopConfigBackedSimulation):
                 eeRadiusInMas=ee_radius_mas,
                 doPlot=False,
                 verbose=False,
+                **flux_options,
             )
             self._run_tiptop(simulation)
             context.runtime[self.KEY_RUNTIME_SIMULATION] = simulation
@@ -396,9 +411,10 @@ class TiptopSimulation(TiptopConfigBackedSimulation):
         """Extract one wavelength's final PSFs on the conserved flux scale.
 
         Args:
-            simulation: Completed stock TIPTOP runtime. Its known convolution
-                normalization is reversed using retained pre-convolution HO
-                image power, never final-image power.
+            simulation: Completed TIPTOP runtime. Explicit full-flux outputs
+                are read directly. Otherwise known convolution normalization
+                is reversed using retained pre-convolution HO image power,
+                never final-image power.
 
         Returns:
             Independent ``[M, Ny, Nx]`` cube in this simulation's precision.
@@ -420,7 +436,7 @@ class TiptopSimulation(TiptopConfigBackedSimulation):
             ], dtype=np.float64)
             # Stock convolve divides its input by its crop sum. Its Gaussian
             # transfer kernels have unit DC, including a second jitter pass.
-            restore_scale = (
+            restore_scale = not getattr(simulation, "fullFluxNormalization", False) and (
                 convolved_lo or (not simulation.LOisOn and simulation.jitter_FWHM is not None)
             )
             if restore_scale:
@@ -441,8 +457,10 @@ class TiptopSimulation(TiptopConfigBackedSimulation):
         """Normalize raw TIPTOP crops before persistence or further cropping.
 
         Args:
-            psfs: Unnormalized ``[M, Ny, Nx]`` science PSFs, before TIPTOP's
-                convolution input division or with that scaling restored.
+            psfs: ``[M, Ny, Nx]`` science PSFs. For unmarked runtimes these
+                are raw pixels before TIPTOP's convolution input division or
+                with that scaling restored. Marked full-flux pixels are
+                already on the complete-plane unit scale.
             simulation: Completed runtime used by
                 :func:`tiptop_full_flux_denominators`.
 

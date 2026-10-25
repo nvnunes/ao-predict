@@ -343,7 +343,9 @@ def test_tiptop_prepare_options_payload_loads_ngs_defaults_from_ini(tmp_path: Pa
     )
 
 
-def test_tiptop_run_finalize_with_stubbed_tiptop(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+@pytest.mark.parametrize('full_flux', [False, True])
+def test_tiptop_run_finalize_with_stubbed_tiptop(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+                                               full_flux: bool):
     sim = TiptopSimulation()
     ini_path = tmp_path / "tiptop.ini"
     ini_path.write_text(
@@ -391,8 +393,15 @@ def test_tiptop_run_finalize_with_stubbed_tiptop(tmp_path: Path, monkeypatch: py
         def doOverallSimulation(self, **_kwargs):
             return None
 
+    class FullFluxSimulation(FakeBaseSimulation):
+        def __init__(self, *args, fullFluxNormalization=False, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.fullFluxNormalization = fullFluxNormalization
+            for image in self.results:
+                image.sampling /= 36.0
+
     tiptop_mod = types.ModuleType("tiptop.tiptop")
-    tiptop_mod.baseSimulation = FakeBaseSimulation
+    tiptop_mod.baseSimulation = FullFluxSimulation if full_flux else FakeBaseSimulation
     tiptop_pkg = types.ModuleType("tiptop")
     tiptop_pkg.tiptop = tiptop_mod
     monkeypatch.setitem(sys.modules, "tiptop", tiptop_pkg)
@@ -430,6 +439,8 @@ def test_tiptop_run_finalize_with_stubbed_tiptop(tmp_path: Path, monkeypatch: py
     ctx = sim.create(index=0, options=options)
     sim.run(ctx)
     sim.finalize(ctx)
+
+    assert getattr(ctx.runtime[sim.KEY_RUNTIME_SIMULATION], 'fullFluxNormalization', False) == full_flux
 
     assert isinstance(ctx.result, SimulationResult)
     assert ctx.result.state == 1

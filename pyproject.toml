@@ -24,7 +24,9 @@ dependencies = [
     "PyYAML>=6.0",
     "scipy>=1.14.0",
     "torch>=2.7.0",
-    "astro-tiptop>=1.3.30",
+    "astro-tiptop @ git+https://github.com/nvnunes/TIPTOP.git@ao-predict",
+    "astro-p3 @ git+https://github.com/nvnunes/P3.git@ao-predict",
+    "mastsel @ git+https://github.com/nvnunes/MASTSEL.git@ao-predict",
 ]
 
 [project.urls]

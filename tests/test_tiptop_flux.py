@@ -1,6 +1,7 @@
 """Bounded propagation and statistics checks using stock MASTSEL primitives."""
 
 import importlib
+from inspect import signature
 from types import SimpleNamespace
 
 import numpy as np
@@ -46,16 +47,19 @@ def _runtime(*, oversampling=1, opd=False, wavelengths=(1.65e-6,)):
         opdMap=60.0 * np.sin(x / 4.0) * np.cos(y / 4.0) if opd else None,
         psd=2e-15 * np.exp(-(fx**2 + fy**2) / 0.03),
         LOisOn=False, doConvolve=True, doConvolveAsterism=True, jitter_FWHM=None,
+        fullFluxNormalization='full_flux' in signature(propagation.psdSetToPsfSet).parameters,
     )
 
 
 def _propagate(runtime, *, turbulence=True, crop=16, skip_reshape=False):
     propagation = _propagation()
+    flux_options = {"full_flux": True} if runtime.fullFluxNormalization else {}
     return propagation.psdSetToPsfSet(
         [runtime.psd if turbulence else np.zeros_like(runtime.psd)], runtime.pupil,
         runtime.wvl, runtime.N, runtime.sx, runtime.grid_diameter,
         runtime.freq_range, runtime.dk, crop, runtime.wvlMax, runtime.overSamp,
         opdMap=runtime.opdMap, padPSD=runtime.nWvl > 1, skip_reshape=skip_reshape,
+        **flux_options,
     )
 
 
@@ -69,12 +73,14 @@ def test_conserved_denominator_matches_complete_propagation(turbulence, opd, ove
     crop = _propagate(runtime, turbulence=turbulence)[0].sampling
 
     assert 0.0 < crop.sum() / denominator < 1.0
-    if oversampling % 2:
+    if runtime.fullFluxNormalization or oversampling % 2:
         np.testing.assert_allclose(full.sum() / denominator, 1.0, rtol=2e-6)
     else:
         # Cubic half-pixel shifting uses constant boundaries and loses power.
         assert 0.998 < full.sum() / denominator < 1.0
-    if opd:
+    if runtime.fullFluxNormalization:
+        assert denominator == 1.0
+    elif opd:
         assert denominator == pytest.approx(runtime.N**2 / oversampling**2)
 
 
@@ -106,7 +112,10 @@ def test_stock_output_scaling_is_restored_before_normalization(lo_on, jitter):
     final = ho[0]
     for active in (lo_on, jitter):
         if active:
+            input_power = final.sampling.sum()
             final = propagation.convolve(final, kernel)
+            if runtime.fullFluxNormalization:
+                final.sampling *= input_power
             raw = np.real(propagation.KernelConvolve(raw, kernel.sampling))
     runtime.results = [final]
     expected = np.maximum(raw / tiptop_full_flux_denominators(runtime)[0], 0.0)
@@ -198,11 +207,33 @@ def test_denominator_rejects_missing_or_invalid_runtime_state():
     with pytest.raises(ValueError, match="retained propagation state"):
         tiptop_full_flux_denominators(SimpleNamespace())
     runtime = _runtime()
+    runtime.fullFluxNormalization = False
     runtime.mask.sampling[:] = 0.0
     with pytest.raises(ValueError, match="pupil power"):
         tiptop_full_flux_denominators(runtime)
     runtime = _runtime(oversampling=1.5)
+    runtime.fullFluxNormalization = False
     with pytest.raises(ValueError, match="positive integers"):
+        tiptop_full_flux_denominators(runtime)
+
+
+def test_explicit_full_flux_needs_no_legacy_grid_or_convolution_correction():
+    pixels = np.full((1, 8, 8), 0.8 / 64)
+    runtime = SimpleNamespace(
+        fullFluxNormalization=True, nWvl=1, wvl=np.asarray([1.65e-6]),
+        LOisOn=True, doConvolve=True, doConvolveAsterism=True,
+        jitter_FWHM=10.0, results=[SimpleNamespace(sampling=pixels[0])],
+    )
+    np.testing.assert_array_equal(tiptop_full_flux_denominators(runtime), [1.0])
+    actual = _simulation()._extract_tiptop_psfs(runtime)
+    np.testing.assert_array_equal(actual, pixels)
+    assert actual.sum() == pytest.approx(0.8)
+
+
+@pytest.mark.parametrize('wavelengths,n_wavelengths', [([], 0), ([0.0], 1), ([1.0], 2)])
+def test_full_flux_marker_still_requires_valid_wavelengths(wavelengths, n_wavelengths):
+    runtime = SimpleNamespace(fullFluxNormalization=True, wvl=wavelengths, nWvl=n_wavelengths)
+    with pytest.raises(ValueError, match='positive finite wavelengths'):
         tiptop_full_flux_denominators(runtime)
 
 
