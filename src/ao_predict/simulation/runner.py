@@ -246,6 +246,7 @@ def _prepare_base_setup_payload(base_setup: dict[str, Any]) -> dict[str, Any]:
     setup.setdefault(schema.KEY_SETUP_PEAK_METHOD, schema.DEFAULT_SETUP_PEAK_METHOD)
     setup.setdefault(schema.KEY_SETUP_FWHM_SUMMARY, schema.DEFAULT_SETUP_FWHM_SUMMARY)
     setup.setdefault(schema.KEY_SETUP_EE_GEOMETRY, schema.DEFAULT_SETUP_EE_GEOMETRY)
+    setup.setdefault(schema.KEY_SETUP_EE_CENTER, schema.DEFAULT_SETUP_EE_CENTER)
     return setup
 
 
@@ -374,6 +375,7 @@ def _populate_result_stats(simulation: Simulation, context: Any) -> None:
         peak_method=context.setup.peak_method,
         fwhm_summary=context.setup.fwhm_summary,
         ee_geometry=context.setup.ee_geometry,
+        ee_center=context.setup.ee_center,
         dtype=simulation.dtype,
         preprocess=lambda psfs: simulation.prepare_psfs_for_stats(
             psfs,

@@ -360,6 +360,7 @@ class FakeSimulation(Simulation):
             peak_method=str(setup_payload["peak_method"]),
             fwhm_summary=str(setup_payload["fwhm_summary"]),
             ee_geometry=str(setup_payload["ee_geometry"]),
+            ee_center=str(setup_payload["ee_center"]),
             atm_wavelength=setup_payload["atm_wavelength"],
             atm_profiles=dict(setup_payload["atm_profiles"]),
             lgs_r=setup_payload["lgs_r"],
@@ -594,6 +595,7 @@ def test_api_full_pipeline_with_test_simulation(tmp_path: Path):
     assert status.num_succeeded == 3
 
     with h5py.File(dataset_path, "r") as f:
+        assert f["setup/ee_center"].asstr()[()] == "image"
         sr = np.asarray(f[f"{schema.KEY_STATS_SECTION}/{schema.KEY_STATS_SR}"][:], dtype=float)
         assert np.all(np.isfinite(sr))
         np.testing.assert_allclose(sr[:, 0], np.full((3,), sr[0, 0], dtype=float), rtol=1e-6, atol=1e-6)
@@ -618,6 +620,7 @@ def test_api_init_persists_explicit_setup_stats_selectors(tmp_path: Path):
             peak_method=schema.STATS_PEAK_METHOD_PIXEL_MAX,
             fwhm_summary=schema.STATS_FWHM_SUMMARY_MAX,
             ee_geometry=schema.STATS_EE_GEOMETRY_ENCIRCLED,
+            ee_center="peak",
             specific_fields={"ngs_magnitude_zeropoint": (1.1e13 / 368.0) * u.photon / (u.m**2 * u.s)},
         ),
         options=request.options,
@@ -626,6 +629,7 @@ def test_api_init_persists_explicit_setup_stats_selectors(tmp_path: Path):
     sim_api.init_dataset(request)
 
     with h5py.File(request.dataset_path, "r") as f:
+        assert f["setup/ee_center"].asstr()[()] == "peak"
         assert f[f"{schema.KEY_SETUP_SECTION}/{schema.KEY_SETUP_PEAK_METHOD}"][()].decode("utf-8") == schema.STATS_PEAK_METHOD_PIXEL_MAX
         assert (
             f[f"{schema.KEY_SETUP_SECTION}/{schema.KEY_SETUP_FWHM_SUMMARY}"][()].decode("utf-8")
@@ -635,6 +639,28 @@ def test_api_init_persists_explicit_setup_stats_selectors(tmp_path: Path):
             f[f"{schema.KEY_SETUP_SECTION}/{schema.KEY_SETUP_EE_GEOMETRY}"][()].decode("utf-8")
             == schema.STATS_EE_GEOMETRY_ENCIRCLED
         )
+
+
+def test_api_loads_existing_setup_without_ee_center(tmp_path: Path):
+    request = replace(
+        _base_request(tmp_path),
+        simulation=SimulationConfig(name="mock_simulation:MockSimulation"),
+    )
+    sim_api.init_dataset(replace(request, setup=replace(request.setup, ee_center="peak")))
+    with h5py.File(request.dataset_path, "r+") as f:
+        del f["setup/ee_center"]
+
+    analysis = load_analysis_dataset(request.dataset_path)
+    assert analysis.setup["ee_center"] == "peak"
+    sim_api.validate_dataset_matches_request(request.dataset_path, request)
+    explicit_image = replace(request, setup=replace(request.setup, ee_center="image"))
+    with pytest.raises(sim_api.DatasetConfigMismatchError, match="/setup/ee_center"):
+        sim_api.validate_dataset_matches_request(request.dataset_path, explicit_image)
+
+    summary = sim_api.resume_simulations(request.dataset_path, expected_request=request)
+    assert summary.succeeded == 3
+    with h5py.File(request.dataset_path, "r") as f:
+        assert "ee_center" not in f["setup"]
 
 
 def test_api_init_upgrades_legacy_sr_method_to_peak_method(tmp_path: Path):
@@ -706,20 +732,21 @@ def test_api_init_persists_ngs_mag_standard_and_exposes_it_to_analysis(tmp_path:
     )
 
 
-def test_api_init_rejects_invalid_setup_stats_selector(tmp_path: Path):
+@pytest.mark.parametrize("selector", ["ee_center", "peak_method"])
+def test_api_init_rejects_invalid_setup_stats_selector(tmp_path: Path, selector: str):
     request = _base_request(tmp_path)
     request = InitDatasetRequest(
         dataset_path=request.dataset_path,
         simulation=request.simulation,
         setup=SetupConfig(
             ee_apertures=[50.0, 100.0] * u.mas,
-            peak_method="bad_selector",
-            specific_fields={"ngs_magnitude_zeropoint": (1.1e13 / 368.0) * u.photon / (u.m**2 * u.s)},
+            specific_fields=request.setup.specific_fields,
+            **{selector: "bad_selector"},
         ),
         options=request.options,
     )
 
-    with pytest.raises(ValueError, match="setup\\['peak_method'\\] must be one of: gaussian_fit, pixel_max\\."):
+    with pytest.raises(ValueError, match=rf"setup\['{selector}'\] must be one of"):
         sim_api.init_dataset(request)
 
 

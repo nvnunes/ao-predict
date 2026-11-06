@@ -493,6 +493,14 @@ class BaseSimulation(Simulation, ABC):
                     default=schema.DEFAULT_SETUP_EE_GEOMETRY,
                 )
             ).strip(),
+            schema.KEY_SETUP_EE_CENTER: str(
+                select_mapping_value(
+                    base_setup_payload,
+                    setup_cfg,
+                    schema.KEY_SETUP_EE_CENTER,
+                    default=schema.DEFAULT_SETUP_EE_CENTER,
+                )
+            ).strip(),
             schema.KEY_SETUP_ATM_WAVELENGTH: atm_wavelength_quantity,
             schema.KEY_SETUP_ATM_PROFILES: atm_profiles_map,
             self.KEY_SETUP_LGS_R: lgs_r,
@@ -515,6 +523,7 @@ class BaseSimulation(Simulation, ABC):
             peak_method=str(setup_payload[schema.KEY_SETUP_PEAK_METHOD]).strip(),
             fwhm_summary=str(setup_payload[schema.KEY_SETUP_FWHM_SUMMARY]).strip(),
             ee_geometry=str(setup_payload[schema.KEY_SETUP_EE_GEOMETRY]).strip(),
+            ee_center=str(setup_payload[schema.KEY_SETUP_EE_CENTER]).strip(),
             atm_wavelength=require_quantity(setup_payload[schema.KEY_SETUP_ATM_WAVELENGTH], u.um, label=schema.KEY_SETUP_ATM_WAVELENGTH),
             atm_profiles=atm.parse_atm_profiles(setup_payload[schema.KEY_SETUP_ATM_PROFILES]),
             lgs_r=require_quantity(lgs_r_raw, u.arcsec, label=self.KEY_SETUP_LGS_R),

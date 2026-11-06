@@ -501,11 +501,17 @@ For `TiptopSimulation`, provide `specific_fields["config_path"]` and optionally
 - `peak_method: str | None = None`
 - `fwhm_summary: str | None = None`
 - `ee_geometry: str | None = None`
+- `ee_center: str | None = None`
 - `specific_fields: dict[str, object] = {}`
 
-Core typed setup fields are `ee_apertures`, `peak_method`, `fwhm_summary`, and `ee_geometry`. All other setup fields can be passed in `specific_fields`.
+Core typed setup fields are `ee_apertures`, `peak_method`, `fwhm_summary`, `ee_geometry`, and `ee_center`. All other setup fields can be passed in `specific_fields`.
 The shared peak, FWHM, and EE selectors control how persisted `/stats/sr`,
 `/stats/ee`, and `/stats/fwhm` are computed and interpreted across the dataset.
+
+Dataset initialization defaults to `ee_center="image"`. Loading a `/setup`
+without `ee_center` resolves it to `"peak"`. When checking a config against a
+dataset, an omitted `ee_center` uses the dataset's effective value.
+
 For TIPTOP-backed and Hybrid simulations, include
 `specific_fields["ngs_magnitude_zeropoint"]`.
 It is a zero-magnitude photon flux in `photon / (m2 s)`. The LO-WFS

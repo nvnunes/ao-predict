@@ -69,6 +69,8 @@ class SetupConfig:
             Defaults to ``geom`` when omitted.
         ee_geometry: Optional dataset-level EE aperture geometry selector.
             Defaults to ``ensquared`` when omitted.
+        ee_center: Optional dataset-level EE aperture center, either ``image``
+            or ``peak``. Defaults to ``image`` during dataset initialization.
         specific_fields: Additional simulation-specific passthrough fields.
     """
 
@@ -76,6 +78,7 @@ class SetupConfig:
     peak_method: str | None = None
     fwhm_summary: str | None = None
     ee_geometry: str | None = None
+    ee_center: str | None = None
     specific_fields: dict[str, object] = field(default_factory=dict)
 
 
@@ -251,18 +254,21 @@ def _prepare_options_payload(
     return prepare_options_payload_from_arrays(simulation, setup_payload, raw)
 
 
-def _prepare_dataset_payloads(request: InitDatasetRequest) -> _PreparedDatasetPayloads:
+def _prepare_dataset_payloads(
+    request: InitDatasetRequest,
+    setup_cfg: ConfigMapping,
+) -> _PreparedDatasetPayloads:
     """Prepare persisted payloads from an initialization request.
 
     Args:
         request: Initialization request payload.
+        setup_cfg: Normalized setup configuration mapping.
 
     Returns:
         Prepared ``/simulation``, ``/setup``, and ``/options`` payloads using
         the same lifecycle as dataset initialization.
     """
     simulation_cfg = normalize_simulation_config(request.simulation)
-    setup_cfg = normalize_setup_config(request.setup)
 
     simulation, simulation_payload = _prepare_simulation_payload(simulation_cfg)
     setup_payload = _prepare_setup_payload(simulation, setup_cfg)
@@ -412,7 +418,8 @@ def init_dataset(request: InitDatasetRequest) -> int:
     dataset_path = Path(request.dataset_path)
     dataset_path.parent.mkdir(parents=True, exist_ok=True)
 
-    payloads = _prepare_dataset_payloads(request)
+    setup_cfg = normalize_setup_config(request.setup)
+    payloads = _prepare_dataset_payloads(request, setup_cfg)
 
     store = SimulationStore(dataset_path)
     store.create(
@@ -428,6 +435,8 @@ def init_dataset(request: InitDatasetRequest) -> int:
 def validate_dataset_matches_request(dataset_path: str | Path, request: InitDatasetRequest) -> None:
     """Validate that an existing dataset matches an initialization request.
 
+    A request that omits ``ee_center`` uses the dataset's effective EE center.
+
     Args:
         dataset_path: Dataset path to validate.
         request: Initialization request defining the expected dataset
@@ -442,10 +451,13 @@ def validate_dataset_matches_request(dataset_path: str | Path, request: InitData
     """
     store = SimulationStore(dataset_path)
     store.validate_schema()
-    expected = _prepare_dataset_payloads(request)
+    saved_setup = store.read_setup()
+    setup_cfg = normalize_setup_config(request.setup)
+    setup_cfg.setdefault(schema.KEY_SETUP_EE_CENTER, saved_setup[schema.KEY_SETUP_EE_CENTER])
+    expected = _prepare_dataset_payloads(request, setup_cfg)
     mismatches = (
         _payload_mismatches(expected.simulation, store.read_simulation(), prefix="/simulation")
-        + _payload_mismatches(expected.setup, store.read_setup(), prefix="/setup")
+        + _payload_mismatches(expected.setup, saved_setup, prefix="/setup")
         + _payload_mismatches(expected.options, store.read_options(), prefix="/options")
     )
     if mismatches:

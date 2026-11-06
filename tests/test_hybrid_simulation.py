@@ -1023,6 +1023,7 @@ def _setup_payload() -> dict[str, object]:
         "peak_method": "gaussian_fit",
         "fwhm_summary": "geom",
         "ee_geometry": "ensquared",
+        "ee_center": "image",
         "atm_wavelength": 0.5 * u.um,
         "atm_profiles": {
             "0": {

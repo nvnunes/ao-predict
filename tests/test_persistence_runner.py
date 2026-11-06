@@ -195,6 +195,7 @@ def _setup_obj() -> SimulationSetup:
         peak_method=str(setup["peak_method"]),
         fwhm_summary=str(setup["fwhm_summary"]),
         ee_geometry=str(setup["ee_geometry"]),
+        ee_center=schema.DEFAULT_SETUP_EE_CENTER,
         atm_wavelength=setup["atm_wavelength"],
         atm_profiles=dict(setup["atm_profiles"]),
         lgs_r=setup["lgs_r"],
@@ -375,6 +376,7 @@ def test_populate_result_stats_passes_runtime_options_to_stats(monkeypatch):
         psfs,
         metadata,
         *,
+        ee_center,
         ee_apertures,
         peak_method,
         fwhm_summary,
@@ -386,6 +388,7 @@ def test_populate_result_stats_passes_runtime_options_to_stats(monkeypatch):
         observed_options.append(
             {
                 schema.KEY_OPTION_WAVELENGTH: metadata.wavelength,
+                schema.KEY_SETUP_EE_CENTER: ee_center,
                 schema.KEY_SETUP_EE_GEOMETRY: ee_geometry,
             }
         )
@@ -401,6 +404,7 @@ def test_populate_result_stats_passes_runtime_options_to_stats(monkeypatch):
 
     assert len(observed_options) == 1
     assert observed_options[0][schema.KEY_OPTION_WAVELENGTH].to_value(u.um) == pytest.approx(1.65)
+    assert observed_options[0][schema.KEY_SETUP_EE_CENTER] == "image"
     assert observed_options[0][schema.KEY_SETUP_EE_GEOMETRY] == schema.DEFAULT_SETUP_EE_GEOMETRY
 
 
@@ -934,6 +938,7 @@ def test_runner_with_simulation_interface(tmp_path):
                 peak_method=str(setup_payload["peak_method"]),
                 fwhm_summary=str(setup_payload["fwhm_summary"]),
                 ee_geometry=str(setup_payload["ee_geometry"]),
+                ee_center=setup_payload["ee_center"],
                 atm_wavelength=setup_payload["atm_wavelength"],
                 atm_profiles=dict(setup_payload["atm_profiles"]),
                 lgs_r=setup_payload["lgs_r"],
@@ -948,6 +953,7 @@ def test_runner_with_simulation_interface(tmp_path):
                 peak_method=str(setup_payload["peak_method"]),
                 fwhm_summary=str(setup_payload["fwhm_summary"]),
                 ee_geometry=str(setup_payload["ee_geometry"]),
+                ee_center=setup_payload["ee_center"],
                 atm_wavelength=setup_payload["atm_wavelength"],
                 atm_profiles=dict(setup_payload["atm_profiles"]),
                 lgs_r=setup_payload["lgs_r"],
@@ -1264,6 +1270,7 @@ def test_runner_with_simulation_interface_filtered_indexes(tmp_path):
                 peak_method=str(setup_payload["peak_method"]),
                 fwhm_summary=str(setup_payload["fwhm_summary"]),
                 ee_geometry=str(setup_payload["ee_geometry"]),
+                ee_center=setup_payload["ee_center"],
                 atm_wavelength=setup_payload["atm_wavelength"],
                 atm_profiles=dict(setup_payload["atm_profiles"]),
                 lgs_r=setup_payload["lgs_r"],
@@ -1353,6 +1360,7 @@ def test_runner_persists_declared_extra_stats(tmp_path):
                 peak_method=str(setup_payload["peak_method"]),
                 fwhm_summary=str(setup_payload["fwhm_summary"]),
                 ee_geometry=str(setup_payload["ee_geometry"]),
+                ee_center=setup_payload["ee_center"],
                 atm_wavelength=setup_payload["atm_wavelength"],
                 atm_profiles=dict(setup_payload["atm_profiles"]),
                 lgs_r=setup_payload["lgs_r"],

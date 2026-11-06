@@ -408,10 +408,11 @@ enforce the same persisted rule.
 
 ## Persisted Simulation Contract
 
-Dataset creation and loading both require the complete current persisted
-contract. New datasets write `peak_method` for peak estimation. AO Predict
-requires supported field names, explicit unit attributes, and Hybrid AO
-PSF-format interpolation artifacts for execution. The Hybrid
+Dataset initialization writes `peak_method` for peak estimation and
+`ee_center` for EE aperture placement. Loading a `/setup` without
+`ee_center` resolves it to `peak`. AO Predict requires supported field names,
+explicit unit attributes, and Hybrid AO PSF-format interpolation artifacts
+for execution. The Hybrid
 adapter's absent `non_psd_policy` field is read as its `error` default; this
 does not change existing field meanings. Completed datasets remain readable
 without loading referenced interpolation files. Other contract changes require

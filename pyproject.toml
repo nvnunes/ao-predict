@@ -13,7 +13,7 @@ authors = [
     {name = "Nelson V. Nunes", email = "nvnunes@yorku.ca"},
 ]
 dependencies = [
-    "ao-stats>=0.1.0",
+    "ao-stats>=0.1.1",
     "astropy>=7.0.0",
     "numpy>=2.2.0",
     "h5py>=3.11.0",

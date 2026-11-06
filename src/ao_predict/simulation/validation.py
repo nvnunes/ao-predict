@@ -216,6 +216,7 @@ def upgrade_setup_peak_method(setup: Mapping[str, Any]) -> dict[str, Any]:
 def resolve_setup_payload_for_load(setup: Mapping[str, Any]) -> dict[str, Any]:
     """Upgrade and validate a persisted setup payload for runtime use."""
     resolved = upgrade_setup_peak_method(setup)
+    resolved.setdefault(schema.KEY_SETUP_EE_CENTER, schema.STATS_EE_CENTER_PEAK)
     validate_setup_payload_core(resolved)
     return resolved
 
@@ -317,6 +318,14 @@ def validate_setup_payload_core(setup: Mapping[str, Any]) -> None:
         raise ValueError(
             "setup['ee_geometry'] must be one of: "
             + ", ".join(schema.SETUP_STATS_EE_GEOMETRIES)
+            + "."
+        )
+
+    ee_center = str(setup[schema.KEY_SETUP_EE_CENTER]).strip()
+    if ee_center not in schema.SETUP_STATS_EE_CENTERS:
+        raise ValueError(
+            "setup['ee_center'] must be one of: "
+            + ", ".join(schema.SETUP_STATS_EE_CENTERS)
             + "."
         )
 

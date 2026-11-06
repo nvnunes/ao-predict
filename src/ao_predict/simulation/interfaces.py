@@ -38,6 +38,7 @@ class SimulationSetup:
             enclosed-energy calculations.
         fwhm_summary: Dataset-level FWHM contour summary selector.
         ee_geometry: Dataset-level EE aperture geometry selector.
+        ee_center: Dataset-level EE aperture center resolved from the setup.
         atm_wavelength: Atmospheric reference wavelength (um).
         atm_profiles: Atmospheric profile mapping keyed by profile id.
         lgs_r: Invariant LGS radial coordinates (arcsec).
@@ -50,6 +51,7 @@ class SimulationSetup:
     peak_method: str
     fwhm_summary: str
     ee_geometry: str
+    ee_center: str
     atm_wavelength: u.Quantity
     atm_profiles: dict[int, dict[str, Any]]
     lgs_r: u.Quantity

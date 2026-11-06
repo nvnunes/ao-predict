@@ -17,8 +17,10 @@ from ..simulation.validation import (
     normalize_meta_fields,
     resolve_setup_payload_for_load,
     resolve_simulation_payload_for_load,
+    upgrade_setup_peak_method,
     validate_atm_profile_ids,
     validate_options_payload_core,
+    validate_setup_payload_core,
     validate_successful_result,
     validate_simulation_payload_core,
 )
@@ -728,7 +730,11 @@ class SimulationStore:
 
         validate_simulation_payload_core(simulation)
         dtype = real_dtype(simulation.get(schema.KEY_SIMULATION_PRECISION, "float32"))
-        setup = resolve_setup_payload_for_load(setup)
+        setup = upgrade_setup_peak_method(setup)
+        setup[schema.KEY_SETUP_EE_CENTER] = str(
+            setup.get(schema.KEY_SETUP_EE_CENTER, schema.DEFAULT_SETUP_EE_CENTER)
+        ).strip()
+        validate_setup_payload_core(setup)
         zeropoint_key = schema.KEY_SETUP_NGS_MAGNITUDE_ZEROPOINT
         setup[zeropoint_key] = require_quantity(
             setup[zeropoint_key],

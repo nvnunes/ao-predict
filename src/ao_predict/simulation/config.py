@@ -669,6 +669,10 @@ def normalize_setup_config(setup: object) -> dict[str, object]:
             ee_geometry = getattr(setup, schema.KEY_SETUP_EE_GEOMETRY)
             if ee_geometry is not None:
                 out[schema.KEY_SETUP_EE_GEOMETRY] = ee_geometry
+        if hasattr(setup, schema.KEY_SETUP_EE_CENTER):
+            ee_center = getattr(setup, schema.KEY_SETUP_EE_CENTER)
+            if ee_center is not None:
+                out[schema.KEY_SETUP_EE_CENTER] = ee_center
         sim_fields = getattr(setup, schema.KEY_CFG_SETUP_SPECIFIC_FIELDS, {})
         if isinstance(sim_fields, Mapping):
             require_lowercase_mapping_keys(
