@@ -36,6 +36,9 @@ _GENERATED_FIELDS = frozenset(
 )
 
 
+# Generation configuration and request
+
+
 @dataclass(frozen=True)
 class GenerateOptionsConfig:
     """Configuration for a reproducible option population.
@@ -70,6 +73,9 @@ class GenerateOptionsRequest:
     simulation: SimulationConfig | Mapping[str, object]
     setup: SetupConfig | Mapping[str, object]
     options: GenerateOptionsConfig
+
+
+# Sampler request preparation
 
 
 def _freeze(value: object) -> object:
@@ -158,61 +164,6 @@ def _resolve_sampler(name: str) -> type[Sampler]:
     return sampler_class
 
 
-def _validate_output(request: SamplerRequest, result: object) -> dict[str, np.ndarray | u.Quantity]:
-    if not isinstance(result, Mapping):
-        raise ValueError(f"Sampler for '{request.owner_field}' must return a field mapping.")
-    if set(result) != set(request.fields):
-        raise ValueError(
-            f"Sampler for '{request.owner_field}' returned fields {sorted(result)}; "
-            f"expected {sorted(request.fields)}."
-        )
-    out: dict[str, np.ndarray | u.Quantity] = {}
-    for field_name in request.fields:
-        value = result[field_name]
-        canonical = schema.OPTION_FIELD_UNITS.get(field_name)
-        if canonical is not None:
-            if not isinstance(value, u.Quantity):
-                raise ValueError(f"Sampler output '{field_name}' must be an Astropy Quantity.")
-            try:
-                converted = value.to(canonical)
-            except u.UnitConversionError as exc:
-                raise ValueError(f"Sampler output '{field_name}' has an incompatible unit.") from exc
-            array = np.asarray(converted.value)
-            output: np.ndarray | u.Quantity = converted
-        else:
-            if not isinstance(value, np.ndarray):
-                raise ValueError(f"Sampler output '{field_name}' must be a NumPy array.")
-            array = value
-            output = value
-        expected = _field_shape(field_name, request.count, request.num_ngs, request.setup)
-        if array.shape != expected:
-            raise ValueError(f"Sampler output '{field_name}' must have shape {expected}, got {array.shape}.")
-        if not np.issubdtype(array.dtype, np.number) or not np.all(np.isfinite(array)):
-            raise ValueError(f"Sampler output '{field_name}' must contain finite numeric values.")
-        out[field_name] = output
-    return out
-
-
-def _broadcast_arrays(config: GenerateOptionsConfig, generated: Mapping[str, object]) -> dict[str, object]:
-    scalars, ngs = _parse_broadcast_defaults(config.broadcast)
-    out: dict[str, object] = {}
-    for name, value in scalars.items():
-        if name in generated:
-            raise ValueError(f"options.broadcast.{name} conflicts with options.generate.fields.{name}.")
-        array = np.full((config.count,), value)
-        unit = schema.OPTION_FIELD_UNITS.get(name)
-        out[name] = array * unit if unit is not None else array
-    if ngs:
-        if set(ngs) & set(generated):
-            raise ValueError("options.broadcast.ngs conflicts with generated NGS fields.")
-        for name, values in ngs.items():
-            if len(values) != config.num_ngs:
-                raise ValueError(f"options.broadcast.{name} must have num_ngs={config.num_ngs} slots.")
-            array = np.broadcast_to(values, (config.count, config.num_ngs)).copy()
-            out[name] = array * schema.OPTION_FIELD_UNITS[name]
-    return out
-
-
 def _resolved_requests(
     config: GenerateOptionsConfig,
     simulation_payload: Mapping[str, object],
@@ -292,6 +243,64 @@ def external_sampler_fields(config: GenerateOptionsConfig) -> frozenset[str]:
     )
 
 
+# Option generation and assembly
+
+
+def _validate_output(request: SamplerRequest, result: object) -> dict[str, np.ndarray | u.Quantity]:
+    if not isinstance(result, Mapping):
+        raise ValueError(f"Sampler for '{request.owner_field}' must return a field mapping.")
+    if set(result) != set(request.fields):
+        raise ValueError(
+            f"Sampler for '{request.owner_field}' returned fields {sorted(result)}; "
+            f"expected {sorted(request.fields)}."
+        )
+    out: dict[str, np.ndarray | u.Quantity] = {}
+    for field_name in request.fields:
+        value = result[field_name]
+        canonical = schema.OPTION_FIELD_UNITS.get(field_name)
+        if canonical is not None:
+            if not isinstance(value, u.Quantity):
+                raise ValueError(f"Sampler output '{field_name}' must be an Astropy Quantity.")
+            try:
+                converted = value.to(canonical)
+            except u.UnitConversionError as exc:
+                raise ValueError(f"Sampler output '{field_name}' has an incompatible unit.") from exc
+            array = np.asarray(converted.value)
+            output: np.ndarray | u.Quantity = converted
+        else:
+            if not isinstance(value, np.ndarray):
+                raise ValueError(f"Sampler output '{field_name}' must be a NumPy array.")
+            array = value
+            output = value
+        expected = _field_shape(field_name, request.count, request.num_ngs, request.setup)
+        if array.shape != expected:
+            raise ValueError(f"Sampler output '{field_name}' must have shape {expected}, got {array.shape}.")
+        if not np.issubdtype(array.dtype, np.number) or not np.all(np.isfinite(array)):
+            raise ValueError(f"Sampler output '{field_name}' must contain finite numeric values.")
+        out[field_name] = output
+    return out
+
+
+def _broadcast_arrays(config: GenerateOptionsConfig, generated: Mapping[str, object]) -> dict[str, object]:
+    scalars, ngs = _parse_broadcast_defaults(config.broadcast)
+    out: dict[str, object] = {}
+    for name, value in scalars.items():
+        if name in generated:
+            raise ValueError(f"options.broadcast.{name} conflicts with options.generate.fields.{name}.")
+        array = np.full((config.count,), value)
+        unit = schema.OPTION_FIELD_UNITS.get(name)
+        out[name] = array * unit if unit is not None else array
+    if ngs:
+        if set(ngs) & set(generated):
+            raise ValueError("options.broadcast.ngs conflicts with generated NGS fields.")
+        for name, values in ngs.items():
+            if len(values) != config.num_ngs:
+                raise ValueError(f"options.broadcast.{name} must have num_ngs={config.num_ngs} slots.")
+            array = np.broadcast_to(values, (config.count, config.num_ngs)).copy()
+            out[name] = array * schema.OPTION_FIELD_UNITS[name]
+    return out
+
+
 def prepare_generated_options(
     simulation: Simulation,
     simulation_payload: Mapping[str, object],
@@ -326,6 +335,9 @@ def generate_options(request: GenerateOptionsRequest) -> OptionsConfig:
     simulation, simulation_payload = _prepare_simulation_payload(normalize_simulation_config(request.simulation))
     setup_payload = _prepare_setup_payload(simulation, normalize_setup_config(request.setup))
     return prepare_generated_options(simulation, simulation_payload, setup_payload, request.options)
+
+
+# Built-in samplers
 
 
 class UniformSampler(Sampler):

@@ -527,29 +527,7 @@ def _build_run_identity(
     }
 
 
-def _history_mapping(record: TrainingValidationRecord) -> dict[str, object]:
-    return asdict(record)
-
-
-def _history_record(value: object) -> TrainingValidationRecord:
-    if not isinstance(value, dict):
-        # This is malformed persisted state, rather than a caller type error.
-        raise ValueError(  # noqa: TRY004
-            "Recovery validation history entries must be mappings."
-        )
-    if set(value) != _HISTORY_KEYS:
-        raise ValueError("Recovery validation history fields are invalid.")
-    return TrainingValidationRecord(
-        validation_check=int(value["validation_check"]),
-        training_epochs=float(value["training_epochs"]),
-        optimizer_updates=int(value["optimizer_updates"]),
-        training_examples_seen=int(value["training_examples_seen"]),
-        training_objective=float(value["training_objective"]),
-        validation_objective=float(value["validation_objective"]),
-        validation_error_percent=float(value["validation_error_percent"]),
-        learning_rate_before=float(value["learning_rate_before"]),
-        learning_rate_after=float(value["learning_rate_after"]),
-    )
+# Training logs and model metadata
 
 
 def _write_log(handle: TextIO, line: str = "") -> None:
@@ -630,6 +608,9 @@ def _model_metadata(
     }
 
 
+# Objective, validation, and warmup
+
+
 def _relative_residuals(
     predictions: torch.Tensor,
     targets: torch.Tensor,
@@ -685,75 +666,82 @@ def _warmup_learning_rate(request: TrainModelRequest, update: int, total: int) -
     return float(request.base_learning_rate) * scale
 
 
-# Recovery contract validation
+# Recovery serialization and validation
+
+
+def _history_mapping(record: TrainingValidationRecord) -> dict[str, object]:
+    return asdict(record)
+
+
+def _history_record(value: object) -> TrainingValidationRecord:
+    if not isinstance(value, dict):
+        # This is malformed persisted state, rather than a caller type error.
+        raise ValueError(  # noqa: TRY004
+            "Recovery validation history entries must be mappings."
+        )
+    if set(value) != _HISTORY_KEYS:
+        raise ValueError("Recovery validation history fields are invalid.")
+    return TrainingValidationRecord(
+        validation_check=int(value["validation_check"]),
+        training_epochs=float(value["training_epochs"]),
+        optimizer_updates=int(value["optimizer_updates"]),
+        training_examples_seen=int(value["training_examples_seen"]),
+        training_objective=float(value["training_objective"]),
+        validation_objective=float(value["validation_objective"]),
+        validation_error_percent=float(value["validation_error_percent"]),
+        learning_rate_before=float(value["learning_rate_before"]),
+        learning_rate_after=float(value["learning_rate_after"]),
+    )
 
 
 def _recovery_mapping(
-    *,
-    identity: dict[str, object],
-    runtime: dict[str, object],
-    training_seed: int,
-    membership: _SplitMembership,
-    standardization: _StandardizationState,
-    model: torch.nn.Module,
-    best_model_state: Mapping[str, torch.Tensor],
-    optimizer: torch.optim.Optimizer,
-    scheduler: torch.optim.lr_scheduler.ReduceLROnPlateau,
-    stream: _ShuffledBatchStream,
-    initialization_generator_state: torch.Tensor,
-    optimizer_updates: int,
-    training_examples_seen: int,
-    validation_checks: int,
-    validation_exposure: int,
-    interval_loss_total: float,
-    interval_loss_examples: int,
-    best_validation_check: int,
-    best_validation_objective: float,
-    best_model_validation_error_percent: float,
-    scheduler_has_reduced: bool,
-    early_stopping_reference: float | None,
-    early_stopping_bad_checks: int,
-    history: list[TrainingValidationRecord],
-    termination_reason: TrainingTerminationReason | None,
+    run: _ResolvedTrainingRun,
+    runtime: _TrainingRuntime,
+    progress: _TrainingProgress,
 ) -> dict[str, object]:
+    """Serialize run, runtime, and progress state at a validation boundary."""
+
+    termination_reason = progress.termination_reason
     terminal = termination_reason is not None
     return {
         "kind": RECOVERY_KIND,
         "version": RECOVERY_VERSION,
         "producer_version": producer_version(),
-        "run_identity": identity,
-        "run_identity_sha256": _canonical_sha256(identity),
-        "runtime": runtime,
-        "training_seed": training_seed,
-        "split_seed": membership.split_seed,
+        "run_identity": run.identity,
+        "run_identity_sha256": _canonical_sha256(run.identity),
+        "runtime": run.runtime_identity,
+        "training_seed": run.training_seed,
+        "split_seed": run.membership.split_seed,
         "validation_mask": (
             None
-            if membership.validation_mask is None
-            else torch.from_numpy(np.asarray(membership.validation_mask).copy())
+            if run.membership.validation_mask is None
+            else torch.from_numpy(np.asarray(run.membership.validation_mask).copy())
         ),
-        "standardization": standardization.as_mapping(),
-        "model_state_dict": cpu_state_dict(model),
+        "standardization": run.standardization.as_mapping(),
+        "model_state_dict": cpu_state_dict(runtime.model),
         "best_model_state_dict": {
             name: value.detach().cpu().clone()
-            for name, value in best_model_state.items()
+            for name, value in progress.best_model_state.items()
         },
-        "optimizer_state_dict": optimizer.state_dict(),
-        "scheduler_state_dict": scheduler.state_dict(),
-        "batch_stream_state": stream.state_dict(),
-        "initialization_generator_state": initialization_generator_state.cpu().clone(),
-        "optimizer_updates": optimizer_updates,
-        "training_examples_seen": training_examples_seen,
-        "validation_checks": validation_checks,
-        "validation_exposure": validation_exposure,
-        "interval_loss_total": interval_loss_total,
-        "interval_loss_examples": interval_loss_examples,
-        "best_validation_check": best_validation_check,
-        "best_validation_objective": best_validation_objective,
-        "best_model_validation_error_percent": best_model_validation_error_percent,
-        "scheduler_has_reduced": scheduler_has_reduced,
-        "early_stopping_reference": early_stopping_reference,
-        "early_stopping_bad_checks": early_stopping_bad_checks,
-        "history": [_history_mapping(record) for record in history],
+        "optimizer_state_dict": runtime.optimizer.state_dict(),
+        "scheduler_state_dict": runtime.scheduler.state_dict(),
+        "batch_stream_state": runtime.stream.state_dict(),
+        "initialization_generator_state": (
+            runtime.initialization_generator_state.cpu().clone()
+        ),
+        "optimizer_updates": progress.optimizer_updates,
+        "training_examples_seen": progress.training_examples_seen,
+        "validation_checks": progress.validation_checks,
+        "validation_exposure": progress.validation_exposure,
+        "interval_loss_total": progress.interval_loss_total,
+        "interval_loss_examples": progress.interval_loss_examples,
+        "best_validation_check": progress.best_validation_check,
+        "best_validation_objective": progress.best_validation_objective,
+        "best_model_validation_error_percent": progress.best_model_validation_error_percent,
+        "scheduler_has_reduced": progress.scheduler_has_reduced,
+        "early_stopping_reference": progress.early_stopping_reference,
+        "early_stopping_bad_checks": progress.early_stopping_bad_checks,
+        "history": [_history_mapping(record) for record in progress.history],
         "terminal": terminal,
         "termination_reason": None
         if termination_reason is None
@@ -941,39 +929,6 @@ def _recovery_mismatches(
         else:
             mismatches.append("runtime identity is invalid")
     return mismatches
-
-
-def _build_result(
-    paths: _TrainingPaths,
-    termination_reason: TrainingTerminationReason,
-    training_seed: int,
-    membership: _SplitMembership,
-    optimizer_updates: int,
-    training_examples_seen: int,
-    validation_checks: int,
-    best_validation_check: int,
-    best_validation_objective: float,
-    best_model_validation_error_percent: float,
-    history: list[TrainingValidationRecord],
-) -> TrainModelResult:
-    validation_mask = membership.validation_mask
-    if validation_mask is not None:
-        validation_mask = validation_mask.copy()
-        validation_mask.setflags(write=False)
-    return TrainModelResult(
-        model_path=paths.model_path,
-        termination_reason=termination_reason,
-        training_seed=training_seed,
-        split_seed=membership.split_seed,
-        validation_mask=validation_mask,
-        optimizer_updates=optimizer_updates,
-        training_examples_seen=training_examples_seen,
-        validation_checks=validation_checks,
-        best_validation_check=best_validation_check,
-        best_validation_objective=best_validation_objective,
-        best_model_validation_error_percent=best_model_validation_error_percent,
-        validation_history=tuple(history),
-    )
 
 
 # Training lifecycle phases
@@ -1303,265 +1258,271 @@ def _restore_training_progress(
     return progress
 
 
+def _optimize_batch(
+    request: TrainModelRequest,
+    run: _ResolvedTrainingRun,
+    runtime: _TrainingRuntime,
+    progress: _TrainingProgress,
+    device: torch.device,
+) -> None:
+    """Fit one batch and accumulate exposure and loss for the next validation."""
+    update = progress.optimizer_updates + 1
+    if update <= run.warmup_updates:
+        learning_rate = _warmup_learning_rate(
+            request,
+            update,
+            run.warmup_updates,
+        )
+        for group in runtime.optimizer.param_groups:
+            group["lr"] = learning_rate
+
+    batch_indexes = runtime.stream.next()
+    features, targets = run.training_examples.gather(batch_indexes)
+    feature_tensor = torch.from_numpy(features).to(device)
+    target_tensor = torch.from_numpy(targets).to(device)
+    runtime.model.train()
+    runtime.optimizer.zero_grad(set_to_none=True)
+    residuals = _relative_residuals(
+        runtime.model(feature_tensor),
+        target_tensor,
+        runtime.target_means,
+        runtime.target_scales,
+    )
+    loss = torch.mean(torch.square(residuals))
+    if loss.ndim != 0 or not torch.isfinite(loss):
+        raise ValueError("The training objective must be a finite scalar.")
+    loss.backward()
+    runtime.optimizer.step()
+
+    batch_examples = int(batch_indexes.size)
+    progress.optimizer_updates = update
+    progress.training_examples_seen += batch_examples
+    progress.validation_exposure += batch_examples
+    progress.interval_loss_total += float(loss.item()) * batch_examples
+    progress.interval_loss_examples += batch_examples
+
+
+def _validate_and_update_progress(
+    request: TrainModelRequest,
+    run: _ResolvedTrainingRun,
+    runtime: _TrainingRuntime,
+    progress: _TrainingProgress,
+    device: torch.device,
+    validation_batch_size: int,
+) -> TrainingValidationRecord:
+    """Validate the full partition and update state before saving recovery."""
+    progress.validation_checks += 1
+    training_objective = (
+        progress.interval_loss_total / progress.interval_loss_examples
+    )
+    validation_objective, validation_error_percent = _complete_validation(
+        runtime.model,
+        run.validation_examples,
+        validation_batch_size,
+        device,
+        runtime.target_means,
+        runtime.target_scales,
+    )
+    if validation_objective < progress.best_validation_objective:
+        progress.best_validation_objective = validation_objective
+        progress.best_model_validation_error_percent = validation_error_percent
+        progress.best_validation_check = progress.validation_checks
+        progress.best_model_state = cpu_state_dict(runtime.model)
+
+    learning_rate_before = float(runtime.optimizer.param_groups[0]["lr"])
+    scheduler_eligible = progress.optimizer_updates >= run.warmup_updates
+    if scheduler_eligible:
+        runtime.scheduler.step(validation_objective)
+    learning_rate_after = float(runtime.optimizer.param_groups[0]["lr"])
+    if learning_rate_after < learning_rate_before:
+        progress.scheduler_has_reduced = True
+
+    early_stopping_eligible = (
+        progress.optimizer_updates >= run.minimum_training_updates
+        and progress.scheduler_has_reduced
+    )
+    early_stopping_triggered = False
+    if early_stopping_eligible:
+        if progress.early_stopping_reference is None:
+            progress.early_stopping_reference = validation_error_percent
+            progress.early_stopping_bad_checks = 0
+        else:
+            decrease = progress.early_stopping_reference - validation_error_percent
+            threshold = float(
+                request.early_stopping_minimum_improvement_percent
+            )
+            improved = (
+                validation_error_percent < progress.early_stopping_reference
+                if threshold == 0.0
+                else decrease >= threshold
+            )
+            if improved:
+                progress.early_stopping_reference = validation_error_percent
+                progress.early_stopping_bad_checks = 0
+            else:
+                progress.early_stopping_bad_checks += 1
+                early_stopping_triggered = (
+                    progress.early_stopping_bad_checks
+                    >= request.early_stopping_patience_checks
+                )
+
+    record = TrainingValidationRecord(
+        validation_check=progress.validation_checks,
+        training_epochs=progress.training_examples_seen / run.training_example_count,
+        optimizer_updates=progress.optimizer_updates,
+        training_examples_seen=progress.training_examples_seen,
+        training_objective=training_objective,
+        validation_objective=validation_objective,
+        validation_error_percent=validation_error_percent,
+        learning_rate_before=learning_rate_before,
+        learning_rate_after=learning_rate_after,
+    )
+    progress.history.append(record)
+    progress.validation_exposure = 0
+    progress.interval_loss_total = 0.0
+    progress.interval_loss_examples = 0
+    if early_stopping_triggered:
+        progress.termination_reason = TrainingTerminationReason.EARLY_STOPPING
+    elif progress.validation_checks >= request.maximum_validation_checks:
+        progress.termination_reason = (
+            TrainingTerminationReason.MAXIMUM_VALIDATION_CHECKS
+        )
+    return record
+
+
+def _publish_best_model(
+    request: TrainModelRequest,
+    paths: _TrainingPaths,
+    prepared_training: _PreparedModelTrainingData,
+    run: _ResolvedTrainingRun,
+    progress: _TrainingProgress,
+    log: TextIO,
+) -> None:
+    """Publish the selected model and write the final entries in the log."""
+    termination_reason = progress.termination_reason
+    assert termination_reason is not None
+    if not progress.best_model_state:
+        raise RuntimeError("Training terminated without a best model state.")
+    package_metadata = _model_metadata(
+        request,
+        prepared_training,
+        run.standardization,
+        run.training_seed,
+    )
+    publish_model_package(
+        paths,
+        package_metadata,
+        progress.best_model_state,
+    )
+    package_sha256 = sha256_file(paths.package_path)
+    _write_log(log, f"completed: {_utc_now()}")
+    _write_log(log, f"termination_reason: {termination_reason.value}")
+    _write_log(log, f"best_validation_check: {progress.best_validation_check}")
+    best_record = progress.history[progress.best_validation_check - 1]
+    _write_log(
+        log,
+        f"best_training_epochs: {best_record.training_epochs:.17g}",
+    )
+    _write_log(
+        log, f"best_validation_objective: {progress.best_validation_objective:.17g}"
+    )
+    _write_log(
+        log,
+        "best_model_validation_error_percent: "
+        f"{progress.best_model_validation_error_percent:.17g}",
+    )
+    _write_log(log, f"model_package: {paths.package_path.name}")
+    _write_log(log, f"model_package_sha256: {package_sha256}")
+
+
+def _build_result(
+    paths: _TrainingPaths,
+    run: _ResolvedTrainingRun,
+    progress: _TrainingProgress,
+) -> TrainModelResult:
+    """Return the terminal state without exposing mutable training state."""
+    termination_reason = progress.termination_reason
+    assert termination_reason is not None
+    validation_mask = run.membership.validation_mask
+    if validation_mask is not None:
+        validation_mask = validation_mask.copy()
+        validation_mask.setflags(write=False)
+    return TrainModelResult(
+        model_path=paths.model_path,
+        termination_reason=termination_reason,
+        training_seed=run.training_seed,
+        split_seed=run.membership.split_seed,
+        validation_mask=validation_mask,
+        optimizer_updates=progress.optimizer_updates,
+        training_examples_seen=progress.training_examples_seen,
+        validation_checks=progress.validation_checks,
+        best_validation_check=progress.best_validation_check,
+        best_validation_objective=progress.best_validation_objective,
+        best_model_validation_error_percent=progress.best_model_validation_error_percent,
+        validation_history=tuple(progress.history),
+    )
+
+
 def _fit_and_publish(
     request: TrainModelRequest,
     paths: _TrainingPaths,
     prepared_training: _PreparedModelTrainingData,
     run: _ResolvedTrainingRun,
-    training_runtime: _TrainingRuntime,
+    runtime: _TrainingRuntime,
     progress: _TrainingProgress,
-    recovery: dict[str, object] | None,
     *,
+    resuming: bool,
     device: torch.device,
     validation_batch_size: int,
 ) -> TrainModelResult:
     """Fit to termination, publish the best model, and finalize recovery."""
 
-    training_seed = run.training_seed
-    membership = run.membership
-    standardization = run.standardization
-    training_examples = run.training_examples
-    validation_examples = run.validation_examples
-    training_example_count = run.training_example_count
-    warmup_updates = run.warmup_updates
-    minimum_training_updates = run.minimum_training_updates
-    validation_exposure_threshold = run.validation_exposure_threshold
-    identity = run.identity
-    runtime = run.runtime_identity
-    model = training_runtime.model
-    optimizer = training_runtime.optimizer
-    scheduler = training_runtime.scheduler
-    stream = training_runtime.stream
-    initialization_generator_state = training_runtime.initialization_generator_state
-    target_means = training_runtime.target_means
-    target_scales = training_runtime.target_scales
-    optimizer_updates = progress.optimizer_updates
-    training_examples_seen = progress.training_examples_seen
-    validation_checks = progress.validation_checks
-    validation_exposure = progress.validation_exposure
-    interval_loss_total = progress.interval_loss_total
-    interval_loss_examples = progress.interval_loss_examples
-    best_validation_check = progress.best_validation_check
-    best_validation_objective = progress.best_validation_objective
-    best_model_validation_error_percent = progress.best_model_validation_error_percent
-    best_model_state = progress.best_model_state
-    scheduler_has_reduced = progress.scheduler_has_reduced
-    early_stopping_reference = progress.early_stopping_reference
-    early_stopping_bad_checks = progress.early_stopping_bad_checks
-    history = progress.history
-    termination_reason = progress.termination_reason
-
-    log_mode = "a" if recovery is not None else "x"
+    log_mode = "a" if resuming else "x"
     with paths.log_path.open(log_mode, encoding="utf-8") as log:
-        if recovery is None:
-            _write_initial_log(log, paths, identity, runtime)
+        if not resuming:
+            _write_initial_log(log, paths, run.identity, run.runtime_identity)
         else:
             _write_log(log)
             _write_log(log, f"continuation: {_utc_now()}")
-            _write_log(log, f"resuming_after_validation_check: {validation_checks}")
+            _write_log(
+                log, f"resuming_after_validation_check: {progress.validation_checks}"
+            )
         try:
-            while termination_reason is None:
-                update = optimizer_updates + 1
-                if update <= warmup_updates:
-                    learning_rate = _warmup_learning_rate(
-                        request,
-                        update,
-                        warmup_updates,
-                    )
-                    for group in optimizer.param_groups:
-                        group["lr"] = learning_rate
-
-                batch_indexes = stream.next()
-                features, targets = training_examples.gather(batch_indexes)
-                feature_tensor = torch.from_numpy(features).to(device)
-                target_tensor = torch.from_numpy(targets).to(device)
-                model.train()
-                optimizer.zero_grad(set_to_none=True)
-                residuals = _relative_residuals(
-                    model(feature_tensor),
-                    target_tensor,
-                    target_means,
-                    target_scales,
-                )
-                loss = torch.mean(torch.square(residuals))
-                if loss.ndim != 0 or not torch.isfinite(loss):
-                    raise ValueError("The training objective must be a finite scalar.")
-                loss.backward()
-                optimizer.step()
-
-                batch_examples = int(batch_indexes.size)
-                optimizer_updates = update
-                training_examples_seen += batch_examples
-                validation_exposure += batch_examples
-                interval_loss_total += float(loss.item()) * batch_examples
-                interval_loss_examples += batch_examples
-
-                if validation_exposure < validation_exposure_threshold:
+            while progress.termination_reason is None:
+                _optimize_batch(request, run, runtime, progress, device)
+                if progress.validation_exposure < run.validation_exposure_threshold:
                     continue
-                validation_checks += 1
-                training_objective = interval_loss_total / interval_loss_examples
-                validation_objective, validation_error_percent = _complete_validation(
-                    model,
-                    validation_examples,
-                    validation_batch_size,
+
+                record = _validate_and_update_progress(
+                    request,
+                    run,
+                    runtime,
+                    progress,
                     device,
-                    target_means,
-                    target_scales,
+                    validation_batch_size,
                 )
-                if validation_objective < best_validation_objective:
-                    best_validation_objective = validation_objective
-                    best_model_validation_error_percent = validation_error_percent
-                    best_validation_check = validation_checks
-                    best_model_state = cpu_state_dict(model)
-
-                learning_rate_before = float(optimizer.param_groups[0]["lr"])
-                scheduler_eligible = optimizer_updates >= warmup_updates
-                if scheduler_eligible:
-                    scheduler.step(validation_objective)
-                learning_rate_after = float(optimizer.param_groups[0]["lr"])
-                if learning_rate_after < learning_rate_before:
-                    scheduler_has_reduced = True
-
-                early_stopping_eligible = (
-                    optimizer_updates >= minimum_training_updates
-                    and scheduler_has_reduced
-                )
-                early_stopping_triggered = False
-                if early_stopping_eligible:
-                    if early_stopping_reference is None:
-                        early_stopping_reference = validation_error_percent
-                        early_stopping_bad_checks = 0
-                    else:
-                        decrease = early_stopping_reference - validation_error_percent
-                        threshold = float(
-                            request.early_stopping_minimum_improvement_percent
-                        )
-                        improved = (
-                            validation_error_percent < early_stopping_reference
-                            if threshold == 0.0
-                            else decrease >= threshold
-                        )
-                        if improved:
-                            early_stopping_reference = validation_error_percent
-                            early_stopping_bad_checks = 0
-                        else:
-                            early_stopping_bad_checks += 1
-                            early_stopping_triggered = (
-                                early_stopping_bad_checks
-                                >= request.early_stopping_patience_checks
-                            )
-
-                record = TrainingValidationRecord(
-                    validation_check=validation_checks,
-                    training_epochs=training_examples_seen / training_example_count,
-                    optimizer_updates=optimizer_updates,
-                    training_examples_seen=training_examples_seen,
-                    training_objective=training_objective,
-                    validation_objective=validation_objective,
-                    validation_error_percent=validation_error_percent,
-                    learning_rate_before=learning_rate_before,
-                    learning_rate_after=learning_rate_after,
-                )
-                history.append(record)
-                validation_exposure = 0
-                interval_loss_total = 0.0
-                interval_loss_examples = 0
-                if early_stopping_triggered:
-                    termination_reason = TrainingTerminationReason.EARLY_STOPPING
-                elif validation_checks >= request.maximum_validation_checks:
-                    termination_reason = (
-                        TrainingTerminationReason.MAXIMUM_VALIDATION_CHECKS
-                    )
-                recovery_value = _recovery_mapping(
-                    identity=identity,
-                    runtime=runtime,
-                    training_seed=training_seed,
-                    membership=membership,
-                    standardization=standardization,
-                    model=model,
-                    best_model_state=best_model_state,
-                    optimizer=optimizer,
-                    scheduler=scheduler,
-                    stream=stream,
-                    initialization_generator_state=initialization_generator_state,
-                    optimizer_updates=optimizer_updates,
-                    training_examples_seen=training_examples_seen,
-                    validation_checks=validation_checks,
-                    validation_exposure=validation_exposure,
-                    interval_loss_total=interval_loss_total,
-                    interval_loss_examples=interval_loss_examples,
-                    best_validation_check=best_validation_check,
-                    best_validation_objective=best_validation_objective,
-                    best_model_validation_error_percent=best_model_validation_error_percent,
-                    scheduler_has_reduced=scheduler_has_reduced,
-                    early_stopping_reference=early_stopping_reference,
-                    early_stopping_bad_checks=early_stopping_bad_checks,
-                    history=history,
-                    termination_reason=termination_reason,
-                )
-                atomic_save_recovery(paths, recovery_value)
+                atomic_save_recovery(paths, _recovery_mapping(run, runtime, progress))
                 _write_log(
                     log,
                     "validation "
-                    f"check={validation_checks} "
+                    f"check={record.validation_check} "
                     f"epochs={record.training_epochs:.9g} "
-                    f"updates={optimizer_updates} "
-                    f"training_objective={training_objective:.9g} "
-                    f"validation_objective={validation_objective:.9g} "
-                    f"error_percent={validation_error_percent:.9g} "
-                    f"learning_rate={learning_rate_before:.9g}->{learning_rate_after:.9g}",
+                    f"updates={record.optimizer_updates} "
+                    f"training_objective={record.training_objective:.9g} "
+                    f"validation_objective={record.validation_objective:.9g} "
+                    f"error_percent={record.validation_error_percent:.9g} "
+                    f"learning_rate={record.learning_rate_before:.9g}"
+                    f"->{record.learning_rate_after:.9g}",
                 )
 
-            if not best_model_state:
-                raise RuntimeError("Training terminated without a best model state.")
-            package_metadata = _model_metadata(
-                request,
-                prepared_training,
-                standardization,
-                training_seed,
-            )
-            publish_model_package(
-                paths,
-                package_metadata,
-                best_model_state,
-            )
-            package_sha256 = sha256_file(paths.package_path)
-            _write_log(log, f"completed: {_utc_now()}")
-            _write_log(log, f"termination_reason: {termination_reason.value}")
-            _write_log(log, f"best_validation_check: {best_validation_check}")
-            best_record = history[best_validation_check - 1]
-            _write_log(
-                log,
-                f"best_training_epochs: {best_record.training_epochs:.17g}",
-            )
-            _write_log(
-                log, f"best_validation_objective: {best_validation_objective:.17g}"
-            )
-            _write_log(
-                log,
-                "best_model_validation_error_percent: "
-                f"{best_model_validation_error_percent:.17g}",
-            )
-            _write_log(log, f"model_package: {paths.package_path.name}")
-            _write_log(log, f"model_package_sha256: {package_sha256}")
+            _publish_best_model(request, paths, prepared_training, run, progress, log)
         except BaseException as exc:
             _write_log(log, f"failure: {_utc_now()} {type(exc).__name__}: {exc}")
             raise
 
+    # Keep recovery until both package publication and log finalization succeed.
     paths.recovery_path.unlink()
-    return _build_result(
-        paths,
-        termination_reason,
-        training_seed,
-        membership,
-        optimizer_updates,
-        training_examples_seen,
-        validation_checks,
-        best_validation_check,
-        best_validation_objective,
-        best_model_validation_error_percent,
-        history,
-    )
+    return _build_result(paths, run, progress)
 
 
 # Public API
@@ -1679,7 +1640,7 @@ def train_model(request: TrainModelRequest) -> TrainModelResult:
             run,
             training_runtime,
             progress,
-            recovery,
+            resuming=recovery is not None,
             device=device,
             validation_batch_size=validation_batch_size,
         )
