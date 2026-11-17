@@ -13,14 +13,13 @@ from astropy import units as u
 from hybrid_ao_psf import (
     HybridCtotCorrection,
     HybridResult,
-    NgsHoMetricSamples,
-    RbfInterpolationConfig,
-    ScienceHoPsfPrediction,
-    ScienceHoPsfSamples,
-    build_ngs_ho_metric_interpolator,
-    build_science_ho_psf_interpolator,
-    save_ngs_ho_metric_interpolator,
-    save_science_ho_psf_interpolator,
+    PsfMetricSamples,
+    PsfPrediction,
+    PsfSamples,
+    build_psf_interpolator,
+    build_psf_metric_interpolator,
+    save_psf_interpolator,
+    save_psf_metric_interpolator,
 )
 
 import ao_predict
@@ -71,12 +70,12 @@ def _write_hybrid_inputs(tmp_path: Path) -> tuple[Path, Path, Path]:
     ini_path.write_text(_ini_text(), encoding="utf-8")
     science_path = tmp_path / "science.pkl"
     ngs_path = tmp_path / "ngs.pkl"
-    save_science_ho_psf_interpolator(
-        build_science_ho_psf_interpolator(_science_samples()),
+    save_psf_interpolator(
+        build_psf_interpolator(_science_samples()),
         science_path,
     )
-    save_ngs_ho_metric_interpolator(
-        build_ngs_ho_metric_interpolator(_ngs_samples(), interpolation_config=RbfInterpolationConfig(smoothing=0.0)),
+    save_psf_metric_interpolator(
+        build_psf_metric_interpolator(_ngs_samples()),
         ngs_path,
     )
     return ini_path, science_path, ngs_path
@@ -171,21 +170,11 @@ def test_hybrid_payload_persists_non_psd_policy_and_defaults_legacy_payload(
         )
 
 
-def test_hybrid_payload_canonicalizes_dimensionless_field_units(
+def test_hybrid_payload_retains_file_paths_and_diagnostic_units(
     tmp_path: Path,
 ) -> None:
     sim = HybridSimulation()
     ini_path, science_path, ngs_path = _write_hybrid_inputs(tmp_path)
-    science_samples = replace(
-        _science_samples(),
-        meta={"normalization": 0.75 * u.one},
-    )
-    save_science_ho_psf_interpolator(
-        build_science_ho_psf_interpolator(science_samples),
-        science_path,
-        overwrite=True,
-    )
-
     payload = dict(
         sim.prepare_simulation_payload(
             _base_payload(sim),
@@ -199,7 +188,13 @@ def test_hybrid_payload_canonicalizes_dimensionless_field_units(
         )
     )
 
-    assert payload[schema.KEY_SIMULATION_META_FIELDS] == {"normalization": "1"}
+    assert payload["science_ho_psf_interpolator_path"] == str(science_path)
+    assert payload["ngs_ho_metric_interpolator_path"] == str(ngs_path)
+    assert schema.KEY_SIMULATION_META_FIELDS not in payload
+    assert not any(
+        key.endswith(("_interpolator_provenance", "_interpolator_builder"))
+        for key in payload
+    )
     assert payload["diagnostic_fields"]["hybrid/psd_valid_fraction"]["unit"] == "1"
     sim.validate_simulation_payload(payload)
 
@@ -228,6 +223,14 @@ def test_hybrid_runtime_getters_reuse_process_cached_interpolators_across_instan
     assert second.science_ho_psf_interpolator is first.science_ho_psf_interpolator
     assert second.ngs_ho_metric_interpolator is first.ngs_ho_metric_interpolator
 
+    double = HybridSimulation()
+    double.load_simulation_payload(payload | {schema.KEY_SIMULATION_PRECISION: "float64"})
+    assert double.science_ho_psf_interpolator.dtype == np.dtype("float64")
+    assert double.ngs_ho_metric_interpolator.dtype == np.dtype("float64")
+    assert double.science_ho_psf_interpolator is not first.science_ho_psf_interpolator
+    assert double.ngs_ho_metric_interpolator is not first.ngs_ho_metric_interpolator
+    assert first.science_ho_psf_interpolator.dtype == np.dtype("float32")
+
 
 def test_hybrid_validate_simulation_payload_does_not_rebind_interpolators(tmp_path: Path) -> None:
     sim = HybridSimulation()
@@ -255,7 +258,7 @@ def test_hybrid_load_simulation_payload_failure_does_not_partially_bind(tmp_path
         _ = sim.base_config
 
 
-def test_hybrid_provider_uses_artifact_pixel_scale_and_passes_magnitude(tmp_path: Path) -> None:
+def test_hybrid_provider_uses_file_pixel_scale_and_passes_magnitude(tmp_path: Path) -> None:
     sim = HybridSimulation()
     payload = {**_simulation_payload(tmp_path), "precision": "float64"}
     sim.load_simulation_payload(payload)
@@ -264,7 +267,7 @@ def test_hybrid_provider_uses_artifact_pixel_scale_and_passes_magnitude(tmp_path
     assert resolved.request.ngs_flux is None
     np.testing.assert_array_equal(resolved.request.ngs_magnitude.to_value(u.mag), [14.0])
     assert resolved.request.ngs_magnitude_zeropoint == _setup_payload()["ngs_magnitude_zeropoint"]
-    result = resolved.science_provider.predict(
+    result = resolved.science_psfs.evaluate(
         zenith_angle=resolved.request.zenith_angle,
         wavelength=resolved.request.wavelength,
         x=resolved.request.science_x,
@@ -272,7 +275,6 @@ def test_hybrid_provider_uses_artifact_pixel_scale_and_passes_magnitude(tmp_path
     )
 
     assert result.pixel_scale.to_value(u.mas) == pytest.approx(4.0)
-    assert result.meta == {}
     assert isinstance(result.metadata, PsfMetadata)
     assert result.metadata.wavelength.to_value(u.um) == pytest.approx(1.0)
     np.testing.assert_allclose(
@@ -334,13 +336,13 @@ def test_hybrid_subclass_can_replace_resolved_provider(
     resolved_fields: dict[str, tuple[np.ndarray, np.ndarray]] = {}
 
     class ScienceProvider:
-        def predict(self, *, zenith_angle, wavelength, x, y):
+        def evaluate(self, *, zenith_angle, wavelength, x, y):
             del zenith_angle
             resolved_fields["science"] = (
                 x.to_value(u.arcsec),
                 y.to_value(u.arcsec),
             )
-            return ScienceHoPsfPrediction(
+            return PsfPrediction(
                 psfs=np.full((2, 5, 5), 2.0, dtype=np.float32),
                 pixel_scale=7.0 * u.mas,
                 metadata=PsfMetadata(
@@ -360,8 +362,8 @@ def test_hybrid_subclass_can_replace_resolved_provider(
             )
             return HybridResolvedInputs(
                 request=resolved.request,
-                science_provider=ScienceProvider(),
-                ngs_provider=resolved.ngs_provider,
+                science_psfs=ScienceProvider(),
+                ngs_metrics=resolved.ngs_metrics,
                 ngs_used=resolved.ngs_used,
             )
 
@@ -497,10 +499,10 @@ def test_hybrid_run_calls_upstream_engine_once(
     )
     calls: list[tuple[object, object, object]] = []
 
-    def observed_simulate(request, science_provider, ngs_provider, *, ctot_correction=None):
+    def observed_simulate(request, science_psfs, ngs_metrics, *, ctot_correction=None):
         assert ctot_correction is None
-        calls.append((request, science_provider, ngs_provider))
-        return hybrid_ao_psf.simulate(request, science_provider, ngs_provider)
+        calls.append((request, science_psfs, ngs_metrics))
+        return hybrid_ao_psf.simulate(request, science_psfs, ngs_metrics)
 
     monkeypatch.setattr("ao_predict.simulation.hybrid.simulate", observed_simulate)
     sim = HybridSimulation()
@@ -511,11 +513,11 @@ def test_hybrid_run_calls_upstream_engine_once(
     sim.run(context)
 
     assert len(calls) == 1
-    request, science_provider, ngs_provider = calls[0]
+    request, science_psfs, ngs_metrics = calls[0]
     assert request.non_psd_policy.value == "error"
     assert request.diagnostics_level.value == "none"
-    assert science_provider is sim.science_ho_psf_interpolator
-    assert ngs_provider is sim.ngs_ho_metric_interpolator
+    assert science_psfs is sim.science_ho_psf_interpolator
+    assert ngs_metrics is sim.ngs_ho_metric_interpolator
     assert isinstance(context.runtime[HybridSimulation.KEY_RUNTIME_RESULT], HybridResult)
 
 
@@ -537,11 +539,11 @@ def test_hybrid_subclass_forwards_exact_correction_once(tmp_path, monkeypatch):
     calls = []
     sentinel = object()
 
-    def engine(request, science_provider, ngs_provider, *, ctot_correction):
+    def engine(request, science_psfs, ngs_metrics, *, ctot_correction):
         calls.append(ctot_correction)
         assert request is not None
-        assert science_provider is original.science_provider
-        assert ngs_provider is original.ngs_provider
+        assert science_psfs is original.science_psfs
+        assert ngs_metrics is original.ngs_metrics
         return sentinel
 
     monkeypatch.setattr("ao_predict.simulation.hybrid.simulate", engine)
@@ -613,44 +615,51 @@ def test_hybrid_run_persists_jitter_through_public_dataset_path(tmp_path: Path, 
 
     monkeypatch.setattr("hybrid_ao_psf._mastsel._load_mavis_lo", lambda: FakeMavisLO)
 
-    ao_predict.init_dataset(
-        InitDatasetRequest(
-            dataset_path=dataset_path,
-            simulation=SimulationConfig(
-                name="Hybrid",
-                base_path=str(tmp_path),
-                specific_fields={
-                    "config_path": ini_path.name,
-                    "science_ho_psf_interpolator_path": science_path.name,
-                    "ngs_ho_metric_interpolator_path": ngs_path.name,
-                },
-            ),
-            setup=SetupConfig(
-                ee_apertures=np.array([50.0]) * u.mas,
-                specific_fields={
-                    "atm_wavelength": 0.5 * u.um,
-                    "atm_profiles": _setup_payload()["atm_profiles"],
-                    "lgs_r": np.array([]) * u.arcsec,
-                    "lgs_theta": np.array([]) * u.deg,
-                    "ngs_magnitude_zeropoint": 3.0e10 * u.photon / (u.m**2 * u.s),
-                    "sci_r": np.array([0.0, 1.0]) * u.arcsec,
-                    "sci_theta": np.array([0.0, 0.0]) * u.deg,
-                },
-            ),
-            options=OptionsConfig(
-                option_arrays={
-                    "wavelength": np.array([1.0]) * u.um,
-                    "zenith_angle": np.array([20.0]) * u.deg,
-                    "atm_profile_id": np.array([0]),
-                    "r0": np.array([0.16]) * u.m,
-                    "ngs_r": np.array([[0.0]]) * u.arcsec,
-                    "ngs_theta": np.array([[0.0]]) * u.deg,
-                    "ngs_magnitude": np.array([[14.0]]) * u.mag,
-                }
-            ),
-            save_psfs=True,
-        )
+    request = InitDatasetRequest(
+        dataset_path=dataset_path,
+        simulation=SimulationConfig(
+            name="Hybrid",
+            base_path=str(tmp_path),
+            specific_fields={
+                "config_path": ini_path.name,
+                "science_ho_psf_interpolator_path": science_path.name,
+                "ngs_ho_metric_interpolator_path": ngs_path.name,
+            },
+        ),
+        setup=SetupConfig(
+            ee_apertures=np.array([50.0]) * u.mas,
+            specific_fields={
+                "atm_wavelength": 0.5 * u.um,
+                "atm_profiles": _setup_payload()["atm_profiles"],
+                "lgs_r": np.array([]) * u.arcsec,
+                "lgs_theta": np.array([]) * u.deg,
+                "ngs_magnitude_zeropoint": 3.0e10 * u.photon / (u.m**2 * u.s),
+                "sci_r": np.array([0.0, 1.0]) * u.arcsec,
+                "sci_theta": np.array([0.0, 0.0]) * u.deg,
+            },
+        ),
+        options=OptionsConfig(
+            option_arrays={
+                "wavelength": np.array([1.0]) * u.um,
+                "zenith_angle": np.array([20.0]) * u.deg,
+                "atm_profile_id": np.array([0]),
+                "r0": np.array([0.16]) * u.m,
+                "ngs_r": np.array([[0.0]]) * u.arcsec,
+                "ngs_theta": np.array([[0.0]]) * u.deg,
+                "ngs_magnitude": np.array([[14.0]]) * u.mag,
+            }
+        ),
+        save_psfs=True,
     )
+    ao_predict.init_dataset(request)
+
+    with h5py.File(dataset_path, "r+") as handle:
+        simulation = handle["simulation"]
+        simulation.create_dataset("science_ho_psf_interpolator_provenance", data=["old-science.fits"])
+        simulation.create_group("science_ho_psf_interpolator_builder")
+        simulation.create_dataset("ngs_ho_metric_interpolator_provenance", data=["old-ngs.fits"])
+        simulation.create_group("ngs_ho_metric_interpolator_builder")
+    ao_predict.validate_dataset_matches_request(dataset_path, request)
 
     summary = run_simulations_by_state(dataset_path, num_workers=1)
 
@@ -1062,11 +1071,11 @@ def _options() -> dict[str, object]:
     }
 
 
-def _science_samples() -> ScienceHoPsfSamples:
+def _science_samples() -> PsfSamples:
     psfs = np.zeros((1, 2, 5, 5), dtype=np.float32)
     psfs[0, 0, 2, 2] = 0.5
     psfs[0, 1, 2, 2] = 0.75
-    return ScienceHoPsfSamples(
+    return PsfSamples(
         zenith_angle=np.array([20.0]) * u.deg,
         wavelength=np.array([1.0]) * u.um,
         x=np.array([0.0, 1.0]) * u.arcsec,
@@ -1078,8 +1087,8 @@ def _science_samples() -> ScienceHoPsfSamples:
     )
 
 
-def _ngs_samples() -> NgsHoMetricSamples:
-    return NgsHoMetricSamples(
+def _ngs_samples() -> PsfMetricSamples:
+    return PsfMetricSamples(
         zenith_angle=np.array([20.0, 30.0]) * u.deg,
         x=np.array([0.0, 1.0, 0.0]) * u.arcsec,
         y=np.array([0.0, 0.0, 1.0]) * u.arcsec,

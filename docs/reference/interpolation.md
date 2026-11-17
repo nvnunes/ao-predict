@@ -2,8 +2,8 @@
 
 The public science-HO-PSF and NGS-HO-metric interpolation API belongs to
 [Hybrid AO PSF](https://github.com/nvnunes/hybrid-ao-psf). Import builders,
-providers, evaluation, replay, and artifact operations from `hybrid_ao_psf`.
-AO Predict's `HybridSimulation` consumes those artifacts and owns AO
+providers, evaluation, comparison, and file operations from `hybrid_ao_psf`.
+AO Predict's `HybridSimulation` consumes those files and owns AO
 dataset lifecycle and persisted reference/provenance fields.
 
 Supply Hybrid AO PSF-format interpolation artifacts when configuring the AO

@@ -95,12 +95,14 @@ def test_interpolation_exports_belong_to_hybrid_ao_psf() -> None:
     package = importlib.import_module("ao_predict")
     interpolation = importlib.import_module("hybrid_ao_psf")
 
-    assert interpolation.ScienceHoPsfSamples.__name__ == "ScienceHoPsfSamples"
-    assert interpolation.NgsHoMetricSamples.__name__ == "NgsHoMetricSamples"
-    assert not hasattr(package, "ScienceHoPsfSamples")
-    assert not hasattr(package, "NgsHoMetricSamples")
-    assert not hasattr(package, "build_science_ho_psf_interpolator")
-    assert not hasattr(package, "build_ngs_ho_metric_interpolator")
+    assert interpolation.PsfSamples is interpolation.PsfSamples
+    assert interpolation.PsfMetricSamples is interpolation.PsfMetricSamples
+    assert not hasattr(package, "PsfSamples")
+    assert not hasattr(package, "PsfMetricSamples")
+    assert not hasattr(package, "PsfSamples")
+    assert not hasattr(package, "PsfMetricSamples")
+    assert not hasattr(package, "build_psf_interpolator")
+    assert not hasattr(package, "build_psf_metric_interpolator")
 
 
 def test_training_root_and_submodule_exports() -> None:

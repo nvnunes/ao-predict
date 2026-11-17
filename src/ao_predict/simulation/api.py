@@ -449,14 +449,19 @@ def validate_dataset_matches_request(dataset_path: str | Path, request: InitData
         DatasetConfigMismatchError: If prepared request payloads differ from
             persisted dataset payloads.
     """
+    from .hybrid import _hybrid_payload_for_request_match
+
     store = SimulationStore(dataset_path)
     store.validate_schema()
     saved_setup = store.read_setup()
     setup_cfg = normalize_setup_config(request.setup)
     setup_cfg.setdefault(schema.KEY_SETUP_EE_CENTER, saved_setup[schema.KEY_SETUP_EE_CENTER])
     expected = _prepare_dataset_payloads(request, setup_cfg)
+    stored_simulation = _hybrid_payload_for_request_match(
+        expected.simulation, store.read_simulation()
+    )
     mismatches = (
-        _payload_mismatches(expected.simulation, store.read_simulation(), prefix="/simulation")
+        _payload_mismatches(expected.simulation, stored_simulation, prefix="/simulation")
         + _payload_mismatches(expected.setup, saved_setup, prefix="/setup")
         + _payload_mismatches(expected.options, store.read_options(), prefix="/options")
     )

@@ -16,21 +16,17 @@ from hybrid_ao_psf import (
     HybridCtotCorrection,
     HybridRequest,
     HybridResult,
-    NgsHoMetricInterpolator,
-    NgsMetricProvider,
     NonPsdPolicy,
-    ScienceHoPsfInterpolator,
-    SciencePsfProvider,
-    load_ngs_ho_metric_interpolator,
-    load_science_ho_psf_interpolator,
+    PsfInterpolator,
+    PsfMetricInterpolator,
+    PsfMetricProvider,
+    PsfProvider,
+    load_psf_interpolator,
+    load_psf_metric_interpolator,
     simulate,
-    validate_ngs_ho_metric_interpolator,
-    validate_ngs_ho_metric_query,
-    validate_science_ho_psf_interpolator,
-    validate_science_ho_psf_query,
 )
 
-from .._units import quantity_value, unit_string
+from .._units import quantity_value
 from . import atm, schema
 from .base import BaseSimulationSetup, PsfParameters
 from .coordinates import polar_to_cartesian
@@ -39,7 +35,6 @@ from .tiptop_config_backed import (
     TiptopConfigBackedSimulation,
     _serialize_parser,
 )
-from .validation import normalize_meta_fields
 
 
 @dataclass(frozen=True)
@@ -75,26 +70,26 @@ class HybridResolvedInputs:
 
     Attributes:
         request: Fully resolved request for one upstream simulation.
-        science_provider: Loaded reusable science-HO-PSF provider.
-        ngs_provider: Loaded reusable NGS-HO-metric provider.
+        science_psfs: Loaded reusable science-HO-PSF provider.
+        ngs_metrics: Loaded reusable NGS-HO-metric provider.
         ngs_used: AO slot mask corresponding to the active request vectors.
         ctot_correction: Optional downstream covariance callback and static
             metadata, forwarded unchanged to Hybrid AO PSF. Not persisted here.
     """
 
     request: HybridRequest
-    science_provider: SciencePsfProvider
-    ngs_provider: NgsMetricProvider
+    science_psfs: PsfProvider
+    ngs_metrics: PsfMetricProvider
     ngs_used: np.ndarray
     ctot_correction: HybridCtotCorrection | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.request, HybridRequest):
             raise TypeError("request must be a HybridRequest.")
-        if not isinstance(self.science_provider, SciencePsfProvider):
-            raise TypeError("science_provider must implement SciencePsfProvider.")
-        if not isinstance(self.ngs_provider, NgsMetricProvider):
-            raise TypeError("ngs_provider must implement NgsMetricProvider.")
+        if not isinstance(self.science_psfs, PsfProvider):
+            raise TypeError("science_psfs must implement PsfProvider.")
+        if not isinstance(self.ngs_metrics, PsfMetricProvider):
+            raise TypeError("ngs_metrics must implement PsfMetricProvider.")
         if self.ctot_correction is not None and not isinstance(
             self.ctot_correction, HybridCtotCorrection
         ):
@@ -116,17 +111,18 @@ class _ActiveNgs:
 
 
 @dataclass(frozen=True)
-class _ArtifactFileCacheKey:
+class _InterpolatorFileCacheKey:
     path: str
     size_bytes: int
     modified_ns: int
+    dtype: str
 
 
 _NGS_HO_METRIC_INTERPOLATOR_CACHE: dict[
-    _ArtifactFileCacheKey, NgsHoMetricInterpolator
+    _InterpolatorFileCacheKey, PsfMetricInterpolator
 ] = {}
 _SCIENCE_HO_PSF_INTERPOLATOR_CACHE: dict[
-    _ArtifactFileCacheKey, ScienceHoPsfInterpolator
+    _InterpolatorFileCacheKey, PsfInterpolator
 ] = {}
 
 
@@ -144,10 +140,6 @@ class HybridSimulation(TiptopConfigBackedSimulation):
     EXTRA_STAT_JITTER = "jitter"
     KEY_SCIENCE_HO_PSF_INTERPOLATOR_PATH = "science_ho_psf_interpolator_path"
     KEY_NGS_HO_METRIC_INTERPOLATOR_PATH = "ngs_ho_metric_interpolator_path"
-    KEY_SCIENCE_HO_PSF_INTERPOLATOR_PROVENANCE = "science_ho_psf_interpolator_provenance"
-    KEY_SCIENCE_HO_PSF_INTERPOLATOR_BUILDER = "science_ho_psf_interpolator_builder"
-    KEY_NGS_HO_METRIC_INTERPOLATOR_PROVENANCE = "ngs_ho_metric_interpolator_provenance"
-    KEY_NGS_HO_METRIC_INTERPOLATOR_BUILDER = "ngs_ho_metric_interpolator_builder"
     KEY_NON_PSD_POLICY = "non_psd_policy"
     KEY_RUNTIME_EFFECTIVE_PARSER = "effective_parser"
     KEY_RUNTIME_RESULT = "hybrid_result"
@@ -168,42 +160,44 @@ class HybridSimulation(TiptopConfigBackedSimulation):
         super().__init__()
         self._science_ho_psf_interpolator_path: Path | None = None
         self._ngs_ho_metric_interpolator_path: Path | None = None
-        self._ngs_ho_metric_interpolator: NgsHoMetricInterpolator | None = None
-        self._science_ho_psf_interpolator: ScienceHoPsfInterpolator | None = None
+        self._ngs_ho_metric_interpolator: PsfMetricInterpolator | None = None
+        self._science_ho_psf_interpolator: PsfInterpolator | None = None
         self._non_psd_policy = NonPsdPolicy.ERROR
 
     @property
-    def science_ho_psf_interpolator(self) -> ScienceHoPsfInterpolator:
-        """Return the configured science-HO-PSF interpolator artifact."""
+    def science_ho_psf_interpolator(self) -> PsfInterpolator:
+        """Return the configured science-HO-PSF interpolator."""
         return self._get_science_ho_psf_interpolator()
 
     @property
-    def ngs_ho_metric_interpolator(self) -> NgsHoMetricInterpolator:
-        """Return the configured NGS-HO-metric interpolator artifact."""
+    def ngs_ho_metric_interpolator(self) -> PsfMetricInterpolator:
+        """Return the configured NGS-HO-metric interpolator."""
         return self._get_ngs_ho_metric_interpolator()
 
-    def _get_science_ho_psf_interpolator(self) -> ScienceHoPsfInterpolator:
+    def _get_science_ho_psf_interpolator(self) -> PsfInterpolator:
         """Return the process-cached upstream science provider."""
-        if self._science_ho_psf_interpolator is None:
+        if (
+            self._science_ho_psf_interpolator is None
+            or self._science_ho_psf_interpolator.dtype != self.dtype
+        ):
             if self._science_ho_psf_interpolator_path is None:
                 raise TypeError("HybridSimulation science-HO-PSF interpolator path is not configured.")
             self._science_ho_psf_interpolator = _get_cached_science_ho_psf_interpolator(
-                self._science_ho_psf_interpolator_path
+                self._science_ho_psf_interpolator_path, self.dtype
             )
-        if self._science_ho_psf_interpolator.dtype != self.dtype:
-            self._science_ho_psf_interpolator = self._science_ho_psf_interpolator.prepare(dtype=self.dtype)
         return self._science_ho_psf_interpolator
 
-    def _get_ngs_ho_metric_interpolator(self) -> NgsHoMetricInterpolator:
+    def _get_ngs_ho_metric_interpolator(self) -> PsfMetricInterpolator:
         """Return the cached NGS-HO-metric interpolator for runtime use."""
-        if self._ngs_ho_metric_interpolator is None:
+        if (
+            self._ngs_ho_metric_interpolator is None
+            or self._ngs_ho_metric_interpolator.dtype != self.dtype
+        ):
             if self._ngs_ho_metric_interpolator_path is None:
                 raise TypeError("HybridSimulation NGS-HO-metric interpolator path is not configured.")
             self._ngs_ho_metric_interpolator = _get_cached_ngs_ho_metric_interpolator(
-                self._ngs_ho_metric_interpolator_path
+                self._ngs_ho_metric_interpolator_path, self.dtype
             )
-        if self._ngs_ho_metric_interpolator.dtype != self.dtype:
-            self._ngs_ho_metric_interpolator = self._ngs_ho_metric_interpolator.prepare(dtype=self.dtype)
         return self._ngs_ho_metric_interpolator
 
     # Simulation payload lifecycle
@@ -216,13 +210,10 @@ class HybridSimulation(TiptopConfigBackedSimulation):
         """Build the persisted Hybrid ``/simulation`` payload.
 
         The MASTSEL base INI is persisted through the inherited
-        ``base_config`` lifecycle. Interpolator artifact paths are resolved
+        ``base_config`` lifecycle. Interpolator file paths are resolved
         relative to ``simulation.base_path``, loaded, validated, and persisted
-        as resolved strings under ``/simulation``. The payload also records the
-        compact interpolator provenance and builder identity so datasets retain
-        static Hybrid input identity independently of optional per-run
-        ``/diagnostics``. The exact MASTSEL base INI text remains available as
-        inherited ``/simulation/base_config`` provenance.
+        as resolved strings under ``/simulation``. The exact MASTSEL base INI
+        text remains available under ``/simulation/base_config``.
 
         Args:
             base_simulation_payload: Core simulation payload containing name,
@@ -236,9 +227,9 @@ class HybridSimulation(TiptopConfigBackedSimulation):
 
         Raises:
             TypeError: If required path fields have invalid types.
-            ValueError: If the MASTSEL INI text or interpolator artifacts are
+            ValueError: If the MASTSEL INI text or interpolator files are
                 invalid, or if the selected diagnostics level is unsupported.
-            FileNotFoundError: If required config or artifact paths are missing.
+            FileNotFoundError: If required config or file paths are missing.
         """
         simulation_cfg = dict(simulation_cfg)
         if schema.KEY_SIMULATION_PRECISION not in simulation_cfg:
@@ -257,23 +248,12 @@ class HybridSimulation(TiptopConfigBackedSimulation):
                 simulation_cfg,
             )
         )
-        science_path = self._resolve_required_artifact_path(simulation_cfg, self.KEY_SCIENCE_HO_PSF_INTERPOLATOR_PATH)
-        ngs_path = self._resolve_required_artifact_path(simulation_cfg, self.KEY_NGS_HO_METRIC_INTERPOLATOR_PATH)
-        science = load_science_ho_psf_interpolator(science_path)
-        ngs = load_ngs_ho_metric_interpolator(ngs_path)
-        validate_science_ho_psf_interpolator(science)
-        validate_ngs_ho_metric_interpolator(ngs)
+        science_path = self._resolve_required_file_path(simulation_cfg, self.KEY_SCIENCE_HO_PSF_INTERPOLATOR_PATH)
+        ngs_path = self._resolve_required_file_path(simulation_cfg, self.KEY_NGS_HO_METRIC_INTERPOLATOR_PATH)
+        load_psf_interpolator(science_path)
+        load_psf_metric_interpolator(ngs_path)
         simulation_payload[self.KEY_SCIENCE_HO_PSF_INTERPOLATOR_PATH] = str(science_path)
         simulation_payload[self.KEY_NGS_HO_METRIC_INTERPOLATOR_PATH] = str(ngs_path)
-        simulation_payload[self.KEY_SCIENCE_HO_PSF_INTERPOLATOR_PROVENANCE] = np.asarray(science.provenance, dtype=str)
-        simulation_payload[self.KEY_SCIENCE_HO_PSF_INTERPOLATOR_BUILDER] = dict(science.builder)
-        simulation_payload[self.KEY_NGS_HO_METRIC_INTERPOLATOR_PROVENANCE] = np.asarray(ngs.provenance, dtype=str)
-        simulation_payload[self.KEY_NGS_HO_METRIC_INTERPOLATOR_BUILDER] = dict(ngs.builder)
-        meta_fields = _science_meta_fields(science)
-        if meta_fields:
-            simulation_payload[schema.KEY_SIMULATION_META_FIELDS] = {
-                name: unit_string(unit) for name, unit in meta_fields.items()
-            }
         return simulation_payload
 
     def validate_simulation_payload(self, simulation_payload: Mapping[str, Any]) -> None:
@@ -284,25 +264,23 @@ class HybridSimulation(TiptopConfigBackedSimulation):
 
         Raises:
             TypeError: If payload fields have invalid types.
-            ValueError: If the base INI or required artifact path fields are invalid.
-            FileNotFoundError: If a persisted interpolator artifact path is
+            ValueError: If the base INI or required file path fields are invalid.
+            FileNotFoundError: If a persisted interpolator file path is
                 missing.
         """
         super().validate_simulation_payload(simulation_payload)
         _non_psd_policy_from_payload(simulation_payload)
         science_path = self._get_required_payload_path(simulation_payload, self.KEY_SCIENCE_HO_PSF_INTERPOLATOR_PATH)
         ngs_path = self._get_required_payload_path(simulation_payload, self.KEY_NGS_HO_METRIC_INTERPOLATOR_PATH)
-        science = load_science_ho_psf_interpolator(science_path)
-        validate_science_ho_psf_interpolator(science)
-        _validate_science_meta_fields_match(simulation_payload, science)
-        validate_ngs_ho_metric_interpolator(load_ngs_ho_metric_interpolator(ngs_path))
+        load_psf_interpolator(science_path)
+        load_psf_metric_interpolator(ngs_path)
 
     def load_simulation_payload(self, simulation_payload: Mapping[str, Any]) -> None:
-        """Bind base INI plus science and NGS artifact paths.
+        """Bind base INI plus science and NGS file paths.
 
         Binding is atomic with respect to validation of payload-owned state:
-        the base INI and required artifact paths are validated before instance
-        state is updated. Interpolator artifacts are loaded lazily by runtime
+        the base INI and required file paths are validated before instance
+        state is updated. Interpolator files are loaded lazily by runtime
         getters near their use sites.
 
         Args:
@@ -311,8 +289,8 @@ class HybridSimulation(TiptopConfigBackedSimulation):
 
         Raises:
             TypeError: If payload fields have invalid types.
-            ValueError: If the base INI or interpolator artifacts are invalid.
-            FileNotFoundError: If a persisted interpolator artifact path is
+            ValueError: If the base INI or interpolator files are invalid.
+            FileNotFoundError: If a persisted interpolator file path is
                 missing.
         """
         base_config_text = self._get_required_base_config_text(simulation_payload)
@@ -369,7 +347,8 @@ class HybridSimulation(TiptopConfigBackedSimulation):
         """Create runtime scratch state for one Hybrid simulation.
 
         This resolves AO-owned active-star, atmosphere, and photometry inputs
-        without evaluating providers or invoking the upstream engine.
+        and checks their coordinate ranges through provider evaluation. It does
+        not invoke the upstream simulation engine.
 
         Args:
             index: Zero-based simulation index.
@@ -383,7 +362,7 @@ class HybridSimulation(TiptopConfigBackedSimulation):
         Raises:
             TypeError: If ``setup`` is not ``HybridSetup``.
             ValueError: If required runtime options are missing, malformed, or
-                outside interpolator support.
+                outside the sampled interpolation region or coordinate ranges.
         """
         del index
         if not isinstance(setup, HybridSetup):
@@ -392,13 +371,14 @@ class HybridSimulation(TiptopConfigBackedSimulation):
         parser = self._build_runtime_mastsel_parser(setup, options)
         wavelength = _require_option_scalar(options, schema.KEY_OPTION_WAVELENGTH)
         zenith_angle = _require_option_scalar(options, schema.KEY_OPTION_ZENITH_ANGLE)
-        validate_science_ho_psf_query(
-            self.science_ho_psf_interpolator,
+        science = self.science_ho_psf_interpolator
+        science.evaluate(
             zenith_angle=zenith_angle,
             wavelength=wavelength,
+            x=science.x[:1],
+            y=science.y[:1],
         )
-        validate_ngs_ho_metric_query(
-            self._get_ngs_ho_metric_interpolator(),
+        self._get_ngs_ho_metric_interpolator().evaluate(
             zenith_angle=zenith_angle,
             x=active_ngs.x,
             y=active_ngs.y,
@@ -423,8 +403,8 @@ class HybridSimulation(TiptopConfigBackedSimulation):
         resolved = self._resolve_hybrid_inputs(context)
         result = simulate(
             resolved.request,
-            resolved.science_provider,
-            resolved.ngs_provider,
+            resolved.science_psfs,
+            resolved.ngs_metrics,
             ctot_correction=resolved.ctot_correction,
         )
         context.runtime[self.KEY_RUNTIME_RESULT] = result
@@ -484,8 +464,8 @@ class HybridSimulation(TiptopConfigBackedSimulation):
                 non_psd_policy=self._non_psd_policy,
                 diagnostics_level=DiagnosticsLevel(self.diagnostics_level),
             ),
-            science_provider=self._get_science_ho_psf_interpolator(),
-            ngs_provider=self._get_ngs_ho_metric_interpolator(),
+            science_psfs=self._get_science_ho_psf_interpolator(),
+            ngs_metrics=self._get_ngs_ho_metric_interpolator(),
             ngs_used=_ngs_used_mask(options),
         )
 
@@ -513,7 +493,7 @@ class HybridSimulation(TiptopConfigBackedSimulation):
 
         Hybrid science-HO PSFs are prepared in their source flux convention
         before interpolation, and finite-FOV Ctot blur can move energy outside
-        the retained image support. Core-stat preprocessing must therefore not
+        the retained image extent. Core-stat preprocessing must therefore not
         clip-and-sum-normalize the result after runtime blur.
         """
         del setup, meta
@@ -547,21 +527,6 @@ class HybridSimulation(TiptopConfigBackedSimulation):
             pixel_scale=result.metadata.pixel_scale,
             tel_diameter=result.metadata.tel_diameter,
             tel_pupil=result.metadata.tel_pupil,
-        )
-
-    def finalize(self, context: SimulationContext) -> None:
-        """Finalize Hybrid output and attach provider source metadata.
-
-        Hybrid providers may supply evaluated scalar metadata from their
-        science-HO-PSF source artifacts. These fields are declared in
-        ``/simulation/meta_fields`` and copied into ``SimulationResult.meta``
-        before the runner computes core PSF statistics.
-        """
-        super().finalize(context)
-        if context.result is None:
-            raise ValueError("Hybrid finalize did not produce a simulation result.")
-        context.result.meta.update(
-            dict(_require_hybrid_result(context).source_metadata)
         )
 
     def build_extra_stats(self, context: SimulationContext) -> Mapping[str, Any]:
@@ -829,8 +794,8 @@ class HybridSimulation(TiptopConfigBackedSimulation):
 
     # Path and option helpers
 
-    def _resolve_required_artifact_path(self, simulation_cfg: Mapping[str, Any], key: str) -> Path:
-        """Resolve a required simulation artifact path through ``base_path``."""
+    def _resolve_required_file_path(self, simulation_cfg: Mapping[str, Any], key: str) -> Path:
+        """Resolve a required simulation file path through ``base_path``."""
         raw_path = simulation_cfg.get(key)
         if raw_path is None:
             raise ValueError(f"HybridSimulation requires simulation['{key}'].")
@@ -844,11 +809,11 @@ class HybridSimulation(TiptopConfigBackedSimulation):
                     raise TypeError(f"simulation['{schema.KEY_CFG_SIMULATION_BASE_PATH}'] must be a string when provided.")
                 path = Path(base_path) / path
         if not path.is_file():
-            raise FileNotFoundError(f"HybridSimulation artifact not found for simulation['{key}']: {path}")
+            raise FileNotFoundError(f"HybridSimulation file not found for simulation['{key}']: {path}")
         return path.resolve()
 
     def _get_required_payload_path(self, simulation_payload: Mapping[str, Any], key: str) -> Path:
-        """Read a required persisted artifact path from ``/simulation``."""
+        """Read a required persisted file path from ``/simulation``."""
         if key not in simulation_payload:
             raise ValueError(f"HybridSimulation requires simulation['{key}'].")
         raw_path = simulation_payload[key]
@@ -856,7 +821,7 @@ class HybridSimulation(TiptopConfigBackedSimulation):
             raise TypeError(f"simulation['{key}'] must be a string for HybridSimulation.")
         path = Path(raw_path)
         if not path.is_file():
-            raise FileNotFoundError(f"HybridSimulation persisted artifact path not found for simulation['{key}']: {path}")
+            raise FileNotFoundError(f"HybridSimulation persisted file path not found for simulation['{key}']: {path}")
         return path.resolve()
 
     def _active_ngs_from_options(self, options: Mapping[str, Any]) -> _ActiveNgs:
@@ -910,24 +875,28 @@ def _require_hybrid_ngs_used(context: SimulationContext) -> np.ndarray:
     return np.asarray(value, dtype=bool).reshape(-1)
 
 
-def _science_meta_fields(interpolator: ScienceHoPsfInterpolator) -> dict[str, u.UnitBase]:
-    return {str(name): value.unit for name, value in interpolator.meta.items()}
+def _hybrid_payload_for_request_match(
+    expected: Mapping[str, object], stored: Mapping[str, object]
+) -> Mapping[str, object]:
+    """Compare Hybrid setup independently of retired interpolator records.
 
-
-def _validate_science_meta_fields_match(
-    simulation_payload: Mapping[str, Any],
-    interpolator: ScienceHoPsfInterpolator,
-) -> None:
-    payload_fields = normalize_meta_fields(simulation_payload.get(schema.KEY_SIMULATION_META_FIELDS, {}))
-    artifact_fields = {
-        name: unit_string(unit)
-        for name, unit in _science_meta_fields(interpolator).items()
+    Existing datasets may include source paths and build records in addition
+    to the paths to their fitted interpolators. Only those four retired
+    records are ignored. The fitted file paths still participate in
+    matching.
+    """
+    fields = (
+        HybridSimulation.KEY_SCIENCE_HO_PSF_INTERPOLATOR_PATH,
+        HybridSimulation.KEY_NGS_HO_METRIC_INTERPOLATOR_PATH,
+    )
+    if not all(field in expected for field in fields):
+        return stored
+    retired = {
+        f"{field.removesuffix('_path')}_{suffix}"
+        for field in fields
+        for suffix in ("provenance", "builder")
     }
-    if payload_fields != artifact_fields:
-        raise ValueError(
-            "HybridSimulation science meta field registry mismatch: "
-            f"payload has {list(payload_fields)}, artifact has {list(artifact_fields)}."
-        )
+    return {name: value for name, value in stored.items() if name not in retired}
 
 
 def _runtime_r0_m(setup: HybridSetup, options: Mapping[str, Any]) -> u.Quantity:
@@ -987,34 +956,35 @@ def _non_psd_policy_from_payload(
     )
 
 
-def _artifact_file_cache_key(path: Path) -> _ArtifactFileCacheKey:
+def _interpolator_file_cache_key(path: Path, dtype: np.dtype) -> _InterpolatorFileCacheKey:
     resolved_path = Path(path).expanduser().resolve()
     stat = resolved_path.stat()
-    return _ArtifactFileCacheKey(
+    return _InterpolatorFileCacheKey(
         path=str(resolved_path),
         size_bytes=int(stat.st_size),
         modified_ns=int(stat.st_mtime_ns),
+        dtype=np.dtype(dtype).name,
     )
 
 
 def _get_cached_science_ho_psf_interpolator(
-    path: Path,
-) -> ScienceHoPsfInterpolator:
-    key = _artifact_file_cache_key(path)
+    path: Path, dtype: np.dtype
+) -> PsfInterpolator:
+    key = _interpolator_file_cache_key(path, dtype)
     interpolator = _SCIENCE_HO_PSF_INTERPOLATOR_CACHE.get(key)
     if interpolator is None:
-        interpolator = load_science_ho_psf_interpolator(path)
-        validate_science_ho_psf_interpolator(interpolator)
+        interpolator = load_psf_interpolator(path, dtype=dtype)
         _SCIENCE_HO_PSF_INTERPOLATOR_CACHE[key] = interpolator
     return interpolator
 
 
-def _get_cached_ngs_ho_metric_interpolator(path: Path) -> NgsHoMetricInterpolator:
-    key = _artifact_file_cache_key(path)
+def _get_cached_ngs_ho_metric_interpolator(
+    path: Path, dtype: np.dtype
+) -> PsfMetricInterpolator:
+    key = _interpolator_file_cache_key(path, dtype)
     interpolator = _NGS_HO_METRIC_INTERPOLATOR_CACHE.get(key)
     if interpolator is None:
-        interpolator = load_ngs_ho_metric_interpolator(path)
-        validate_ngs_ho_metric_interpolator(interpolator)
+        interpolator = load_psf_metric_interpolator(path, dtype=dtype)
         _NGS_HO_METRIC_INTERPOLATOR_CACHE[key] = interpolator
     return interpolator
 

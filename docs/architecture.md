@@ -24,7 +24,7 @@ Keep one obvious owner for each major concern:
   values.
 - Hybrid science-HO-PSF and NGS-HO-metric interpolation products belong to the
   direct `hybrid-ao-psf` dependency. AO Predict owns the Hybrid dataset adapter,
-  not interpolation builders, artifacts, or evaluation.
+  not interpolation builders, files, or evaluation.
 - NGS magnitude, photon-flux, and WFS photon conversions belong to the direct
   `ngs-photometry` dependency. AO Predict owns calibration choice, INI parsing,
   active-star selection, TIPTOP rounding, and Hybrid request binding.
@@ -411,7 +411,7 @@ enforce the same persisted rule.
 Dataset initialization writes `peak_method` for peak estimation and
 `ee_center` for EE aperture placement. Loading a `/setup` without
 `ee_center` resolves it to `peak`. AO Predict requires supported field names,
-explicit unit attributes, and Hybrid AO PSF-format interpolation artifacts
+explicit unit attributes, and Hybrid AO PSF-format interpolator files
 for execution. The Hybrid
 adapter's absent `non_psd_policy` field is read as its `error` default; this
 does not change existing field meanings. Completed datasets remain readable
@@ -441,8 +441,8 @@ follows that lifecycle.
 ### Hybrid Adapter Boundary
 
 `HybridSimulation` is AO Predict's public Hybrid dataset adapter and defines
-its persisted dataset identity. It owns configured upstream artifact references
-and provenance, setup/options resolution, photometry, reusable loaded-provider
+its persisted dataset identity. It owns configured upstream file references,
+setup/options resolution, photometry, reusable loaded-provider
 binding, AO statistics, diagnostic field paths, and result persistence. One
 protected `_resolve_hybrid_inputs()` hook returns an atomic upstream request,
 science provider, NGS provider, AO active-star slot mask, and optional
@@ -463,8 +463,8 @@ and debug diagnostics persist `hybrid/psd_clipped` per science field alongside
 the validity mask of the conditioned covariance.
 
 Completed AO Predict datasets are readable with their persisted class identity
-and field meanings without loading the referenced interpolation artifacts.
-Execution requires interpolation artifacts in Hybrid AO PSF's formats.
+and field meanings without loading the referenced interpolator files.
+Execution requires interpolator files in Hybrid AO PSF's formats.
 
 ## Per-Simulation Science Coordinates
 

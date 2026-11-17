@@ -794,7 +794,7 @@ accepts one, two, or three NGS values; other arities fail before drawing.
 
 Hybrid AO PSF owns the science-HO-PSF and NGS-HO-metric interpolation artifact
 contracts. Project code owns conversion from native simulation products into
-`NgsHoPsfSamples`, `NgsHoMetricSamples`, or `ScienceHoPsfSamples`.
+`PsfSamples` or `PsfMetricSamples`.
 
 The example below builds the two interpolation artifacts consumed by
 `HybridSimulation` and passes their paths into `SimulationConfig`. Replace the
@@ -822,7 +822,7 @@ science_psfs = np.ones((x.size, 100, 100), dtype=np.float32) / 100**2
 tel_diameter = 8.0 * u.m
 tel_pupil = np.ones((64, 64), dtype=np.float32) * u.one
 
-ngs_samples = interp.NgsHoPsfSamples(
+ngs_samples = interp.PsfSamples(
     x=x,
     y=y,
     psfs=ngs_psfs,
@@ -833,12 +833,12 @@ ngs_samples = interp.NgsHoPsfSamples(
 )
 
 ngs_interpolator_path = Path("ngs_ho_metric_interpolator.pkl")
-interp.save_ngs_ho_metric_interpolator(
-    interp.build_ngs_ho_metric_interpolator_from_psfs(ngs_samples),
+interp.save_psf_metric_interpolator(
+    interp.build_psf_metric_interpolator_from_psfs(ngs_samples),
     ngs_interpolator_path,
 )
 
-science_samples = interp.ScienceHoPsfSamples(
+science_samples = interp.PsfSamples(
     x=x,
     y=y,
     psfs=science_psfs,
@@ -849,8 +849,8 @@ science_samples = interp.ScienceHoPsfSamples(
 )
 
 science_interpolator_path = Path("science_ho_psf_interpolator.pkl")
-interp.save_science_ho_psf_interpolator(
-    interp.build_science_ho_psf_interpolator(science_samples),
+interp.save_psf_interpolator(
+    interp.build_psf_interpolator(science_samples),
     science_interpolator_path,
 )
 
@@ -869,9 +869,9 @@ hybrid_simulation = aop.SimulationConfig(
 To make zenith/airmass active, provide `zenith_angle` with one value per
 source plane. For Science-HO wavelength or zenith/airmass interpolation, supply
 per-plane `wavelength`, `pixel_scale`, and optionally `zenith_angle`,
-and shape `psfs` as `(planes, field points, psf_y, psf_x)`. For smoothed NGS
-metric fields, pass `RbfInterpolationConfig(...)` to
-`build_ngs_ho_metric_interpolator_from_psfs(...)`.
+and shape `psfs` as `(planes, field points, psf_y, psf_x)`. Metric builders
+select linear interpolation for complete rectangular field grids and a fixed
+RBF method for scattered samples. No interpolation configuration is required.
 
 The AO Predict adapter reuses loaded providers across option rows. The
 `non_psd_policy` field accepts `error` (default) or `clip` for materially
