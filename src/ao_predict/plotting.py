@@ -151,6 +151,134 @@ class MetricFieldComparisonGrid:
         return self.rows[index]
 
 
+@dataclass(frozen=True)
+class PsfComparisonRow:
+    """Axes for PSF images followed by their comparison images.
+
+    Attributes:
+        axes: PSF axes followed by comparison axes, in display order.
+            Their counts come from the grid builder. Coordinates are shared
+            within the row.
+        intensity_colorbar_ax: Colorbar axis beside the last PSF, for the
+            intensity scale shared by the PSFs.
+        difference_colorbar_ax: Colorbar axis beside the last comparison,
+            for the scale shared by the comparison images.
+    """
+
+    axes: tuple[Axes, ...]
+    intensity_colorbar_ax: Axes
+    difference_colorbar_ax: Axes
+
+
+@dataclass(frozen=True)
+class PsfComparisonGrid:
+    """Prepared multi-row PSF comparison layout.
+
+    Attributes:
+        figure: Matplotlib figure containing all comparison rows.
+        rows: PSF comparison rows with equally sized square image axes and two
+            separate colorbar axes per row.
+    """
+
+    figure: Figure
+    rows: tuple[PsfComparisonRow, ...]
+
+    def __getitem__(self, index: int) -> PsfComparisonRow:
+        """Return a prepared row by zero-based index."""
+
+        return self.rows[index]
+
+
+def prepare_psf_comparison_grid(
+    nrows: int,
+    *,
+    n_psfs: int = 2,
+    n_comparisons: int = 1,
+    figure_size: tuple[float, float] | None = None,
+    colorbar_width: float = _PANEL_COLORBAR_WIDTH,
+    colorbar_pad: float = _PANEL_COLORBAR_PAD,
+    comparison_spacer_width: float = 0.4,
+    left: float = 0.055,
+    right: float = 0.955,
+    bottom: float = 0.08,
+    top: float = 0.93,
+    wspace: float = _COMPARISON_GRID_WSPACE,
+    hspace: float = 0.18,
+) -> PsfComparisonGrid:
+    """Create rows of PSFs and comparisons with separate shared colorbars.
+
+    Use :func:`plot_psf` or :func:`plot_psf_core` on each row's axes with
+    ``add_colorbar=False``. The first ``n_psfs`` axes share an intensity
+    scale; the remaining ``n_comparisons`` axes share a comparison scale.
+    Pass the row's colorbar axes to ``Figure.colorbar``. The caller chooses
+    the image values, comparison calculation, scales, and labels.
+    A dedicated gap separates the two groups and holds the intensity
+    colorbar. Use ``n_psfs=1, n_comparisons=2`` for one reference PSF followed
+    by two residual images. Defaults retain two PSFs and one comparison.
+    Colorbars follow their square image axes during drawing and resizing.
+    The figure is caller-owned and must be closed after use.
+
+    Args:
+        nrows: Positive integer number of comparison rows.
+        n_psfs: Positive integer number of PSF image panels in each row.
+        n_comparisons: Positive integer number of comparison panels per row.
+        figure_size: Figure size in inches. Defaults to
+            ``(4*(n_psfs+n_comparisons), 4*nrows)``.
+        colorbar_width: Colorbar width as a fraction of image-axis width.
+        colorbar_pad: Gap before each colorbar as a fraction of image width.
+        comparison_spacer_width: Extra space between the PSF and comparison
+            groups, relative to image width.
+        left: Fractional figure margin passed to the grid builder.
+        right: Fractional figure margin passed to the grid builder.
+        bottom: Fractional figure margin passed to the grid builder.
+        top: Fractional figure margin passed to the grid builder.
+        wspace: Spacing between columns, separate from the comparison gap.
+        hspace: Vertical spacing between comparison rows.
+
+    Returns:
+        A figure and indexable rows of image axes and two colorbar axes.
+
+    Raises:
+        TypeError: If a panel or row count is not an integer or is a Boolean.
+        ValueError: If a count is nonpositive, either width is not
+            finite and positive, or the colorbar pad is not finite and nonnegative.
+    """
+
+    nrows = _require_positive_int(nrows, "nrows")
+    n_psfs = _require_positive_int(n_psfs, "n_psfs")
+    n_comparisons = _require_positive_int(n_comparisons, "n_comparisons")
+    if not np.isfinite(colorbar_width) or colorbar_width <= 0:
+        raise ValueError("colorbar_width must be finite and positive.")
+    if not np.isfinite(colorbar_pad) or colorbar_pad < 0:
+        raise ValueError("colorbar_pad must be finite and nonnegative.")
+    if not np.isfinite(comparison_spacer_width) or comparison_spacer_width <= 0:
+        raise ValueError("comparison_spacer_width must be finite and positive.")
+    if figure_size is None:
+        figure_size = (4.0 * (n_psfs + n_comparisons), 4.0 * nrows)
+    figure = plt.figure(figsize=figure_size, constrained_layout=False)
+    layout = figure.add_gridspec(
+        nrows, n_psfs + n_comparisons + 1,
+        width_ratios=[1.0] * n_psfs + [comparison_spacer_width] + [1.0] * n_comparisons,
+        left=left, right=right, bottom=bottom, top=top, wspace=wspace, hspace=hspace,
+    )
+    rows = []
+    columns = (*range(n_psfs), *range(n_psfs + 1, n_psfs + n_comparisons + 1))
+    for row_index in range(nrows):
+        axes = tuple(figure.add_subplot(layout[row_index, column]) for column in columns)
+        for axis in axes:
+            axis.set_box_aspect(1)
+        for axis in axes[1:]:
+            axis.sharex(axes[0])
+            axis.sharey(axes[0])
+        colorbar_bounds = (1 + colorbar_pad, 0, colorbar_width, 1)
+        rows.append(PsfComparisonRow(
+            axes=axes,
+            intensity_colorbar_ax=axes[n_psfs - 1].inset_axes(colorbar_bounds),
+            difference_colorbar_ax=axes[-1].inset_axes(colorbar_bounds),
+        ))
+    return PsfComparisonGrid(figure=figure, rows=tuple(rows))
+
+
 def prepare_metric_field_grid(
     nrows: int,
     ncols: int,
@@ -1651,6 +1779,9 @@ __all__ = [
     "MetricFieldComparisonRow",
     "MetricFieldGrid",
     "MetricFieldPanelRow",
+    "PsfComparisonGrid",
+    "PsfComparisonRow",
+    "prepare_psf_comparison_grid",
     "prepare_metric_field_comparison_grid",
     "prepare_metric_field_grid",
     "plot_metric_field_comparison",

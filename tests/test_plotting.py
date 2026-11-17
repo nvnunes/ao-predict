@@ -20,6 +20,7 @@ from ao_predict.plotting import plot_metric_field_panel
 from ao_predict.plotting import plot_psf, plot_psf_core
 from ao_predict.plotting import prepare_metric_field_comparison_grid
 from ao_predict.plotting import prepare_metric_field_grid
+from ao_predict.plotting import prepare_psf_comparison_grid
 from ao_predict.plotting import resolve_metric_name
 from ao_predict.simulation import schema
 from ao_predict.simulation.base import BaseSimulation
@@ -423,6 +424,72 @@ def test_plot_metric_field_comparison_accepts_prepared_grid_row() -> None:
         assert len([axis for axis in fig.axes if not axis.images]) == 2
     finally:
         plt.close(fig)
+
+
+@pytest.mark.parametrize("n_psfs, n_comparisons", [(2, 1), (1, 2), (2, 3), (1, 1)])
+def test_psf_comparison_grid_keeps_panels_and_colorbars_aligned_on_resize(
+    n_psfs: int, n_comparisons: int,
+) -> None:
+    kwargs = {} if (n_psfs, n_comparisons) == (2, 1) else {
+        "n_psfs": n_psfs, "n_comparisons": n_comparisons,
+    }
+    grid = prepare_psf_comparison_grid(2, **kwargs)
+    try:
+        for row in grid.rows:
+            assert len(row.axes) == n_psfs + n_comparisons
+            for axis in row.axes:
+                plot_psf(_make_simulation(), ax=axis, add_colorbar=False)
+            grid.figure.colorbar(row.axes[n_psfs - 1].images[0], cax=row.intensity_colorbar_ax,
+                                 label="Log incident flux / pixel")
+            grid.figure.colorbar(row.axes[-1].images[0], cax=row.difference_colorbar_ax)
+            row.axes[0].set_xlim(-8, 8)
+            row.axes[0].set_ylim(-8, 8)
+
+        width = 4 * (n_psfs + n_comparisons)
+        for size in ((width, 8), (width + 2, 10)):
+            grid.figure.set_size_inches(*size)
+            grid.figure.canvas.draw()
+            for row in grid.rows:
+                positions = [axis.get_window_extent() for axis in row.axes]
+                np.testing.assert_allclose([p.width for p in positions], positions[0].width)
+                np.testing.assert_allclose([p.height for p in positions], positions[0].width)
+                gaps = np.array([right.x0 - left.x1
+                                 for left, right in zip(positions[:-1], positions[1:], strict=True)])
+                assert np.all(gaps[n_psfs - 1] > np.delete(gaps, n_psfs - 1))
+                label_box = row.intensity_colorbar_ax.yaxis.label.get_window_extent()
+                assert label_box.x1 < positions[n_psfs].x0
+                for axis, colorbar in ((row.axes[n_psfs - 1], row.intensity_colorbar_ax),
+                                       (row.axes[-1], row.difference_colorbar_ax)):
+                    image_box = axis.get_window_extent()
+                    colorbar_box = colorbar.get_window_extent()
+                    np.testing.assert_allclose([colorbar_box.y0, colorbar_box.y1],
+                                               [image_box.y0, image_box.y1])
+                    assert colorbar_box.x0 > image_box.x1
+                    assert axis.get_xlim() == (-8, 8)
+                    assert axis.get_ylim() == (-8, 8)
+        assert _saved_png_size(grid.figure) > 0
+    finally:
+        plt.close(grid.figure)
+
+
+@pytest.mark.parametrize("kwargs, error", [
+    ({"nrows": 0}, ValueError), ({"nrows": 1.5}, TypeError), ({"nrows": True}, TypeError),
+    ({"nrows": 1, "n_psfs": 0}, ValueError),
+    ({"nrows": 1, "n_psfs": 1.5}, TypeError),
+    ({"nrows": 1, "n_psfs": True}, TypeError),
+    ({"nrows": 1, "n_comparisons": -1}, ValueError),
+    ({"nrows": 1, "n_comparisons": 1.5}, TypeError),
+    ({"nrows": 1, "n_comparisons": False}, TypeError),
+    ({"nrows": 1, "colorbar_width": 0}, ValueError),
+    ({"nrows": 1, "colorbar_width": np.nan}, ValueError),
+    ({"nrows": 1, "colorbar_pad": -1}, ValueError),
+    ({"nrows": 1, "colorbar_pad": np.inf}, ValueError),
+    ({"nrows": 1, "comparison_spacer_width": 0}, ValueError),
+    ({"nrows": 1, "comparison_spacer_width": np.nan}, ValueError),
+])
+def test_psf_comparison_grid_rejects_invalid_dimensions(kwargs, error) -> None:
+    with pytest.raises(error):
+        prepare_psf_comparison_grid(**kwargs)
 
 
 def test_plot_metric_field_raises_for_missing_requested_ngs_markers() -> None:
