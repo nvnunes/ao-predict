@@ -444,11 +444,11 @@ follows that lifecycle.
 its persisted dataset identity. It owns configured upstream file references,
 setup/options resolution, photometry, reusable loaded-provider
 binding, AO statistics, diagnostic field paths, and result persistence. One
-protected `_resolve_hybrid_inputs()` hook returns an atomic upstream request,
-science provider, NGS provider, AO active-star slot mask, and optional
-`HybridCtotCorrection`. Downstream instrument adapters may replace
-instrument-resolved request values, wrap a provider, or supply a correction;
-the AO Predict base adapter alone calls `hybrid_ao_psf.simulate()` once per
+protected `_resolve_hybrid_inputs()` hook returns the observation request,
+science provider, configured MASTSEL model and AO active-star slot mask.
+Downstream instrument adapters may replace instrument-resolved request values,
+wrap a provider, or set a correction on the MASTSEL model.
+The AO Predict base adapter alone calls `hybrid_ao_psf.simulate()` once per
 option row and maps its result to AO fields.
 It forwards the correction unchanged. Hybrid AO PSF owns callback execution,
 runtime context, conditioning and convolution; downstream owns the correction

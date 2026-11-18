@@ -23,9 +23,12 @@ class ScaledHybridSimulation(HybridSimulation):
         resolved = super()._resolve_hybrid_inputs(context)
         return replace(
             resolved,
-            ctot_correction=HybridCtotCorrection(
-                apply=lambda ctot, runtime: 2 * ctot,
-                provenance={"ctot_scale": "2"},
+            lo_model=replace(
+                resolved.lo_model,
+                ctot_correction=HybridCtotCorrection(
+                    apply=lambda ctot, runtime: 2 * ctot,
+                    provenance={"ctot_scale": "2"},
+                ),
             ),
         )
 ```

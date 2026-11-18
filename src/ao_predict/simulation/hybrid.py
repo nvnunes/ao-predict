@@ -13,13 +13,12 @@ import numpy as np
 from astropy import units as u
 from hybrid_ao_psf import (
     DiagnosticsLevel,
-    HybridCtotCorrection,
     HybridRequest,
     HybridResult,
+    MastselModel,
     NonPsdPolicy,
     PsfInterpolator,
     PsfMetricInterpolator,
-    PsfMetricProvider,
     PsfProvider,
     load_psf_interpolator,
     load_psf_metric_interpolator,
@@ -71,31 +70,24 @@ class HybridResolvedInputs:
     Attributes:
         request: Fully resolved request for one upstream simulation.
         science_psfs: Loaded reusable science-HO-PSF provider.
-        ngs_metrics: Loaded reusable NGS-HO-metric provider.
+        lo_model: Configured MASTSEL model with the NGS metric provider.
         ngs_used: AO slot mask corresponding to the active request vectors.
-        ctot_correction: Optional downstream covariance callback and static
-            metadata, forwarded unchanged to Hybrid AO PSF. Not persisted here.
     """
 
     request: HybridRequest
     science_psfs: PsfProvider
-    ngs_metrics: PsfMetricProvider
+    lo_model: MastselModel
     ngs_used: np.ndarray
-    ctot_correction: HybridCtotCorrection | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.request, HybridRequest):
             raise TypeError("request must be a HybridRequest.")
         if not isinstance(self.science_psfs, PsfProvider):
             raise TypeError("science_psfs must implement PsfProvider.")
-        if not isinstance(self.ngs_metrics, PsfMetricProvider):
-            raise TypeError("ngs_metrics must implement PsfMetricProvider.")
-        if self.ctot_correction is not None and not isinstance(
-            self.ctot_correction, HybridCtotCorrection
-        ):
-            raise TypeError("ctot_correction must be a HybridCtotCorrection or None.")
+        if not isinstance(self.lo_model, MastselModel):
+            raise TypeError("lo_model must be a MastselModel.")
         ngs_used = np.asarray(self.ngs_used, dtype=bool).reshape(-1).copy()
-        if int(np.count_nonzero(ngs_used)) != self.request.ngs_x.size:
+        if int(np.count_nonzero(ngs_used)) != len(self.request.ngs_positions):
             raise ValueError("ngs_used active count must match the Hybrid request.")
         ngs_used.setflags(write=False)
         object.__setattr__(self, "ngs_used", ngs_used)
@@ -404,8 +396,7 @@ class HybridSimulation(TiptopConfigBackedSimulation):
         result = simulate(
             resolved.request,
             resolved.science_psfs,
-            resolved.ngs_metrics,
-            ctot_correction=resolved.ctot_correction,
+            lo_model=resolved.lo_model,
         )
         context.runtime[self.KEY_RUNTIME_RESULT] = result
         context.runtime[self.KEY_RUNTIME_NGS_USED] = resolved.ngs_used
@@ -446,12 +437,9 @@ class HybridSimulation(TiptopConfigBackedSimulation):
         return HybridResolvedInputs(
             request=HybridRequest(
                 dtype=self.dtype,
-                science_x=science_x,
-                science_y=science_y,
-                ngs_x=active_ngs.x,
-                ngs_y=active_ngs.y,
+                science_positions=np.column_stack((science_x, science_y)),
+                ngs_positions=np.column_stack((active_ngs.x, active_ngs.y)),
                 ngs_magnitude=active_ngs.magnitude,
-                ngs_magnitude_zeropoint=setup.ngs_magnitude_zeropoint,
                 wavelength=_require_option_scalar(
                     options,
                     schema.KEY_OPTION_WAVELENGTH,
@@ -460,12 +448,15 @@ class HybridSimulation(TiptopConfigBackedSimulation):
                     options,
                     schema.KEY_OPTION_ZENITH_ANGLE,
                 ),
-                mastsel_ini=_serialize_parser(parser),
-                non_psd_policy=self._non_psd_policy,
                 diagnostics_level=DiagnosticsLevel(self.diagnostics_level),
             ),
             science_psfs=self._get_science_ho_psf_interpolator(),
-            ngs_metrics=self._get_ngs_ho_metric_interpolator(),
+            lo_model=MastselModel(
+                mastsel_ini=_serialize_parser(parser),
+                ngs_metrics=self._get_ngs_ho_metric_interpolator(),
+                ngs_magnitude_zeropoint=setup.ngs_magnitude_zeropoint.astype(self.dtype),
+                non_psd_policy=self._non_psd_policy,
+            ),
             ngs_used=_ngs_used_mask(options),
         )
 

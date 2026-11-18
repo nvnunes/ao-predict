@@ -266,12 +266,12 @@ def test_hybrid_provider_uses_file_pixel_scale_and_passes_magnitude(tmp_path: Pa
     resolved = sim._resolve_hybrid_inputs(sim.create(0, _options()))
     assert resolved.request.ngs_flux is None
     np.testing.assert_array_equal(resolved.request.ngs_magnitude.to_value(u.mag), [14.0])
-    assert resolved.request.ngs_magnitude_zeropoint == _setup_payload()["ngs_magnitude_zeropoint"]
+    assert resolved.lo_model.ngs_magnitude_zeropoint == _setup_payload()["ngs_magnitude_zeropoint"]
     result = resolved.science_psfs.evaluate(
         zenith_angle=resolved.request.zenith_angle,
         wavelength=resolved.request.wavelength,
-        x=resolved.request.science_x,
-        y=resolved.request.science_y,
+        x=resolved.request.science_positions[:, 0],
+        y=resolved.request.science_positions[:, 1],
     )
 
     assert result.pixel_scale.to_value(u.mas) == pytest.approx(4.0)
@@ -311,17 +311,13 @@ def test_hybrid_create_applies_science_offsets_to_runtime_setup(tmp_path: Path) 
         context.resolved_sci_theta.to_value(u.deg),
         np.mod(np.rad2deg(np.arctan2([0.5, 0.5], [0.25, 0.75])), 360.0),
     )
-    request = sim._resolve_hybrid_inputs(context).request
+    resolved = sim._resolve_hybrid_inputs(context)
+    request = resolved.request
     np.testing.assert_allclose(
-        request.science_x.to_value(u.arcsec),
-        np.array([0.25, 0.75]),
-    )
-    np.testing.assert_allclose(
-        request.science_y.to_value(u.arcsec),
-        np.array([0.5, 0.5]),
+        request.science_positions.to_value(u.arcsec), [[0.25, 0.5], [0.75, 0.5]]
     )
     pre_engine_ini = ConfigParser()
-    pre_engine_ini.read_string(request.mastsel_ini)
+    pre_engine_ini.read_string(resolved.lo_model.mastsel_ini)
     assert pre_engine_ini["sources_science"]["Zenith"] == "[0.0,1.0]"
     assert pre_engine_ini["sources_LO"]["Zenith"] == "[0.0]"
     assert pre_engine_ini["sensor_LO"]["NumberLenslets"] == "[16]"
@@ -357,13 +353,13 @@ def test_hybrid_subclass_can_replace_resolved_provider(
         def _resolve_hybrid_inputs(self, context):
             resolved = super()._resolve_hybrid_inputs(context)
             resolved_fields["request"] = (
-                resolved.request.science_x.to_value(u.arcsec),
-                resolved.request.science_y.to_value(u.arcsec),
+                resolved.request.science_positions[:, 0].to_value(u.arcsec),
+                resolved.request.science_positions[:, 1].to_value(u.arcsec),
             )
             return HybridResolvedInputs(
                 request=resolved.request,
                 science_psfs=ScienceProvider(),
-                ngs_metrics=resolved.ngs_metrics,
+                lo_model=resolved.lo_model,
                 ngs_used=resolved.ngs_used,
             )
 
@@ -499,10 +495,10 @@ def test_hybrid_run_calls_upstream_engine_once(
     )
     calls: list[tuple[object, object, object]] = []
 
-    def observed_simulate(request, science_psfs, ngs_metrics, *, ctot_correction=None):
-        assert ctot_correction is None
-        calls.append((request, science_psfs, ngs_metrics))
-        return hybrid_ao_psf.simulate(request, science_psfs, ngs_metrics)
+    def observed_simulate(request, science_psfs, *, lo_model):
+        assert lo_model.ctot_correction is None
+        calls.append((request, science_psfs, lo_model))
+        return hybrid_ao_psf.simulate(request, science_psfs, lo_model=lo_model)
 
     monkeypatch.setattr("ao_predict.simulation.hybrid.simulate", observed_simulate)
     sim = HybridSimulation()
@@ -513,11 +509,11 @@ def test_hybrid_run_calls_upstream_engine_once(
     sim.run(context)
 
     assert len(calls) == 1
-    request, science_psfs, ngs_metrics = calls[0]
-    assert request.non_psd_policy.value == "error"
+    request, science_psfs, lo_model = calls[0]
+    assert lo_model.non_psd_policy.value == "error"
     assert request.diagnostics_level.value == "none"
     assert science_psfs is sim.science_ho_psf_interpolator
-    assert ngs_metrics is sim.ngs_ho_metric_interpolator
+    assert lo_model.ngs_metrics is sim.ngs_ho_metric_interpolator
     assert isinstance(context.runtime[HybridSimulation.KEY_RUNTIME_RESULT], HybridResult)
 
 
@@ -526,24 +522,25 @@ def test_hybrid_subclass_forwards_exact_correction_once(tmp_path, monkeypatch):
 
     class CorrectedHybrid(HybridSimulation):
         def _resolve_hybrid_inputs(self, context):
-            return replace(super()._resolve_hybrid_inputs(context), ctot_correction=correction)
+            resolved = super()._resolve_hybrid_inputs(context)
+            return replace(resolved, lo_model=replace(resolved.lo_model, ctot_correction=correction))
 
     sim = CorrectedHybrid()
     sim.load_simulation_payload(_simulation_payload(tmp_path))
     sim.load_setup_payload(_setup_payload())
     context = sim.create(0, _options())
     original = HybridSimulation._resolve_hybrid_inputs(sim, context)
-    assert original.ctot_correction is None
-    with pytest.raises(TypeError, match="ctot_correction"):
-        replace(original, ctot_correction=object())
+    assert original.lo_model.ctot_correction is None
+    with pytest.raises(TypeError, match="lo_model"):
+        replace(original, lo_model=object())
     calls = []
     sentinel = object()
 
-    def engine(request, science_psfs, ngs_metrics, *, ctot_correction):
-        calls.append(ctot_correction)
+    def engine(request, science_psfs, *, lo_model):
+        calls.append(lo_model.ctot_correction)
         assert request is not None
         assert science_psfs is original.science_psfs
-        assert ngs_metrics is original.ngs_metrics
+        assert lo_model.ngs_metrics is original.lo_model.ngs_metrics
         return sentinel
 
     monkeypatch.setattr("ao_predict.simulation.hybrid.simulate", engine)
