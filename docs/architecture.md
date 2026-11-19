@@ -24,8 +24,8 @@ Keep one obvious owner for each major concern:
 - Hybrid science-HO-PSF and NGS-HO-metric interpolation products belong to the
   direct `hybrid-ao-psf` dependency. AO Predict owns the Hybrid dataset adapter,
   not interpolation builders, files, or evaluation.
-- NGS magnitude, photon-flux, and WFS photon conversions belong to the direct
-  `ngs-photometry` dependency. AO Predict owns calibration choice, INI parsing,
+- NGS magnitude, photon-flux, and WFS photon conversions belong to
+  `ao_core.photometry`. AO Predict owns calibration choice, INI parsing,
   active-star selection, TIPTOP rounding, and Hybrid request binding.
 - AO Core owns shared result fields and HDF5 I/O. AO Predict's
   `persistence/*` validates the simulation dataset, adapts its payloads to
@@ -130,7 +130,7 @@ setup zeropoint to Hybrid AO PSF, which resolves the WFS-effective
 Hybrid requests may instead supply the effective rate. The TIPTOP adapter
 converts magnitudes in AO Predict.
 Instrument-specific magnitude standards and calibration values are supplied
-by the simulation implementation and its setup, not selected by NGS Photometry.
+by the simulation implementation and its setup.
 
 Simulation-owned scalar metadata declarations map each field name to its
 Astropy unit. A declaration value of `None` identifies an ordinary numeric

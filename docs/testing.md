@@ -15,10 +15,9 @@ AO_PREDICT_HYBRID_SOURCE=../hybrid-ao-psf \
 ./scripts/bootstrap.sh
 ```
 
-Bootstrap installs NGS Photometry from GitHub by default. Use
-`AO_PREDICT_NGS_PHOTOMETRY_SOURCE=../ngs-photometry` for a sibling editable
-checkout. See [`docs/development.md`](development.md#bootstrap) for Hybrid
-source choices and for when plain `./scripts/bootstrap.sh` is sufficient.
+Bootstrap installs AO Core from GitHub by default. Use
+`AO_PREDICT_AO_CORE_SOURCE=../ao-core` for a sibling editable checkout. See the
+[development guide](development.md#bootstrap) for dependency source options.
 
 That script creates the local environment when needed, installs the package
 with `dev` and `docs` extras, configures the git hooks path, runs the test

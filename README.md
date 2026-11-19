@@ -10,18 +10,19 @@ those models for bounded physical prediction and aggregate evaluation.
 
 ## Installation
 
-To install AO Predict from a local checkout, install NGS Photometry from its
+To install AO Predict from a local checkout, install AO Core from its
 GitHub repository first. If `hybrid-ao-psf` is unavailable from your package
 index, install it from a sibling checkout as well:
 
 ```bash
-python -m pip install "git+https://github.com/nvnunes/ngs-photometry.git"
+python -m pip install --force-reinstall --no-deps "git+https://github.com/nvnunes/ao-core.git"
 # If needed: python -m pip install -e ../hybrid-ao-psf
 python -m pip install .
+python -c 'import ao_core.photometry'
 ```
 
 The [development setup](docs/development.md#bootstrap) can instead use a
-sibling NGS Photometry checkout.
+sibling AO Core checkout.
 
 That path is intended for package use. For local development in this repo, use
 the canonical workflow in `Local Development Setup` below.
@@ -147,8 +148,8 @@ AO_PREDICT_HYBRID_SOURCE=../hybrid-ao-psf \
 ./scripts/bootstrap.sh
 ```
 
-Bootstrap installs NGS Photometry from GitHub by default. Set
-`AO_PREDICT_NGS_PHOTOMETRY_SOURCE=../ngs-photometry` to use a sibling editable
+Bootstrap installs AO Core from GitHub by default. Set
+`AO_PREDICT_AO_CORE_SOURCE=../ao-core` to use a sibling editable
 checkout. See the [development setup](docs/development.md#bootstrap) for
 source choices and the Hybrid dependency.
 

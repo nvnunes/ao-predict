@@ -11,8 +11,8 @@ import tempfile
 from typing import Any, Mapping
 
 import numpy as np
+from ao_core.photometry import magnitudes_to_photons_per_frame
 from astropy import units as u
-from ngs_photometry import magnitudes_to_photons_per_frame
 
 from . import atm
 from . import schema

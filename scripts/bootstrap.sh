@@ -12,12 +12,14 @@ fi
 env_prefix="$repo_root/.conda"
 
 install_source() {
-  case "$1" in
-    git+*|http://*|https://*)
-      conda run --prefix "$env_prefix" python -m pip install "$1"
+  local source="$1"
+  shift
+  case "$source" in
+    git+*|http://*|https://*|*.whl)
+      conda run --prefix "$env_prefix" python -m pip install "$@" "$source"
       ;;
     *)
-      conda run --prefix "$env_prefix" python -m pip install -e "$1"
+      conda run --prefix "$env_prefix" python -m pip install "$@" -e "$source"
       ;;
   esac
 }
@@ -28,14 +30,12 @@ if [ ! -d "$env_prefix" ]; then
 fi
 
 echo "[bootstrap] Installing package with dev+docs extras..."
-if [ -n "${AO_PREDICT_AO_CORE_SOURCE:-}" ]; then
-  install_source "$AO_PREDICT_AO_CORE_SOURCE"
-fi
-install_source "${AO_PREDICT_NGS_PHOTOMETRY_SOURCE:-git+https://github.com/nvnunes/ngs-photometry.git}"
+install_source "${AO_PREDICT_AO_CORE_SOURCE:-git+https://github.com/nvnunes/ao-core.git}" --force-reinstall --no-deps
 if [ -n "${AO_PREDICT_HYBRID_SOURCE:-}" ]; then
   install_source "$AO_PREDICT_HYBRID_SOURCE"
 fi
 conda run --prefix "$env_prefix" python -m pip install -e ".[dev,docs]"
+conda run --prefix "$env_prefix" python -c 'import ao_core.photometry'
 
 echo "[bootstrap] Configuring git hooks path..."
 git config core.hooksPath .githooks

@@ -9,7 +9,7 @@ from typing import Any, Mapping
 
 import numpy as np
 from astropy import units as u
-from ngs_photometry import WFSPhotometryConfig, photons_per_frame_to_magnitudes
+from ao_core.photometry import WFSPhotometryConfig, photons_per_frame_to_magnitudes
 
 from . import atm
 from . import schema

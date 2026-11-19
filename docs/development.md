@@ -22,16 +22,14 @@ AO_PREDICT_HYBRID_SOURCE=../hybrid-ao-psf \
 ./scripts/bootstrap.sh
 ```
 
-Set `AO_PREDICT_AO_CORE_SOURCE` and `AO_PREDICT_HYBRID_SOURCE` to use local
-checkouts of AO Core and Hybrid AO PSF. Omit either override when the package
-is available from the configured index. The AO Core build must include
-`ao_core.io`. The index or the AO Predict Conda
-environment must also supply their dependencies, such as AO Models for
-Hybrid AO PSF.
+Bootstrap reinstalls AO Core from GitHub by default. Set
+`AO_PREDICT_AO_CORE_SOURCE` to a local checkout, wheel or Git URL. The AO Core
+build must include `ao_core.io` and `ao_core.photometry`. Bootstrap checks
+the photometry import after installing the dependencies.
 
-Bootstrap installs NGS Photometry from GitHub by default. Set
-`AO_PREDICT_NGS_PHOTOMETRY_SOURCE` to use a sibling checkout or a Git URL at a
-verified revision.
+Set `AO_PREDICT_HYBRID_SOURCE` when Hybrid AO PSF is unavailable from the
+configured package index. The index or the AO Predict Conda environment
+must also supply dependencies such as AO Models for Hybrid AO PSF.
 
 The script will:
 - create `.conda` if missing
@@ -58,7 +56,6 @@ installations separately after upstream changes:
 ```bash
 ./.conda/bin/python -m pip install -e ../ao-core
 ./.conda/bin/python -m pip install -e ../hybrid-ao-psf
-./.conda/bin/python -m pip install -e ../ngs-photometry
 ```
 
 Run the CLI from the same environment:
