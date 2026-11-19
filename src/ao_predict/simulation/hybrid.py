@@ -695,55 +695,57 @@ class HybridSimulation(TiptopConfigBackedSimulation):
             raise ValueError(
                 "Hybrid AO PSF did not return the requested diagnostics."
             )
+        mastsel = upstream.mastsel
+        if mastsel is None:
+            raise ValueError("HybridSimulation requires MASTSEL diagnostics.")
+        covariance = upstream.covariance
+        ctot = covariance.ctot
+        values = ctot.to_value(u.mas**2)
+        traces = np.trace(values, axis1=-2, axis2=-1)
+        determinants = np.linalg.det(values)
+        trace_min, trace_max = traces.min(), traces.max()
+        determinant_min, determinant_max = determinants.min(), determinants.max()
+        trace_mean = np.clip(traces.mean(), trace_min, trace_max)
+        determinant_mean = np.clip(determinants.mean(), determinant_min, determinant_max)
         used = np.asarray(diagnostics_context.ngs_used, dtype=bool)
+        ngs_frequency = np.full(used.shape, np.nan, dtype=mastsel.frame_rate.dtype)
+        ngs_frequency[used] = mastsel.frame_rate.to_value(u.Hz)
         diagnostics: dict[str, Any] = {
             "hybrid/angle_to_wavefront_scale": self.dtype.type(
-                result.angle_to_wavefront_scale.to_value(u.nm / u.mas)
+                mastsel.angle_to_wavefront_scale.to_value(u.nm / u.mas)
             )
             * (u.nm / u.mas),
-            "hybrid/psd_valid_count": np.int32(upstream.psd_valid_count),
+            "hybrid/psd_valid_count": np.int32(covariance.psd_valid_count),
             "hybrid/psd_valid_fraction": self.dtype.type(
-                upstream.psd_valid_fraction
+                covariance.psd_valid_fraction
             )
             * u.dimensionless_unscaled,
             "hybrid/psd_valid_mask": np.asarray(
-                upstream.psd_valid_mask,
+                covariance.psd_valid_mask,
                 dtype=bool,
             ),
-            "hybrid/psd_clipped": np.asarray(result.psd_clipped, dtype=bool),
-            "hybrid/ctot_angle_trace_min": upstream.ctot_angle_trace_min.astype(
-                self.dtype.type
-            ),
-            "hybrid/ctot_angle_trace_max": upstream.ctot_angle_trace_max.astype(
-                self.dtype.type
-            ),
-            "hybrid/ctot_angle_trace_mean": upstream.ctot_angle_trace_mean.astype(
-                self.dtype.type
-            ),
-            "hybrid/ctot_angle_determinant_min": upstream.ctot_angle_determinant_min.astype(
-                self.dtype.type
-            ),
-            "hybrid/ctot_angle_determinant_max": upstream.ctot_angle_determinant_max.astype(
-                self.dtype.type
-            ),
-            "hybrid/ctot_angle_determinant_mean": upstream.ctot_angle_determinant_mean.astype(
-                self.dtype.type
-            ),
+            "hybrid/psd_clipped": np.asarray(covariance.psd_clipped, dtype=bool),
+            "hybrid/ctot_angle_trace_min": self.dtype.type(trace_min) * u.mas**2,
+            "hybrid/ctot_angle_trace_max": self.dtype.type(trace_max) * u.mas**2,
+            "hybrid/ctot_angle_trace_mean": self.dtype.type(trace_mean) * u.mas**2,
+            "hybrid/ctot_angle_determinant_min": self.dtype.type(determinant_min) * u.mas**4,
+            "hybrid/ctot_angle_determinant_max": self.dtype.type(determinant_max) * u.mas**4,
+            "hybrid/ctot_angle_determinant_mean": self.dtype.type(determinant_mean) * u.mas**4,
             "hybrid/ngs_used": used,
-            "hybrid/ngs/ee": _slot_aligned(result.ngs_metrics.ee, used),
-            "hybrid/ngs/fwhm": _slot_aligned(result.ngs_metrics.fwhm, used),
-            "hybrid/ngs/sr": _slot_aligned(result.ngs_metrics.sr, used),
-            "hybrid/ngs/flux": _slot_aligned(result.ngs_flux, used),
-            "hybrid/ngs/frequency": _slot_aligned(result.ngs_frame_rate, used),
+            "hybrid/ngs/ee": _slot_aligned(mastsel.ngs_metrics.ee, used),
+            "hybrid/ngs/fwhm": _slot_aligned(mastsel.ngs_metrics.fwhm, used),
+            "hybrid/ngs/sr": _slot_aligned(mastsel.ngs_metrics.sr, used),
+            "hybrid/ngs/flux": _slot_aligned(mastsel.ngs_flux, used),
+            "hybrid/ngs/frequency": ngs_frequency * u.Hz,
         }
         if self.diagnostics_level == schema.DIAGNOSTICS_LEVEL_DEBUG:
             diagnostics.update(
                 {
-                    "hybrid/ctot_wavefront": result.ctot_wavefront.astype(
-                        self.dtype.type
-                    ),
-                    "hybrid/ctot_angle": result.ctot_angle.astype(self.dtype.type),
-                    "hybrid/runtime_ini_text": result.effective_mastsel_ini,
+                    "hybrid/ctot_wavefront": (
+                        ctot * mastsel.angle_to_wavefront_scale**2
+                    ).astype(self.dtype.type),
+                    "hybrid/ctot_angle": ctot.astype(self.dtype.type),
+                    "hybrid/runtime_ini_text": mastsel.effective_ini,
                 }
             )
         return diagnostics

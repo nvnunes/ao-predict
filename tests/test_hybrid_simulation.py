@@ -518,7 +518,7 @@ def test_hybrid_run_calls_upstream_engine_once(
 
 
 def test_hybrid_subclass_forwards_exact_correction_once(tmp_path, monkeypatch):
-    correction = HybridCtotCorrection(lambda ctot, context: None, {"test": "hook"})
+    correction = HybridCtotCorrection(lambda ctot, context: None, {"fit": "fit.json"})
 
     class CorrectedHybrid(HybridSimulation):
         def _resolve_hybrid_inputs(self, context):
@@ -818,6 +818,17 @@ def test_hybrid_validation_diagnostics_are_persisted_and_readable(
         np.array([0.3, np.nan]),
         equal_nan=True,
     )
+    frequency = diagnostics["hybrid"]["ngs"]["frequency"]
+    assert frequency.dtype == np.float32
+    np.testing.assert_array_equal(frequency.to_value(u.Hz), [500.0, np.nan])
+    second_trace = 1.0 if non_psd_policy == "clip" else 2.0
+    second_determinant = 0.0 if non_psd_policy == "clip" else 1.0
+    assert diagnostics["hybrid"]["ctot_angle_trace_min"] == 0.5 * u.mas**2
+    assert diagnostics["hybrid"]["ctot_angle_trace_max"] == second_trace * u.mas**2
+    assert diagnostics["hybrid"]["ctot_angle_trace_mean"] == (0.5 + second_trace) / 2 * u.mas**2
+    assert diagnostics["hybrid"]["ctot_angle_determinant_min"] == min(0.0625, second_determinant) * u.mas**4
+    assert diagnostics["hybrid"]["ctot_angle_determinant_max"] == max(0.0625, second_determinant) * u.mas**4
+    assert diagnostics["hybrid"]["ctot_angle_determinant_mean"] == (0.0625 + second_determinant) / 2 * u.mas**4
     assert "ctot_wavefront" not in diagnostics["hybrid"]
     assert "runtime_ini_text" not in diagnostics["hybrid"]
     assert all_diagnostics["hybrid"]["angle_to_wavefront_scale"].shape == (1,)
