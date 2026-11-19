@@ -7,10 +7,13 @@ from typing import Any, Mapping
 
 import h5py
 import numpy as np
+from ao_core.io import clear_observation, hdf5, write_observation
+from ao_core.io import schema as result_schema
+from ao_core.io.results import diagnostic_shape, initialize_layout
 from astropy import units as u
 
 from .._precision import real_dtype
-from .._units import UNITS_ATTRIBUTE, parse_unit, quantity_from_value, quantity_value, require_quantity, unit_string
+from .._units import UNITS_ATTRIBUTE, quantity_from_value, require_quantity, unit_string
 from ..simulation import schema
 from ..simulation.atm import ATM_PROFILE_FIELD_UNITS
 from ..simulation.validation import (
@@ -25,135 +28,7 @@ from ..simulation.validation import (
     validate_simulation_payload_core,
 )
 from ..simulation.interfaces import SimulationResult, SimulationState
-from ..simulation.helpers import get_ee_apertures, get_num_sci
-from ..utils import as_array
-
-
-# HDF5 value conversion
-
-
-def _write_value(group: h5py.Group, key: str, value: Any) -> None:
-    """Write a Python value recursively into an HDF5 group key."""
-    if isinstance(value, Mapping):
-        sub = group[key] if key in group else group.create_group(key, track_order=True)
-        if not isinstance(sub, h5py.Group):
-            raise TypeError(f"Cannot write mapping over non-group HDF5 key {key!r}.")
-        for sub_key, sub_value in value.items():
-            _write_value(sub, str(sub_key), sub_value)
-        return
-
-    if isinstance(value, str):
-        dtype = h5py.string_dtype(encoding="utf-8")
-        if key in group:
-            del group[key]
-        group.create_dataset(key, data=value, dtype=dtype)
-        return
-
-    unit: u.UnitBase | None = None
-    if isinstance(value, u.Quantity):
-        unit = value.unit
-        arr = np.asarray(value.value)
-    else:
-        arr = as_array(value)
-    if arr.dtype.kind in {"U", "O"}:
-        dtype = h5py.string_dtype(encoding="utf-8")
-        if key in group:
-            del group[key]
-        dataset = group.create_dataset(key, data=np.asarray(arr, dtype=object), dtype=dtype)
-    else:
-        if key in group:
-            del group[key]
-        dataset = group.create_dataset(key, data=arr)
-    if unit is not None:
-        dataset.attrs[UNITS_ATTRIBUTE] = unit_string(unit)
-
-
-def _decode_value(data: Any) -> Any:
-    """Decode one numerical or string value read from HDF5."""
-    if isinstance(data, bytes):
-        return data.decode("utf-8")
-    if isinstance(data, np.ndarray) and data.dtype.kind in {"S", "O"}:
-        return data.astype(str)
-    return data
-
-
-def _with_dataset_unit(ds: h5py.Dataset, value: Any) -> Any:
-    """Reconstruct a quantity when one HDF5 dataset declares ``units``."""
-    value = _decode_value(value)
-    if UNITS_ATTRIBUTE not in ds.attrs:
-        return value
-    return quantity_from_value(value, u.Unit(ds.attrs[UNITS_ATTRIBUTE]))
-
-
-def _set_dataset_unit(ds: h5py.Dataset, unit: u.UnitBase) -> h5py.Dataset:
-    """Attach one canonical unit to a newly allocated HDF5 dataset."""
-    ds.attrs[UNITS_ATTRIBUTE] = unit_string(unit)
-    return ds
-
-
-def _read_dataset_value(ds: h5py.Dataset) -> Any:
-    """Read one dataset, reconstructing a quantity when units are declared."""
-    return _with_dataset_unit(ds, ds[()])
-
-
-def _read_node(node: h5py.Group | h5py.Dataset) -> Any:
-    """Read an HDF5 node into Python values, reconstructing quantities."""
-    if isinstance(node, h5py.Group):
-        return {k: _read_node(node[k]) for k in node.keys()}
-
-    return _read_dataset_value(node)
-
-
-# Dataset and index checks
-
-
-def _collect_dataset_unit_issue(
-    f: h5py.File,
-    path: str,
-    unit: u.UnitBase,
-    issues: list[str],
-) -> None:
-    """Require one existing quantity dataset to declare its canonical unit."""
-    if path not in f or not isinstance(f[path], h5py.Dataset):
-        return
-    expected = unit_string(unit)
-    if f[path].attrs.get(UNITS_ATTRIBUTE) != expected:
-        issues.append(f"/{path.strip('/')} must declare units={expected!r}.")
-
-
-def _ensure_sim_idx(sim_idx: int) -> int:
-    """Validate and normalize a zero-based simulation index."""
-    idx = int(sim_idx)
-    if idx < 0:
-        raise IndexError(f"simulation index must be >= 0, got {idx}.")
-    return idx
-
-
-def _require_dataset(f: h5py.File | h5py.Group, path: str) -> h5py.Dataset:
-    """Return a dataset by path or raise a clear contract error."""
-    if path not in f:
-        raise ValueError(f"Missing required dataset '{path}'.")
-    ds = f[path]
-    if not isinstance(ds, h5py.Dataset):
-        raise ValueError(f"{path} must be a dataset.")
-    return ds
-
-
-def _require_dataset_ndim(ds: h5py.Dataset, *, path: str, ndim: int) -> h5py.Dataset:
-    """Validate dataset dimensionality for a specific persisted contract."""
-    if ds.ndim != ndim:
-        raise ValueError(f"{path} must be {ndim}D.")
-    return ds
-
-
-def _require_diagnostic_dataset(root: h5py.Group, path: str) -> h5py.Dataset:
-    """Return one diagnostic dataset by slash-delimited path."""
-    if path not in root:
-        raise ValueError(f"Missing declared diagnostics dataset '/diagnostics/{path}'.")
-    node = root[path]
-    if not isinstance(node, h5py.Dataset):
-        raise ValueError(f"/diagnostics/{path} must be a dataset.")
-    return node
+from ..simulation.helpers import get_num_sci
 
 
 # Stored setup and field declarations
@@ -161,7 +36,7 @@ def _require_diagnostic_dataset(root: h5py.Group, path: str) -> h5py.Dataset:
 
 def _read_stored_setup(group: h5py.Group) -> tuple[dict[str, Any], bool]:
     """Resolve stored setup and identify the one supported legacy unit label."""
-    setup = _read_node(group)
+    setup = hdf5.read_node(group)
     key = schema.KEY_SETUP_NGS_MAGNITUDE_ZEROPOINT
     zeropoint = group.get(key)
     legacy_zeropoint_unit = (
@@ -177,108 +52,19 @@ def _read_stored_setup(group: h5py.Group) -> tuple[dict[str, Any], bool]:
     return resolve_setup_payload_for_load(setup), legacy_zeropoint_unit
 
 
-def _read_extra_stat_fields(simulation: Mapping[str, Any]) -> dict[str, u.UnitBase]:
-    """Read declared extra-stat units from a validated simulation payload."""
-    fields = simulation[schema.KEY_SIMULATION_EXTRA_STAT_FIELDS]
-    if not isinstance(fields, Mapping):
-        raise TypeError(f"simulation['{schema.KEY_SIMULATION_EXTRA_STAT_FIELDS}'] must be a mapping.")
-    return {str(name): parse_unit(unit, label=f"extra stat {name!r}") for name, unit in fields.items()}
-
-
-def _read_diagnostic_field_specs(simulation: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
-    """Read and validate declared diagnostic specs from ``/simulation``.
-
-    The persisted ``diagnostic_fields`` mapping may use flat slash-delimited
-    keys or nested mappings that mirror the ``/diagnostics`` group tree. Each
-    leaf spec declares a storage ``dtype`` and a shape excluding the leading
-    simulation dimension ``N``. Supported dtypes are ``float32``, ``float64``,
-    ``int32``, ``int64``, ``bool``, and ``str``. Supported symbolic shape
-    tokens are ``num_sci`` and ``num_ngs``; numeric shape values must be
-    positive integers.
-
-    Args:
-        simulation: Persisted ``/simulation`` payload mapping.
-
-    Returns:
-        Flat mapping from slash-delimited ``/diagnostics`` field path to
-        normalized dtype/shape spec.
-
-    Raises:
-        TypeError: If the diagnostic spec tree is not mapping-shaped.
-        ValueError: If field names, dtypes, or shape tokens are invalid.
-    """
-    raw_specs = simulation.get(schema.KEY_SIMULATION_DIAGNOSTIC_FIELDS, {})
-    if raw_specs is None:
-        return {}
-    if not isinstance(raw_specs, Mapping):
-        raise TypeError(f"simulation['{schema.KEY_SIMULATION_DIAGNOSTIC_FIELDS}'] must be a mapping.")
-    specs: dict[str, dict[str, Any]] = {}
-
-    def iter_specs(node: Mapping[str, Any], prefix: str = ""):
-        for raw_name, raw_spec in node.items():
-            name = f"{prefix}/{raw_name}" if prefix else str(raw_name)
-            if not isinstance(raw_spec, Mapping):
-                raise TypeError(f"diagnostic field spec for '{name}' must be a mapping.")
-            if "dtype" in raw_spec or "shape" in raw_spec:
-                yield name, raw_spec
-            else:
-                yield from iter_specs(raw_spec, prefix=name)
-
-    for raw_name, raw_spec in iter_specs(raw_specs):
-        name = str(raw_name).strip("/")
-        if not name:
-            raise ValueError("diagnostic field names must be non-empty.")
-        dtype = str(raw_spec.get("dtype", "float32")).strip()
-        if dtype not in {"float32", "float64", "int32", "int64", "bool", "str"}:
-            raise ValueError(f"diagnostic field '{name}' has unsupported dtype {dtype!r}.")
-        shape = raw_spec.get("shape", ())
-        shape_values = np.asarray(shape, dtype=object).reshape(-1).tolist()
-        normalized_shape: list[str | int] = []
-        for value in shape_values:
-            if isinstance(value, str):
-                if value not in {"num_sci", "num_ngs"}:
-                    try:
-                        value = int(value)
-                    except ValueError as exc:
-                        raise ValueError(f"diagnostic field '{name}' has unsupported shape token {value!r}.") from exc
-                    if value <= 0:
-                        raise ValueError(f"diagnostic field '{name}' shape values must be positive.")
-                    normalized_shape.append(value)
-                else:
-                    normalized_shape.append(value)
-            elif int(value) <= 0:
-                raise ValueError(f"diagnostic field '{name}' shape values must be positive.")
-            else:
-                normalized_shape.append(int(value))
-        spec = {"dtype": dtype, "shape": tuple(normalized_shape)}
-        if dtype in {"float32", "float64"}:
-            if "unit" not in raw_spec:
-                raise ValueError(f"diagnostic field '{name}' must declare a unit.")
-            spec["unit"] = unit_string(parse_unit(raw_spec["unit"], label=f"diagnostic field {name!r} unit"))
-        elif "unit" in raw_spec:
-            raise ValueError(f"non-floating diagnostic field '{name}' must not declare a unit.")
-        specs[name] = spec
-    return specs
-
-
 def _read_declared_extra_stat_names(f: h5py.File) -> tuple[str, ...]:
     """Read declared extra stat names from the persisted ``/simulation`` payload."""
-    return tuple(_read_extra_stat_fields(_read_node(f[schema.KEY_SIMULATION_SECTION])))
+    return tuple(result_schema.extra_stat_fields(hdf5.read_node(f[schema.KEY_SIMULATION_SECTION])))
 
 
 def _read_declared_extra_stat_fields(f: h5py.File) -> dict[str, u.UnitBase]:
     """Read declared extra-stat units from the persisted simulation payload."""
-    return _read_extra_stat_fields(_read_node(f[schema.KEY_SIMULATION_SECTION]))
-
-
-def _read_declared_diagnostic_field_specs(f: h5py.File) -> dict[str, dict[str, Any]]:
-    """Read declared diagnostic field specs from the persisted ``/simulation`` payload."""
-    return _read_diagnostic_field_specs(_read_node(f[schema.KEY_SIMULATION_SECTION]))
+    return result_schema.extra_stat_fields(hdf5.read_node(f[schema.KEY_SIMULATION_SECTION]))
 
 
 def _read_declared_meta_fields(f: h5py.File) -> dict[str, u.UnitBase | None]:
     """Read declared extra scalar metadata units from ``/simulation``."""
-    simulation = _read_node(f[schema.KEY_SIMULATION_SECTION])
+    simulation = hdf5.read_node(f[schema.KEY_SIMULATION_SECTION])
     return {
         name: None if unit is None else u.Unit(unit)
         for name, unit in normalize_meta_fields(simulation.get(schema.KEY_SIMULATION_META_FIELDS, {})).items()
@@ -294,190 +80,7 @@ def _read_declared_stat_names(f: h5py.File) -> tuple[str, ...]:
     return schema.CORE_STATS_KEYS + _read_declared_extra_stat_names(f)
 
 
-# Output allocation
-
-
-def _output_dtype(f: h5py.File) -> np.dtype:
-    """Use the dataset's actual result buffers, preserving unlabelled old runs."""
-    dtype = real_dtype(f[f"{schema.KEY_STATS_SECTION}/{schema.KEY_STATS_SR}"].dtype)
-    precision = f[schema.KEY_SIMULATION_SECTION].get(schema.KEY_SIMULATION_PRECISION)
-    if precision is not None and real_dtype(_read_dataset_value(precision)) != dtype:
-        raise ValueError("simulation.precision disagrees with stored result precision")
-    return dtype
-
-
-def _diagnostic_fill_value(dtype: np.dtype) -> Any:
-    """Return the empty fill value for a diagnostic dataset dtype."""
-    if h5py.check_string_dtype(dtype) is not None:
-        return ""
-    if np.dtype(dtype).kind == "f":
-        return np.nan
-    if np.dtype(dtype).kind == "b":
-        return False
-    return 0
-
-
-def _diagnostic_dtype(dtype_name: str) -> Any:
-    """Return the HDF5 dtype for a diagnostic field dtype name."""
-    if dtype_name == "str":
-        return h5py.string_dtype(encoding="utf-8")
-    return {
-        "float32": np.float32,
-        "float64": np.float64,
-        "int32": np.int32,
-        "int64": np.int64,
-        "bool": np.bool_,
-    }[dtype_name]
-
-
-def _num_ngs_slots(options: Mapping[str, Any]) -> int:
-    """Return the configured NGS slot count from persisted options."""
-    if schema.KEY_OPTION_NGS_R not in options:
-        return 0
-    arr = np.asarray(options[schema.KEY_OPTION_NGS_R])
-    if arr.ndim <= 1:
-        return 1
-    return int(arr.shape[1])
-
-
-def _resolve_diagnostic_shape(spec: Mapping[str, Any], setup: Mapping[str, Any], options: Mapping[str, Any]) -> tuple[int, ...]:
-    """Resolve a diagnostic field shape spec to fixed dimensions excluding ``N``.
-
-    ``num_sci`` is derived from the persisted setup science field and
-    ``num_ngs`` is derived from the persisted NGS option slot count. Fixed
-    numeric dimensions are passed through as positive integers.
-
-    Args:
-        spec: Normalized diagnostic field spec.
-        setup: Persisted ``/setup`` payload.
-        options: Persisted ``/options`` payload.
-
-    Returns:
-        Concrete per-simulation diagnostic shape excluding the leading
-        simulation dimension.
-
-    Raises:
-        ValueError: If any resolved dimension is non-positive.
-    """
-    resolved: list[int] = []
-    for value in tuple(spec.get("shape", ())):
-        if value == "num_sci":
-            resolved.append(int(get_num_sci(setup)))
-        elif value == "num_ngs":
-            resolved.append(_num_ngs_slots(options))
-        else:
-            resolved.append(int(value))
-    if any(dim <= 0 for dim in resolved):
-        raise ValueError(f"diagnostic field shape resolved to invalid dimensions {resolved}.")
-    return tuple(resolved)
-
-
-def _require_parent_group(root: h5py.Group, path: str) -> tuple[h5py.Group, str]:
-    """Return the parent group and dataset name for a slash-delimited path."""
-    parts = [part for part in str(path).strip("/").split("/") if part]
-    if not parts:
-        raise ValueError("diagnostic field path must be non-empty.")
-    group = root
-    for part in parts[:-1]:
-        group = group.require_group(part)
-    return group, parts[-1]
-
-
-def _create_diagnostic_dataset(
-    root: h5py.Group,
-    path: str,
-    spec: Mapping[str, Any],
-    *,
-    num_sims: int,
-    setup: Mapping[str, Any],
-    options: Mapping[str, Any],
-) -> None:
-    """Create one preallocated ``/diagnostics`` dataset from a spec.
-
-    Dataset paths may include slash-delimited parent groups. The allocated
-    shape is ``(num_sims, *resolved_shape)`` where ``resolved_shape`` comes from
-    ``_resolve_diagnostic_shape()``. Floating diagnostics are filled with
-    ``NaN``, integer diagnostics with ``0``, booleans with ``False``, and string
-    diagnostics with empty UTF-8 strings.
-
-    Args:
-        root: ``/diagnostics`` HDF5 group.
-        path: Slash-delimited diagnostic field path relative to ``root``.
-        spec: Normalized dtype/shape spec.
-        num_sims: Number of simulation rows to allocate.
-        setup: Persisted ``/setup`` payload.
-        options: Persisted ``/options`` payload.
-
-    Raises:
-        ValueError: If the path or resolved shape is invalid.
-    """
-    parent, name = _require_parent_group(root, path)
-    dtype_name = str(spec["dtype"])
-    dtype = _diagnostic_dtype(dtype_name)
-    shape = (int(num_sims),) + _resolve_diagnostic_shape(spec, setup, options)
-    if dtype_name == "str":
-        dataset = parent.create_dataset(name, shape=shape, dtype=dtype, fillvalue="")
-    else:
-        fill_value = _diagnostic_fill_value(np.dtype(dtype))
-        dataset = parent.create_dataset(name, data=np.full(shape, fill_value, dtype=dtype))
-    if "unit" in spec:
-        _set_dataset_unit(dataset, u.Unit(spec["unit"]))
-
-
-def _ensure_meta_tel_pupil(f: h5py.File, tel_pupil: np.ndarray) -> None:
-    """Ensure ``/meta/tel_pupil`` exists and matches the dataset-level shape."""
-    dtype = _output_dtype(f)
-    meta = f[schema.KEY_META_SECTION]
-    expected = tuple(tel_pupil.shape)
-    if schema.KEY_META_TEL_PUPIL in meta:
-        ds = meta[schema.KEY_META_TEL_PUPIL]
-        if ds.shape == (0, 0):
-            ds.resize(expected)
-            ds[...] = np.nan
-            return
-        if ds.shape != expected:
-            raise ValueError(f"/meta/tel_pupil shape mismatch: expected {expected}, got {ds.shape}")
-        return
-
-    _set_dataset_unit(
-        meta.create_dataset(
-            schema.KEY_META_TEL_PUPIL,
-            data=np.full(expected, np.nan, dtype=dtype),
-        ),
-        schema.META_FIELD_UNITS[schema.KEY_META_TEL_PUPIL],
-    )
-
-
-def _ensure_psfs_data(f: h5py.File, psfs: np.ndarray) -> None:
-    """Ensure ``/psfs/data`` exists and matches the expected per-simulation shape."""
-    dtype = _output_dtype(f)
-    if schema.KEY_PSFS_SECTION not in f:
-        f.require_group(schema.KEY_PSFS_SECTION)
-    grp = f[schema.KEY_PSFS_SECTION]
-    num_sims = int(f[f"{schema.KEY_STATUS_SECTION}/{schema.KEY_STATUS_STATE}"].shape[0])
-
-    if schema.KEY_PSFS_DATA in grp:
-        ds = grp[schema.KEY_PSFS_DATA]
-        expected = (num_sims,) + tuple(psfs.shape)
-        if ds.shape != expected:
-            raise ValueError(f"/psfs/data shape mismatch: expected {expected}, got {ds.shape}")
-        return
-
-    shape = (num_sims,) + tuple(psfs.shape)
-    grp.create_dataset(schema.KEY_PSFS_DATA, data=np.full(shape, np.nan, dtype=dtype))
-
-
 # Result reads
-
-
-def _read_simulation_dataset_row(ds: h5py.Dataset, sim_idx: int, *, path: str) -> Any:
-    """Read one per-simulation dataset row with shared index and shape checks."""
-    sim_idx = _ensure_sim_idx(sim_idx)
-    if ds.ndim == 0:
-        raise ValueError(f"{path} must be per-simulation with first dim N.")
-    if sim_idx >= ds.shape[0]:
-        raise IndexError(f"sim_idx {sim_idx} out of range for {path} shape {ds.shape}")
-    return _with_dataset_unit(ds, ds[sim_idx])
 
 
 def _read_meta_values(f: h5py.File) -> dict[str, Any]:
@@ -486,204 +89,20 @@ def _read_meta_values(f: h5py.File) -> dict[str, Any]:
     tel_diameter_path = f"/{schema.KEY_META_SECTION}/{schema.KEY_META_TEL_DIAMETER}"
     tel_pupil_path = f"/{schema.KEY_META_SECTION}/{schema.KEY_META_TEL_PUPIL}"
     values = {
-        schema.KEY_META_PIXEL_SCALE: _read_dataset_value(
-            _require_dataset_ndim(_require_dataset(f, pixel_scale_path), path=pixel_scale_path, ndim=1)
+        schema.KEY_META_PIXEL_SCALE: hdf5.read_dataset_value(
+            hdf5.require_dataset_ndim(hdf5.require_dataset(f, pixel_scale_path), path=pixel_scale_path, ndim=1)
         ),
-        schema.KEY_META_TEL_DIAMETER: _read_dataset_value(
-            _require_dataset_ndim(_require_dataset(f, tel_diameter_path), path=tel_diameter_path, ndim=0)
+        schema.KEY_META_TEL_DIAMETER: hdf5.read_dataset_value(
+            hdf5.require_dataset_ndim(hdf5.require_dataset(f, tel_diameter_path), path=tel_diameter_path, ndim=0)
         ),
-        schema.KEY_META_TEL_PUPIL: _read_dataset_value(
-            _require_dataset_ndim(_require_dataset(f, tel_pupil_path), path=tel_pupil_path, ndim=2)
+        schema.KEY_META_TEL_PUPIL: hdf5.read_dataset_value(
+            hdf5.require_dataset_ndim(hdf5.require_dataset(f, tel_pupil_path), path=tel_pupil_path, ndim=2)
         ),
     }
     for name in _read_declared_meta_field_names(f):
         path = f"/{schema.KEY_META_SECTION}/{name}"
-        values[name] = _read_dataset_value(_require_dataset_ndim(_require_dataset(f, path), path=path, ndim=1))
+        values[name] = hdf5.read_dataset_value(hdf5.require_dataset_ndim(hdf5.require_dataset(f, path), path=path, ndim=1))
     return values
-
-
-def _read_diagnostics_group(node: h5py.Group | h5py.Dataset, sim_idx: int | None = None, path: str = "") -> Any:
-    """Read full-analysis or one-row diagnostics recursively.
-
-    HDF5 groups are returned as nested dictionaries. Dataset values follow the
-    same conventions as other store readers: scalar UTF-8 strings become
-    ``str``, string arrays become NumPy string arrays, and numerical datasets
-    with unit metadata become quantities. When ``sim_idx`` is provided, only
-    that row or slice is read from each diagnostic dataset.
-
-    Args:
-        node: ``/diagnostics`` group or one dataset within it.
-        sim_idx: Optional simulation row. ``None`` reads full analysis arrays.
-        path: Diagnostic path used for error messages.
-
-    Returns:
-        Nested diagnostics mapping or decoded dataset value.
-
-    Raises:
-        IndexError: If ``sim_idx`` is out of range.
-        ValueError: If a diagnostic dataset is malformed.
-    """
-    if isinstance(node, h5py.Group):
-        return {key: _read_diagnostics_group(node[key], sim_idx=sim_idx, path=f"{path}/{key}") for key in node.keys()}
-    if sim_idx is None:
-        return _read_dataset_value(node)
-    return _with_dataset_unit(
-        node,
-        _read_simulation_dataset_row(node, sim_idx, path=path),
-    )
-
-
-# Result writes and clearing
-
-
-def _write_dataset_level_telescope_meta(f: h5py.File, result: SimulationResult) -> None:
-    """Persist invariant telescope metadata once and enforce consistency."""
-    dtype = _output_dtype(f)
-    meta = f[schema.KEY_META_SECTION]
-    tel_diameter = quantity_value(
-        result.meta[schema.KEY_META_TEL_DIAMETER],
-        schema.META_FIELD_UNITS[schema.KEY_META_TEL_DIAMETER],
-        label=f"result.meta.{schema.KEY_META_TEL_DIAMETER}",
-        dtype=dtype,
-    )
-    tel_pupil = quantity_value(
-        result.meta[schema.KEY_META_TEL_PUPIL],
-        schema.META_FIELD_UNITS[schema.KEY_META_TEL_PUPIL],
-        label=f"result.meta.{schema.KEY_META_TEL_PUPIL}",
-        dtype=dtype,
-    )
-
-    tel_diameter_value = dtype.type(tel_diameter.item())
-    stored_tel_diameter = np.asarray(meta[schema.KEY_META_TEL_DIAMETER][()], dtype=dtype)
-    if np.isnan(stored_tel_diameter):
-        meta[schema.KEY_META_TEL_DIAMETER][()] = tel_diameter_value
-    elif not np.isclose(float(stored_tel_diameter), float(tel_diameter_value), rtol=4*np.finfo(dtype).eps, atol=0.0):
-        raise ValueError(
-            "result.meta.tel_diameter does not match dataset-level /meta/tel_diameter."
-        )
-
-    _ensure_meta_tel_pupil(f, tel_pupil)
-    stored_tel_pupil = np.asarray(meta[schema.KEY_META_TEL_PUPIL][...], dtype=dtype)
-    if np.all(np.isnan(stored_tel_pupil)):
-        meta[schema.KEY_META_TEL_PUPIL][...] = tel_pupil
-    elif stored_tel_pupil.shape != tel_pupil.shape or not np.allclose(stored_tel_pupil, tel_pupil, rtol=4*np.finfo(dtype).eps, atol=0.0, equal_nan=True):
-        raise ValueError(
-            "result.meta.tel_pupil does not match dataset-level /meta/tel_pupil."
-        )
-
-
-def _write_result_meta_fields(f: h5py.File, sim_idx: int, result: SimulationResult) -> None:
-    """Persist declared scalar per-simulation meta fields."""
-    dtype = _output_dtype(f)
-    meta = f[schema.KEY_META_SECTION]
-    for name, unit in _read_declared_meta_fields(f).items():
-        if unit is None:
-            value = np.asarray(result.meta[name], dtype=dtype)
-        else:
-            value = quantity_value(result.meta[name], unit, label=f"result.meta.{name}", dtype=dtype)
-        meta[name][sim_idx] = dtype.type(value.item())
-
-
-def _flatten_mapping(mapping: Mapping[str, Any], *, prefix: str = "") -> dict[str, Any]:
-    """Flatten slash-delimited diagnostic mappings without flattening arrays."""
-    flat: dict[str, Any] = {}
-    for key, value in mapping.items():
-        name = f"{prefix}/{key}" if prefix else str(key)
-        if isinstance(value, Mapping):
-            flat.update(_flatten_mapping(value, prefix=name))
-        else:
-            flat[name.strip("/")] = value
-    return flat
-
-
-def _write_result_diagnostics(f: h5py.File, sim_idx: int, result: SimulationResult) -> None:
-    """Persist declared diagnostics for one successful simulation.
-
-    The result diagnostics mapping may be flat or nested, but after flattening
-    it must exactly match the fields declared by ``/simulation/diagnostic_fields``.
-    Values are written into the preallocated ``/diagnostics`` datasets at
-    ``sim_idx`` and must match each dataset's per-simulation shape and dtype.
-    If no diagnostics were declared, the result must not provide diagnostics.
-
-    Args:
-        f: Open HDF5 dataset file.
-        sim_idx: Zero-based simulation row to write.
-        result: Successful simulation result containing diagnostics values.
-
-    Raises:
-        ValueError: If diagnostics are missing, undeclared, or shape-mismatched.
-    """
-    specs = _read_declared_diagnostic_field_specs(f)
-    result_values = _flatten_mapping(result.diagnostics)
-    if not specs:
-        if result_values:
-            names = ", ".join(sorted(result_values))
-            raise ValueError(f"result.diagnostics contains undeclared diagnostics: {names}")
-        return
-
-    missing = sorted(set(specs) - set(result_values))
-    unexpected = sorted(set(result_values) - set(specs))
-    if missing:
-        raise ValueError(f"result.diagnostics is missing declared diagnostics: {', '.join(missing)}")
-    if unexpected:
-        raise ValueError(f"result.diagnostics contains undeclared diagnostics: {', '.join(unexpected)}")
-
-    root = f[schema.KEY_DIAGNOSTICS_SECTION]
-    for name, spec in specs.items():
-        ds = _require_diagnostic_dataset(root, name)
-        value = result_values[name]
-        if str(spec["dtype"]) == "str":
-            if ds.shape[1:] != ():
-                arr = np.asarray(value, dtype=object)
-                if arr.shape != ds.shape[1:]:
-                    raise ValueError(
-                        f"result.diagnostics['{name}'] must have shape {ds.shape[1:]}, got {arr.shape}."
-                    )
-            else:
-                arr = str(value)
-        else:
-            if UNITS_ATTRIBUTE in ds.attrs:
-                arr = quantity_value(
-                    value,
-                    u.Unit(ds.attrs[UNITS_ATTRIBUTE]),
-                    label=f"result.diagnostics['{name}']",
-                    dtype=ds.dtype,
-                )
-            else:
-                arr = np.asarray(value, dtype=ds.dtype)
-            if arr.shape != ds.shape[1:]:
-                raise ValueError(
-                    f"result.diagnostics['{name}'] must have shape {ds.shape[1:]}, got {arr.shape}."
-                )
-        ds[sim_idx, ...] = arr
-
-
-def _clear_diagnostics_group(group: h5py.Group, sim_idx: int) -> None:
-    """Reset one simulation's diagnostics row in a diagnostics group tree."""
-    for node in group.values():
-        if isinstance(node, h5py.Group):
-            _clear_diagnostics_group(node, sim_idx)
-        elif isinstance(node, h5py.Dataset):
-            node[sim_idx, ...] = _diagnostic_fill_value(node.dtype)
-
-
-def _clear_simulation_outputs(f: h5py.File, sim_idx: int) -> None:
-    """Reset one simulation's persisted outputs to ``NaN`` values."""
-    stats = f[schema.KEY_STATS_SECTION]
-    meta = f[schema.KEY_META_SECTION]
-
-    for key in _read_declared_stat_names(f):
-        stats[key][sim_idx, ...] = np.nan
-
-    meta[schema.KEY_META_PIXEL_SCALE][sim_idx] = np.nan
-    for key in _read_declared_meta_field_names(f):
-        meta[key][sim_idx] = np.nan
-
-    if schema.KEY_PSFS_SECTION in f and schema.KEY_PSFS_DATA in f[schema.KEY_PSFS_SECTION]:
-        f[f"{schema.KEY_PSFS_SECTION}/{schema.KEY_PSFS_DATA}"][sim_idx, ...] = np.nan
-
-    if schema.KEY_DIAGNOSTICS_SECTION in f:
-        _clear_diagnostics_group(f[schema.KEY_DIAGNOSTICS_SECTION], sim_idx)
 
 
 # Simulation store
@@ -747,7 +166,7 @@ class SimulationStore:
             raise FileExistsError(f"Dataset already exists: {self.path}")
 
         validate_simulation_payload_core(simulation)
-        dtype = real_dtype(simulation.get(schema.KEY_SIMULATION_PRECISION, "float32"))
+        real_dtype(simulation.get(schema.KEY_SIMULATION_PRECISION, "float32"))
         setup = upgrade_setup_peak_method(setup)
         setup[schema.KEY_SETUP_EE_CENTER] = str(
             setup.get(schema.KEY_SETUP_EE_CENTER, schema.DEFAULT_SETUP_EE_CENTER)
@@ -762,102 +181,36 @@ class SimulationStore:
         m_sci = get_num_sci(setup)
         num_sims = validate_options_payload_core(options, expected_num_sci=m_sci)
         validate_atm_profile_ids(setup, options)
-        extra_stat_fields = _read_extra_stat_fields(simulation)
-        meta_fields = {
-            name: None if unit is None else u.Unit(unit)
-            for name, unit in normalize_meta_fields(simulation.get(schema.KEY_SIMULATION_META_FIELDS, {})).items()
-        }
-        diagnostic_field_specs = _read_diagnostic_field_specs(simulation)
+        extra_stat_fields = result_schema.extra_stat_fields(simulation)
+        meta_fields = result_schema.normalize_meta_fields(
+            simulation.get(schema.KEY_SIMULATION_META_FIELDS, {})
+        )
+        result_schema.diagnostic_field_specs(simulation)
         simulation = dict(simulation)
         simulation[schema.KEY_SIMULATION_EXTRA_STAT_FIELDS] = {
             name: unit_string(unit) for name, unit in extra_stat_fields.items()
         }
         if meta_fields:
             simulation[schema.KEY_SIMULATION_META_FIELDS] = {
-                name: "" if unit is None else unit_string(unit)
-                for name, unit in meta_fields.items()
+                name: unit or "" for name, unit in meta_fields.items()
             }
-
-        ee = get_ee_apertures(setup)
 
         if self.path.exists() and overwrite:
             self.path.unlink()
 
         with h5py.File(self.path, "w") as f:
-            g_simulation = f.require_group(schema.KEY_SIMULATION_SECTION)
-            g_setup = f.require_group(schema.KEY_SETUP_SECTION)
-            g_options = f.require_group(schema.KEY_OPTION_SECTION)
-            g_status = f.require_group(schema.KEY_STATUS_SECTION)
-            g_meta = f.require_group(schema.KEY_META_SECTION)
-            g_stats = f.require_group(schema.KEY_STATS_SECTION)
-            g_diagnostics = f.require_group(schema.KEY_DIAGNOSTICS_SECTION) if diagnostic_field_specs else None
-            if save_psfs:
-                f.require_group(schema.KEY_PSFS_SECTION)
-
-            for key, value in simulation.items():
-                _write_value(g_simulation, str(key), value)
-
-            for key, value in setup.items():
-                _write_value(g_setup, str(key), value)
-
-            for key, value in options.items():
-                _write_value(g_options, str(key), value)
-
-            g_status.create_dataset(
+            initialize_layout(
+                f,
+                simulation=simulation,
+                setup=setup,
+                options=options,
+                save_psfs=save_psfs,
+                standard_stats=schema.CORE_STATS_KEYS,
+            )
+            f.require_group(schema.KEY_STATUS_SECTION).create_dataset(
                 schema.KEY_STATUS_STATE,
                 data=np.full((num_sims,), int(SimulationState.PENDING), dtype=np.uint8),
             )
-
-            _set_dataset_unit(
-                g_meta.create_dataset(schema.KEY_META_PIXEL_SCALE, data=np.full((num_sims,), np.nan, dtype=dtype)),
-                schema.META_FIELD_UNITS[schema.KEY_META_PIXEL_SCALE],
-            )
-            _set_dataset_unit(
-                g_meta.create_dataset(schema.KEY_META_TEL_DIAMETER, data=dtype.type(np.nan)),
-                schema.META_FIELD_UNITS[schema.KEY_META_TEL_DIAMETER],
-            )
-            tel_pupil_dataset = g_meta.create_dataset(
-                schema.KEY_META_TEL_PUPIL,
-                shape=(0, 0),
-                maxshape=(None, None),
-                chunks=True,
-                dtype=dtype,
-            )
-            _set_dataset_unit(tel_pupil_dataset, schema.META_FIELD_UNITS[schema.KEY_META_TEL_PUPIL])
-            for name, unit in meta_fields.items():
-                dataset = g_meta.create_dataset(name, data=np.full((num_sims,), np.nan, dtype=dtype))
-                if unit is not None:
-                    _set_dataset_unit(dataset, unit)
-
-            _set_dataset_unit(
-                g_stats.create_dataset(schema.KEY_STATS_SR, data=np.full((num_sims, m_sci), np.nan, dtype=dtype)),
-                schema.STATS_FIELD_UNITS[schema.KEY_STATS_SR],
-            )
-            _set_dataset_unit(
-                g_stats.create_dataset(
-                    schema.KEY_STATS_EE, data=np.full((num_sims, m_sci, ee.shape[0]), np.nan, dtype=dtype)
-                ),
-                schema.STATS_FIELD_UNITS[schema.KEY_STATS_EE],
-            )
-            _set_dataset_unit(
-                g_stats.create_dataset(schema.KEY_STATS_FWHM, data=np.full((num_sims, m_sci), np.nan, dtype=dtype)),
-                schema.STATS_FIELD_UNITS[schema.KEY_STATS_FWHM],
-            )
-            for name, unit in extra_stat_fields.items():
-                _set_dataset_unit(
-                    g_stats.create_dataset(name, data=np.full((num_sims, m_sci), np.nan, dtype=dtype)),
-                    unit,
-                )
-            if g_diagnostics is not None:
-                for name, spec in diagnostic_field_specs.items():
-                    _create_diagnostic_dataset(
-                        g_diagnostics,
-                        name,
-                        spec,
-                        num_sims=num_sims,
-                        setup=setup,
-                        options=options,
-                    )
 
     def exists(self) -> bool:
         """Return whether the dataset file currently exists on disk.
@@ -888,7 +241,7 @@ class SimulationStore:
         """
 
         with h5py.File(self.path, "r") as f:
-            simulation = _read_node(f[schema.KEY_SIMULATION_SECTION])
+            simulation = hdf5.read_node(f[schema.KEY_SIMULATION_SECTION])
         return resolve_simulation_payload_for_load(simulation)
 
     def read_extra_stat_names(self) -> tuple[str, ...]:
@@ -905,10 +258,10 @@ class SimulationStore:
             g = f[schema.KEY_OPTION_SECTION]
             for key in g.keys():
                 path = f"/{schema.KEY_OPTION_SECTION}/{key}"
-                ds = _require_dataset(f, path)
+                ds = hdf5.require_dataset(f, path)
                 if ds.ndim == 0:
                     raise ValueError(f"{path} must be per-simulation with first dim N.")
-                columns[key] = _read_dataset_value(ds)
+                columns[key] = hdf5.read_dataset_value(ds)
         return columns
 
     def read_analysis_meta(self) -> dict[str, Any]:
@@ -925,8 +278,8 @@ class SimulationStore:
             for key in _read_declared_stat_names(f):
                 path = f"/{schema.KEY_STATS_SECTION}/{key}"
                 expected_ndim = 3 if key == schema.KEY_STATS_EE else 2
-                ds = _require_dataset_ndim(_require_dataset(f, path), path=path, ndim=expected_ndim)
-                columns[key] = _read_dataset_value(ds)
+                ds = hdf5.require_dataset_ndim(hdf5.require_dataset(f, path), path=path, ndim=expected_ndim)
+                columns[key] = hdf5.read_dataset_value(ds)
         return columns
 
     def read_analysis_diagnostics(self) -> dict[str, Any]:
@@ -949,7 +302,7 @@ class SimulationStore:
         with h5py.File(self.path, "r") as f:
             if schema.KEY_DIAGNOSTICS_SECTION not in f:
                 return {}
-            return _read_diagnostics_group(f[schema.KEY_DIAGNOSTICS_SECTION])
+            return hdf5.read_diagnostics(f[schema.KEY_DIAGNOSTICS_SECTION])
 
     def read_sim_options(self, sim_idx: int) -> dict[str, Any]:
         """Read one simulation's options from ``/options``.
@@ -972,7 +325,7 @@ class SimulationStore:
                 if not isinstance(ds, h5py.Dataset):
                     raise ValueError(f"/options/{key} must be a dataset.")
 
-                value = _read_simulation_dataset_row(ds, sim_idx, path=f"/options/{key}")
+                value = hdf5.read_row(ds, sim_idx, path=f"/options/{key}")
                 if isinstance(value, bytes):
                     value = value.decode("utf-8")
                 row[key] = value
@@ -987,18 +340,18 @@ class SimulationStore:
             tel_diameter_path = f"/{schema.KEY_META_SECTION}/{schema.KEY_META_TEL_DIAMETER}"
             tel_pupil_path = f"/{schema.KEY_META_SECTION}/{schema.KEY_META_TEL_PUPIL}"
 
-            pixel_scale = _read_simulation_dataset_row(
-                _require_dataset_ndim(_require_dataset(f, pixel_scale_path), path=pixel_scale_path, ndim=1),
+            pixel_scale = hdf5.read_row(
+                hdf5.require_dataset_ndim(hdf5.require_dataset(f, pixel_scale_path), path=pixel_scale_path, ndim=1),
                 sim_idx,
                 path=pixel_scale_path,
             )
-            tel_diameter = _read_dataset_value(_require_dataset_ndim(
-                _require_dataset(f, tel_diameter_path),
+            tel_diameter = hdf5.read_dataset_value(hdf5.require_dataset_ndim(
+                hdf5.require_dataset(f, tel_diameter_path),
                 path=tel_diameter_path,
                 ndim=0,
             ))
-            tel_pupil = _read_dataset_value(_require_dataset_ndim(
-                _require_dataset(f, tel_pupil_path),
+            tel_pupil = hdf5.read_dataset_value(hdf5.require_dataset_ndim(
+                hdf5.require_dataset(f, tel_pupil_path),
                 path=tel_pupil_path,
                 ndim=2,
             ))
@@ -1009,8 +362,8 @@ class SimulationStore:
             }
             for name in _read_declared_meta_field_names(f):
                 path = f"/{schema.KEY_META_SECTION}/{name}"
-                meta[name] = _read_simulation_dataset_row(
-                    _require_dataset_ndim(_require_dataset(f, path), path=path, ndim=1),
+                meta[name] = hdf5.read_row(
+                    hdf5.require_dataset_ndim(hdf5.require_dataset(f, path), path=path, ndim=1),
                     sim_idx,
                     path=path,
                 )
@@ -1025,8 +378,8 @@ class SimulationStore:
             for key in _read_declared_stat_names(f):
                 path = f"/{schema.KEY_STATS_SECTION}/{key}"
                 expected_ndim = 3 if key == schema.KEY_STATS_EE else 2
-                ds = _require_dataset_ndim(_require_dataset(f, path), path=path, ndim=expected_ndim)
-                stats_row[key] = _read_simulation_dataset_row(ds, sim_idx, path=path)
+                ds = hdf5.require_dataset_ndim(hdf5.require_dataset(f, path), path=path, ndim=expected_ndim)
+                stats_row[key] = hdf5.read_row(ds, sim_idx, path=path)
 
         return stats_row
 
@@ -1051,19 +404,19 @@ class SimulationStore:
             IndexError: If ``sim_idx`` is out of range.
             ValueError: If the diagnostics group contains malformed datasets.
         """
-        sim_idx = _ensure_sim_idx(sim_idx)
+        sim_idx = hdf5.index_value(sim_idx)
         with h5py.File(self.path, "r") as f:
             if schema.KEY_DIAGNOSTICS_SECTION not in f:
                 return {}
-            return _read_diagnostics_group(f[schema.KEY_DIAGNOSTICS_SECTION], sim_idx=sim_idx, path="/diagnostics")
+            return hdf5.read_diagnostics(f[schema.KEY_DIAGNOSTICS_SECTION], sim_idx=sim_idx, path="/diagnostics")
 
     def read_simulation_psfs(self, sim_idx: int) -> np.ndarray:
         """Read one simulation's persisted PSF cube from ``/psfs/data``."""
 
         with h5py.File(self.path, "r") as f:
             path = f"/{schema.KEY_PSFS_SECTION}/{schema.KEY_PSFS_DATA}"
-            ds = _require_dataset_ndim(_require_dataset(f, path), path=path, ndim=4)
-            return np.asarray(_read_simulation_dataset_row(ds, sim_idx, path=path))
+            ds = hdf5.require_dataset_ndim(hdf5.require_dataset(f, path), path=path, ndim=4)
+            return np.asarray(hdf5.read_row(ds, sim_idx, path=path))
 
     # State and index access
 
@@ -1206,7 +559,7 @@ class SimulationStore:
             stats_group = f[schema.KEY_STATS_SECTION]
             if schema.KEY_SIMULATION_PRECISION in f[schema.KEY_SIMULATION_SECTION]:
                 try:
-                    dtype = _output_dtype(f)
+                    dtype = hdf5.output_dtype(f)
                     for group_name in (schema.KEY_STATS_SECTION, schema.KEY_META_SECTION, schema.KEY_PSFS_SECTION):
                         if group_name in f:
                             for name, dataset in f[group_name].items():
@@ -1246,9 +599,9 @@ class SimulationStore:
                 )
 
             try:
-                simulation_data = _read_node(f[schema.KEY_SIMULATION_SECTION])
+                simulation_data = hdf5.read_node(f[schema.KEY_SIMULATION_SECTION])
                 simulation_data = resolve_simulation_payload_for_load(simulation_data)
-                extra_stat_fields = _read_extra_stat_fields(simulation_data)
+                extra_stat_fields = result_schema.extra_stat_fields(simulation_data)
                 extra_stat_names = tuple(extra_stat_fields)
                 meta_fields = {
                     name: None if unit is None else u.Unit(unit)
@@ -1257,7 +610,7 @@ class SimulationStore:
                     ).items()
                 }
                 meta_field_names = tuple(meta_fields)
-                diagnostic_field_specs = _read_diagnostic_field_specs(simulation_data)
+                diagnostic_field_specs = result_schema.diagnostic_field_specs(simulation_data)
             except Exception as exc:
                 issues.append(f"Invalid /simulation payload: {exc}")
                 extra_stat_names = ()
@@ -1274,7 +627,7 @@ class SimulationStore:
                 legacy_zeropoint_unit = False
 
             try:
-                options_data = _read_node(f[schema.KEY_OPTION_SECTION])
+                options_data = hdf5.read_node(f[schema.KEY_OPTION_SECTION])
                 validate_options_payload_core(
                     options_data,
                     expected_num_sims=n,
@@ -1288,7 +641,7 @@ class SimulationStore:
             for name, unit in schema.SETUP_FIELD_UNITS.items():
                 if name == schema.KEY_SETUP_NGS_MAGNITUDE_ZEROPOINT and legacy_zeropoint_unit:
                     continue
-                _collect_dataset_unit_issue(
+                hdf5.collect_dataset_unit_issue(
                     f,
                     f"{schema.KEY_SETUP_SECTION}/{name}",
                     unit,
@@ -1302,7 +655,7 @@ class SimulationStore:
                     if not isinstance(profile_node, h5py.Group):
                         continue
                     for name, unit in ATM_PROFILE_FIELD_UNITS.items():
-                        _collect_dataset_unit_issue(
+                        hdf5.collect_dataset_unit_issue(
                             f,
                             f"{profiles_path}/{profile_id}/{name}",
                             unit,
@@ -1311,7 +664,7 @@ class SimulationStore:
             for name, unit in schema.OPTION_FIELD_UNITS.items():
                 if name == schema.KEY_OPTION_SEEING:
                     continue
-                _collect_dataset_unit_issue(
+                hdf5.collect_dataset_unit_issue(
                     f,
                     f"{schema.KEY_OPTION_SECTION}/{name}",
                     unit,
@@ -1442,11 +795,11 @@ class SimulationStore:
                     diagnostics_group = f[schema.KEY_DIAGNOSTICS_SECTION]
                     for name, spec in diagnostic_field_specs.items():
                         try:
-                            ds = _require_diagnostic_dataset(diagnostics_group, name)
+                            ds = hdf5.require_diagnostic_dataset(diagnostics_group, name)
                             expected_shape = (n,)
                             if setup_data is not None:
-                                options_data = _read_node(f[schema.KEY_OPTION_SECTION])
-                                expected_shape = (n,) + _resolve_diagnostic_shape(spec, setup_data, options_data)
+                                options_data = hdf5.read_node(f[schema.KEY_OPTION_SECTION])
+                                expected_shape = (n,) + diagnostic_shape(spec, setup_data, options_data)
                             if ds.shape != expected_shape:
                                 issues.append(f"/diagnostics/{name} shape mismatch: expected {expected_shape}, got {ds.shape}.")
                             expected_unit = spec.get("unit")
@@ -1484,7 +837,7 @@ class SimulationStore:
             IndexError: If ``sim_idx`` is invalid.
             ValueError: If state transitions or result payload shapes are invalid.
         """
-        sim_idx = _ensure_sim_idx(sim_idx)
+        sim_idx = hdf5.index_value(sim_idx)
 
         with h5py.File(self.path, "r+") as f:
             state = f[f"{schema.KEY_STATUS_SECTION}/{schema.KEY_STATUS_STATE}"]
@@ -1513,11 +866,10 @@ class SimulationStore:
                 raise ValueError("/stats/ee must be 3D [N, M, A].")
             num_ee = int(ee_ds.shape[2])
             extra_stat_fields = _read_declared_extra_stat_fields(f)
-            extra_stat_names = tuple(extra_stat_fields)
             meta_fields = _read_declared_meta_fields(f)
             require_psfs = schema.KEY_PSFS_SECTION in f
 
-            dtype = _output_dtype(f)
+            dtype = hdf5.output_dtype(f)
             validate_successful_result(
                 result,
                 num_sci,
@@ -1528,38 +880,14 @@ class SimulationStore:
                 dtype=dtype,
             )
 
-            # Persist meta values.
-            meta = f[schema.KEY_META_SECTION]
-            pixel_scale = quantity_value(
-                result.meta[schema.KEY_META_PIXEL_SCALE],
-                schema.META_FIELD_UNITS[schema.KEY_META_PIXEL_SCALE],
-                label="result.meta.pixel_scale",
-                dtype=dtype,
-            )
-            meta[schema.KEY_META_PIXEL_SCALE][sim_idx] = dtype.type(pixel_scale.item())
-            _write_dataset_level_telescope_meta(f, result)
-            _write_result_meta_fields(f, sim_idx, result)
-
-            # Persist stats arrays.
-            sr = quantity_value(result.stats[schema.KEY_STATS_SR], schema.STATS_FIELD_UNITS[schema.KEY_STATS_SR], label="result.stats.sr", dtype=dtype)
-            ee = quantity_value(result.stats[schema.KEY_STATS_EE], schema.STATS_FIELD_UNITS[schema.KEY_STATS_EE], label="result.stats.ee", dtype=dtype)
-            fwhm = quantity_value(result.stats[schema.KEY_STATS_FWHM], schema.STATS_FIELD_UNITS[schema.KEY_STATS_FWHM], label="result.stats.fwhm", dtype=dtype)
+            statistics = dict(result.stats)
+            ee = statistics[schema.KEY_STATS_EE]
             if ee.ndim == 1:
-                ee = ee[:, np.newaxis]
-
-            stats[schema.KEY_STATS_SR][sim_idx, :] = sr
-            stats[schema.KEY_STATS_EE][sim_idx, :, :] = ee
-            stats[schema.KEY_STATS_FWHM][sim_idx, :] = fwhm
-            for name in extra_stat_names:
-                stats[name][sim_idx, :] = quantity_value(result.stats[name], extra_stat_fields[name], label=f"result.stats.{name}", dtype=dtype)
-
-            # Persist PSFs only when the dataset was configured to store them.
-            if require_psfs:
-                psfs = np.asarray(result.psfs, dtype=dtype)
-                _ensure_psfs_data(f, psfs)
-                f[f"{schema.KEY_PSFS_SECTION}/{schema.KEY_PSFS_DATA}"][sim_idx, ...] = psfs
-
-            _write_result_diagnostics(f, sim_idx, result)
+                statistics[schema.KEY_STATS_EE] = ee[:, np.newaxis]
+            write_observation(
+                f, index=sim_idx, meta=result.meta, stats=statistics,
+                psfs=result.psfs, diagnostics=result.diagnostics,
+            )
 
             state[sim_idx] = np.uint8(int(SimulationState.SUCCEEDED))
 
@@ -1575,7 +903,7 @@ class SimulationStore:
             IndexError: If ``sim_idx`` is invalid.
             ValueError: If state transition is invalid.
         """
-        sim_idx = _ensure_sim_idx(sim_idx)
+        sim_idx = hdf5.index_value(sim_idx)
 
         with h5py.File(self.path, "r+") as f:
             state = f[f"{schema.KEY_STATUS_SECTION}/{schema.KEY_STATUS_STATE}"]
@@ -1590,5 +918,5 @@ class SimulationStore:
                     f"Simulation index {sim_idx} has invalid state={current_state} "
                     f"(expected one of {sorted(allowed_states)})."
                 )
-            _clear_simulation_outputs(f, sim_idx)
+            clear_observation(f, index=sim_idx)
             state[sim_idx] = np.uint8(int(SimulationState.FAILED))

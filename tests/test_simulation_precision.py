@@ -166,27 +166,22 @@ def test_invalid_precision_load_keeps_bound_state(tmp_path):
 
 @pytest.mark.parametrize("dtype,diameters",[(np.float32,(8.1*u.m,810*u.cm)),(np.float64,(8.7*u.m,8700*u.mm))])
 def test_telescope_invariants_allow_unit_conversion_roundoff(tmp_path,dtype,diameters):
-    from ao_predict.persistence.store import _write_dataset_level_telescope_meta
-    from ao_predict.simulation.interfaces import SimulationResult
+    from ao_core.io.results import write_telescope_metadata
 
     path = tmp_path / "units.h5"
     with h5py.File(path, "w") as root:
-        root.create_dataset("stats/sr", data=np.zeros((2, 1), dtype=dtype))
-        root.create_dataset("simulation/precision", data=np.dtype(dtype).name)
-        root.create_dataset("meta/tel_diameter", data=dtype(np.nan))
-        root.create_dataset(
-            "meta/tel_pupil", data=np.full((2, 2), np.nan, dtype=dtype)
-        )
+        telescope = root.create_group("meta")
+        telescope.create_dataset("tel_diameter", data=dtype(np.nan))
+        telescope.create_dataset("tel_pupil", data=np.full((2, 2), np.nan, dtype=dtype))
         for diameter in diameters:
-            result = SimulationResult(state=2)
-            result.meta = {
+            meta = {
                 "tel_diameter": diameter,
                 "tel_pupil": np.ones((2, 2)) * u.one,
             }
-            _write_dataset_level_telescope_meta(root, result)
-        result.meta["tel_diameter"] = 8.2 * u.m
+            write_telescope_metadata(telescope, meta)
+        meta["tel_diameter"] = 8.2 * u.m
         with pytest.raises(ValueError, match="does not match"):
-            _write_dataset_level_telescope_meta(root, result)
+            write_telescope_metadata(telescope, meta)
 
 
 def test_candidate_legacy_precision_is_independent_of_bound_state(tmp_path):

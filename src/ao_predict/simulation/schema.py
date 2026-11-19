@@ -4,19 +4,20 @@ from __future__ import annotations
 
 import re
 
+from ao_core.io import schema as result_schema
 import ao_stats as _ao_stats
 from astropy import units as u
 
 # Top-level sections
 
-KEY_SIMULATION_SECTION = "simulation"
-KEY_SETUP_SECTION = "setup"
-KEY_OPTION_SECTION = "options"
+KEY_SIMULATION_SECTION = result_schema.KEY_SIMULATION_SECTION
+KEY_SETUP_SECTION = result_schema.KEY_SETUP_SECTION
+KEY_OPTION_SECTION = result_schema.KEY_OPTION_SECTION
 KEY_STATUS_SECTION = "status"
-KEY_META_SECTION = "meta"
-KEY_STATS_SECTION = "stats"
-KEY_PSFS_SECTION = "psfs"
-KEY_DIAGNOSTICS_SECTION = "diagnostics"
+KEY_META_SECTION = result_schema.KEY_META_SECTION
+KEY_STATS_SECTION = result_schema.KEY_STATS_SECTION
+KEY_PSFS_SECTION = result_schema.KEY_PSFS_SECTION
+KEY_DIAGNOSTICS_SECTION = result_schema.KEY_DIAGNOSTICS_SECTION
 
 # Simulation config grammar keys (YAML/API-facing)
 
@@ -25,14 +26,14 @@ KEY_CFG_SIMULATION_SPECIFIC_FIELDS = "specific_fields"
 
 # Simulation payload keys (persisted `/simulation`)
 
-KEY_SIMULATION_NAME = "name"
-KEY_SIMULATION_VERSION = "version"
-KEY_SIMULATION_PRECISION = "precision"
-KEY_SIMULATION_EXTRA_STAT_FIELDS = "extra_stat_fields"
-KEY_SIMULATION_NGS_MAG_STANDARD = "ngs_mag_standard"
-KEY_SIMULATION_DIAGNOSTICS_LEVEL = "diagnostics_level"
-KEY_SIMULATION_DIAGNOSTIC_FIELDS = "diagnostic_fields"
-KEY_SIMULATION_META_FIELDS = "meta_fields"
+KEY_SIMULATION_NAME = result_schema.KEY_SIMULATION_NAME
+KEY_SIMULATION_VERSION = result_schema.KEY_SIMULATION_VERSION
+KEY_SIMULATION_PRECISION = result_schema.KEY_SIMULATION_PRECISION
+KEY_SIMULATION_EXTRA_STAT_FIELDS = result_schema.KEY_SIMULATION_EXTRA_STAT_FIELDS
+KEY_SIMULATION_NGS_MAG_STANDARD = result_schema.KEY_SIMULATION_NGS_MAG_STANDARD
+KEY_SIMULATION_DIAGNOSTICS_LEVEL = result_schema.KEY_SIMULATION_DIAGNOSTICS_LEVEL
+KEY_SIMULATION_DIAGNOSTIC_FIELDS = result_schema.KEY_SIMULATION_DIAGNOSTIC_FIELDS
+KEY_SIMULATION_META_FIELDS = result_schema.KEY_SIMULATION_META_FIELDS
 
 DEFAULT_NGS_MAG_STANDARD = "R"
 
@@ -51,19 +52,19 @@ KEY_CFG_SETUP_SPECIFIC_FIELDS = "specific_fields"
 
 # Setup payload keys
 
-KEY_SETUP_EE_APERTURES = "ee_apertures"
-KEY_SETUP_PEAK_METHOD = "peak_method"
+KEY_SETUP_EE_APERTURES = result_schema.KEY_SETUP_EE_APERTURES
+KEY_SETUP_PEAK_METHOD = result_schema.KEY_SETUP_PEAK_METHOD
 LEGACY_KEY_SETUP_SR_METHOD = "sr_method"
-KEY_SETUP_FWHM_SUMMARY = "fwhm_summary"
-KEY_SETUP_EE_GEOMETRY = "ee_geometry"
-KEY_SETUP_EE_CENTER = "ee_center"
+KEY_SETUP_FWHM_SUMMARY = result_schema.KEY_SETUP_FWHM_SUMMARY
+KEY_SETUP_EE_GEOMETRY = result_schema.KEY_SETUP_EE_GEOMETRY
+KEY_SETUP_EE_CENTER = result_schema.KEY_SETUP_EE_CENTER
 KEY_SETUP_ATM_WAVELENGTH = "atm_wavelength"
 KEY_SETUP_ATM_PROFILES = "atm_profiles"
 KEY_SETUP_LGS_R = "lgs_r"
 KEY_SETUP_LGS_THETA = "lgs_theta"
-KEY_SETUP_NGS_MAGNITUDE_ZEROPOINT = "ngs_magnitude_zeropoint"
-KEY_SETUP_SCI_R = "sci_r"
-KEY_SETUP_SCI_THETA = "sci_theta"
+KEY_SETUP_NGS_MAGNITUDE_ZEROPOINT = result_schema.KEY_SETUP_NGS_MAGNITUDE_ZEROPOINT
+KEY_SETUP_SCI_R = result_schema.KEY_SETUP_SCI_R
+KEY_SETUP_SCI_THETA = result_schema.KEY_SETUP_SCI_THETA
 
 # Options config grammar keys (YAML/CSV-facing)
 
@@ -78,16 +79,16 @@ KEY_CFG_OPTION_NGS = "ngs"
 
 # Options payload keys (persisted `/options`)
 
-KEY_OPTION_WAVELENGTH = "wavelength"
-KEY_OPTION_ZENITH_ANGLE = "zenith_angle"
+KEY_OPTION_WAVELENGTH = result_schema.KEY_OPTION_WAVELENGTH
+KEY_OPTION_ZENITH_ANGLE = result_schema.KEY_OPTION_ZENITH_ANGLE
 KEY_OPTION_ATM_PROFILE_ID = "atm_profile_id"
 KEY_OPTION_R0 = "r0"
 KEY_OPTION_SEEING = "seeing"
 KEY_OPTION_SCI_DX = "sci_dx"
 KEY_OPTION_SCI_DY = "sci_dy"
-KEY_OPTION_NGS_R = "ngs_r"
-KEY_OPTION_NGS_THETA = "ngs_theta"
-KEY_OPTION_NGS_MAGNITUDE = "ngs_magnitude"
+KEY_OPTION_NGS_R = result_schema.KEY_OPTION_NGS_R
+KEY_OPTION_NGS_THETA = result_schema.KEY_OPTION_NGS_THETA
+KEY_OPTION_NGS_MAGNITUDE = result_schema.KEY_OPTION_NGS_MAGNITUDE
 
 # Runtime-derived option keys (not persisted in `/options`)
 
@@ -107,15 +108,15 @@ KEY_OPTION_NGS_COLUMN_RE = re.compile(
 
 KEY_STATUS_STATE = "state"
 
-KEY_META_PIXEL_SCALE = "pixel_scale"
-KEY_META_TEL_DIAMETER = "tel_diameter"
-KEY_META_TEL_PUPIL = "tel_pupil"
+KEY_META_PIXEL_SCALE = result_schema.KEY_META_PIXEL_SCALE
+KEY_META_TEL_DIAMETER = result_schema.KEY_META_TEL_DIAMETER
+KEY_META_TEL_PUPIL = result_schema.KEY_META_TEL_PUPIL
 
-KEY_STATS_SR = "sr"
-KEY_STATS_EE = "ee"
-KEY_STATS_FWHM = "fwhm"
+KEY_STATS_SR = result_schema.KEY_STATS_SR
+KEY_STATS_EE = result_schema.KEY_STATS_EE
+KEY_STATS_FWHM = result_schema.KEY_STATS_FWHM
 
-KEY_PSFS_DATA = "data"
+KEY_PSFS_DATA = result_schema.KEY_PSFS_DATA
 
 # AO Stats owns calculation selectors. These AO Predict aliases describe the
 # persisted setup schema and remain part of that dataset contract.
@@ -218,38 +219,30 @@ REQUIRED_STATS_KEYS = CORE_STATS_KEYS
 # Canonical quantity units
 
 SETUP_FIELD_UNITS = {
-    KEY_SETUP_EE_APERTURES: u.mas,
+    KEY_SETUP_EE_APERTURES: result_schema.SETUP_FIELD_UNITS[KEY_SETUP_EE_APERTURES],
     KEY_SETUP_ATM_WAVELENGTH: u.um,
     KEY_SETUP_LGS_R: u.arcsec,
     KEY_SETUP_LGS_THETA: u.deg,
-    KEY_SETUP_NGS_MAGNITUDE_ZEROPOINT: u.photon / (u.m**2 * u.s),
-    KEY_SETUP_SCI_R: u.arcsec,
-    KEY_SETUP_SCI_THETA: u.deg,
+    KEY_SETUP_NGS_MAGNITUDE_ZEROPOINT: result_schema.SETUP_FIELD_UNITS[KEY_SETUP_NGS_MAGNITUDE_ZEROPOINT],
+    KEY_SETUP_SCI_R: result_schema.SETUP_FIELD_UNITS[KEY_SETUP_SCI_R],
+    KEY_SETUP_SCI_THETA: result_schema.SETUP_FIELD_UNITS[KEY_SETUP_SCI_THETA],
 }
 
 OPTION_FIELD_UNITS = {
-    KEY_OPTION_WAVELENGTH: u.um,
-    KEY_OPTION_ZENITH_ANGLE: u.deg,
+    KEY_OPTION_WAVELENGTH: result_schema.OPTION_FIELD_UNITS[KEY_OPTION_WAVELENGTH],
+    KEY_OPTION_ZENITH_ANGLE: result_schema.OPTION_FIELD_UNITS[KEY_OPTION_ZENITH_ANGLE],
     KEY_OPTION_R0: u.m,
     KEY_OPTION_SEEING: u.arcsec,
     KEY_OPTION_SCI_DX: u.arcsec,
     KEY_OPTION_SCI_DY: u.arcsec,
-    KEY_OPTION_NGS_R: u.arcsec,
-    KEY_OPTION_NGS_THETA: u.deg,
-    KEY_OPTION_NGS_MAGNITUDE: u.mag,
+    KEY_OPTION_NGS_R: result_schema.OPTION_FIELD_UNITS[KEY_OPTION_NGS_R],
+    KEY_OPTION_NGS_THETA: result_schema.OPTION_FIELD_UNITS[KEY_OPTION_NGS_THETA],
+    KEY_OPTION_NGS_MAGNITUDE: result_schema.OPTION_FIELD_UNITS[KEY_OPTION_NGS_MAGNITUDE],
 }
 
-META_FIELD_UNITS = {
-    KEY_META_PIXEL_SCALE: u.mas,
-    KEY_META_TEL_DIAMETER: u.m,
-    KEY_META_TEL_PUPIL: u.dimensionless_unscaled,
-}
+META_FIELD_UNITS = result_schema.META_FIELD_UNITS
 
-STATS_FIELD_UNITS = {
-    KEY_STATS_SR: u.dimensionless_unscaled,
-    KEY_STATS_EE: u.dimensionless_unscaled,
-    KEY_STATS_FWHM: u.mas,
-}
+STATS_FIELD_UNITS = result_schema.STATS_FIELD_UNITS
 
 SETUP_STATS_PEAK_METHODS = STATS_PEAK_METHODS
 SETUP_STATS_FWHM_SUMMARIES = STATS_FWHM_SUMMARIES

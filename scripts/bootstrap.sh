@@ -28,10 +28,13 @@ if [ ! -d "$env_prefix" ]; then
 fi
 
 echo "[bootstrap] Installing package with dev+docs extras..."
+if [ -n "${AO_PREDICT_AO_CORE_SOURCE:-}" ]; then
+  install_source "$AO_PREDICT_AO_CORE_SOURCE"
+fi
+install_source "${AO_PREDICT_NGS_PHOTOMETRY_SOURCE:-git+https://github.com/nvnunes/ngs-photometry.git}"
 if [ -n "${AO_PREDICT_HYBRID_SOURCE:-}" ]; then
   install_source "$AO_PREDICT_HYBRID_SOURCE"
 fi
-install_source "${AO_PREDICT_NGS_PHOTOMETRY_SOURCE:-git+https://github.com/nvnunes/ngs-photometry.git}"
 conda run --prefix "$env_prefix" python -m pip install -e ".[dev,docs]"
 
 echo "[bootstrap] Configuring git hooks path..."

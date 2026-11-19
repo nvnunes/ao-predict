@@ -1422,6 +1422,33 @@ def test_store_validate_and_reset_failed(tmp_path):
     assert store.pending_indices().tolist() == [1, 2]
 
 
+def test_store_resumes_unlabelled_results_using_strehl_precision(tmp_path):
+    path = tmp_path / "mixed-precision.h5"
+    store = SimulationStore(path)
+    store.create(_simulation(), _setup(), _options(num_sims=2), save_psfs=False)
+    with h5py.File(path, "r+") as file:
+        assert "precision" not in file["simulation"]
+        for name in ("stats/fwhm", "meta/tel_diameter"):
+            stored = file[name]
+            values, attributes = stored[()], dict(stored.attrs)
+            del file[name]
+            file.create_dataset(name, data=values, dtype="float64").attrs.update(
+                attributes
+            )
+    store.validate_schema()
+
+    result = _success_result()
+    result.stats["fwhm"] = np.full(3, 6.0000002) * u.arcsec
+    result.meta["tel_diameter"] = 8.0000003 * u.m
+    store.write_simulation_success(0, result)
+    result.meta["tel_diameter"] = 8.0000004 * u.m
+    SimulationStore(path).write_simulation_success(1, result)
+
+    with h5py.File(path, "r") as file:
+        np.testing.assert_array_equal(file["stats/fwhm"][:], np.full((2, 3), 6000.0))
+        assert file["meta/tel_diameter"][()] == 8.0
+
+
 def test_store_reads_legacy_zeropoint_without_modifying_file(tmp_path):
     path = tmp_path / "legacy_zeropoint.h5"
     store = SimulationStore(path)

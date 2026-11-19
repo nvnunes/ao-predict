@@ -6,14 +6,17 @@ across simulation implementations.
 
 from __future__ import annotations
 
-import re
 from typing import Any, Mapping
 
+from ao_core.io.schema import (
+    normalize_meta_fields as normalize_meta_fields,
+    normalize_unit_field_mapping as normalize_unit_field_mapping,
+)
 import numpy as np
 from .._precision import real_dtype
 from astropy import units as u
 
-from .._units import parse_unit, quantity_value, unit_string
+from .._units import quantity_value
 from . import schema
 from .interfaces import SimulationResult, SimulationState
 from ..utils import (
@@ -21,8 +24,6 @@ from ..utils import (
     as_float_scalar,
     require_keys,
 )
-
-_DIRECT_FIELD_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 #
@@ -162,19 +163,6 @@ def resolve_simulation_payload_for_load(
     return dict(simulation)
 
 
-def normalize_unit_field_mapping(value: Any, *, label: str) -> dict[str, str]:
-    """Return an insertion-ordered name-to-generic-unit mapping."""
-    if not isinstance(value, Mapping):
-        raise TypeError(f"{label} must be a mapping from field names to units.")
-    normalized: dict[str, str] = {}
-    for raw_name, raw_unit in value.items():
-        name = validate_direct_dataset_field_name(raw_name, label=label)
-        if name in normalized:
-            raise ValueError(f"{label} contains duplicate field name {name!r} after normalization.")
-        normalized[name] = unit_string(parse_unit(raw_unit, label=f"{label}[{name!r}]"))
-    return normalized
-
-
 def upgrade_setup_peak_method(setup: Mapping[str, Any]) -> dict[str, Any]:
     """Return a setup copy with the legacy peak-selector field canonicalized.
 
@@ -219,62 +207,6 @@ def resolve_setup_payload_for_load(setup: Mapping[str, Any]) -> dict[str, Any]:
     resolved.setdefault(schema.KEY_SETUP_EE_CENTER, schema.STATS_EE_CENTER_PEAK)
     validate_setup_payload_core(resolved)
     return resolved
-
-
-def validate_direct_dataset_field_name(name: Any, *, label: str) -> str:
-    """Return one validated direct HDF5 dataset field name."""
-    if not isinstance(name, str):
-        raise TypeError(f"{label} names must be strings.")
-    normalized = name.strip()
-    if not normalized:
-        raise ValueError(f"{label} names must be non-empty.")
-    if "/" in normalized:
-        raise ValueError(f"{label} names must be direct dataset names, got {normalized!r}.")
-    if not _DIRECT_FIELD_NAME_RE.match(normalized):
-        raise ValueError(
-            f"{label} name {normalized!r} must start with a letter or underscore "
-            "and contain only letters, digits, and underscores."
-        )
-    return normalized
-
-
-def validate_meta_field_name(name: Any, *, label: str = "meta field") -> str:
-    """Return one validated simulation-owned scalar ``/meta`` field name.
-
-    Extra meta fields are direct children of the persisted ``/meta`` group and
-    carry one scalar value per simulation. Names therefore use the same simple
-    key grammar as core metadata and may not collide with core AO Predict meta
-    fields such as ``pixel_scale``.
-    """
-
-    normalized = validate_direct_dataset_field_name(name, label=label)
-    if normalized in schema.CORE_META_KEYS:
-        raise ValueError(f"{label} name {normalized!r} collides with a core /meta field.")
-    return normalized
-
-
-def normalize_meta_fields(
-    value: Any,
-    *,
-    label: str = "simulation['meta_fields']",
-) -> dict[str, str | None]:
-    """Return validated scalar metadata field names and optional units.
-
-    A unit string declares a physical or scientifically dimensionless scalar.
-    ``None`` declares an ordinary numeric scalar, such as a count, whose
-    persisted dataset must not carry a ``units`` attribute.
-    """
-    if not isinstance(value, Mapping):
-        raise TypeError(f"{label} must be a mapping from field names to units or None.")
-    fields: dict[str, str | None] = {}
-    for raw_name, raw_unit in value.items():
-        name = validate_meta_field_name(raw_name, label=label)
-        fields[name] = (
-            None
-            if raw_unit is None or (isinstance(raw_unit, str) and not raw_unit.strip())
-            else unit_string(parse_unit(raw_unit, label=f"{label}[{name!r}]"))
-        )
-    return fields
 
 
 def validate_setup_payload_core(setup: Mapping[str, Any]) -> None:

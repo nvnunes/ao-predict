@@ -19,16 +19,17 @@ Keep one obvious owner for each major concern:
 
 - Simulation execution belongs under `simulation/*`.
 - Neutral PSF metadata, preprocessing, and EE, FWHM, and Strehl calculations
-  belong to the direct `ao-stats` dependency. AO Predict owns only the
-  simulation setup and persisted dataset contracts that select and store those
-  values.
+  belong to the direct `ao-stats` dependency. AO Predict selects which
+  statistics to calculate and supplies them to shared result storage.
 - Hybrid science-HO-PSF and NGS-HO-metric interpolation products belong to the
   direct `hybrid-ao-psf` dependency. AO Predict owns the Hybrid dataset adapter,
   not interpolation builders, files, or evaluation.
 - NGS magnitude, photon-flux, and WFS photon conversions belong to the direct
   `ngs-photometry` dependency. AO Predict owns calibration choice, INI parsing,
   active-star selection, TIPTOP rounding, and Hybrid request binding.
-- Persistence and storage concerns belong under `persistence/*`.
+- AO Core owns shared result fields and HDF5 I/O. AO Predict's
+  `persistence/*` validates the simulation dataset, adapts its payloads to
+  shared storage and manages batch status and resumption.
 - Model-training data, lifecycle, and package publication belong under
   `training/*` rather than growing out of simulation or persistence modules.
 - Deployable model loading, prediction, and aggregate evaluation belong under
@@ -423,14 +424,14 @@ an explicit migration of owned data.
 Keep preparation, validation, and binding clearly separated:
 
 - `prepare_*`: build or complete persisted payloads
-- core validation modules: enforce persisted schema and contract
+- core validation modules: enforce AO Predict's requirements for persisted payloads
 - `load_*`: deserialize and bind typed state
 
 Core-owned fields and behaviors should be validated and computed in core
 modules. Subclass hooks should handle only simulation-specific behavior.
 
-Builders may normalize inputs and apply defaults, but final
-persisted-contract enforcement belongs in core validation modules.
+Builders may normalize inputs and apply defaults. Core validation modules
+enforce AO Predict's requirements before passing payloads to shared storage.
 
 Avoid validating by temporarily mutating bound instance state and then
 restoring it.
@@ -443,7 +444,7 @@ follows that lifecycle.
 `HybridSimulation` is AO Predict's public Hybrid dataset adapter and defines
 its persisted dataset identity. It owns configured upstream file references,
 setup/options resolution, photometry, reusable loaded-provider
-binding, AO statistics, diagnostic field paths, and result persistence. One
+binding, calculation of AO statistics, and diagnostic field declarations. One
 protected `_resolve_hybrid_inputs()` hook returns the observation request,
 science provider, configured MASTSEL model and AO active-star slot mask.
 Downstream instrument adapters may replace instrument-resolved request values,
