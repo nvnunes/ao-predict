@@ -8,7 +8,7 @@ import h5py
 import hybrid_ao_psf
 import numpy as np
 import pytest
-from ao_stats import PsfMetadata
+from ao_core.stats import PsfMetadata
 from astropy import units as u
 from hybrid_ao_psf import (
     HybridCtotCorrection,

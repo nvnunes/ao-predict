@@ -19,7 +19,7 @@ Keep one obvious owner for each major concern:
 
 - Simulation execution belongs under `simulation/*`.
 - Neutral PSF metadata, preprocessing, and EE, FWHM, and Strehl calculations
-  belong to the direct `ao-stats` dependency. AO Predict selects which
+  belong to `ao_core.stats`. AO Predict selects which
   statistics to calculate and supplies them to shared result storage.
 - Hybrid science-HO-PSF and NGS-HO-metric interpolation products belong to the
   direct `hybrid-ao-psf` dependency. AO Predict owns the Hybrid dataset adapter,
@@ -546,7 +546,8 @@ calculations and storage. `SimulationConfig.dtype` maps to that key. Hybrid
 resolves omission from its INI, then the float32 default, and persists the result
 before allocation. Other families keep their existing default when omitted.
 The generic precision validator does not import Hybrid. BaseSimulation binds
-the setting for preprocessing, AO Stats, result metadata and floating diagnostics;
+the setting for preprocessing, PSF measurements, result metadata and floating
+diagnostics;
 direct Simulation implementations must expose their bound `dtype`. Native
 engines keep their own arithmetic. Training/prediction precision is unchanged.
 

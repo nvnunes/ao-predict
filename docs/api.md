@@ -888,11 +888,12 @@ the [Hybrid AO PSF project](https://github.com/nvnunes/hybrid-ao-psf).
 
 ## PSF Statistics
 
-AO Stats owns the neutral `PsfMetadata` contract, preprocessing, and EE, FWHM,
+AO Core owns the neutral `PsfMetadata` contract, preprocessing, and EE, FWHM,
 and Strehl calculations used by AO Predict. Import those interfaces directly
-from `ao_stats`; AO Predict retains only its simulation setup and persisted
+from `ao_core.stats`; AO Predict retains only its simulation setup and persisted
 dataset contracts for selecting and storing the resulting statistics. See the
-AO Stats API guide for the standalone calculation interface.
+[AO Core PSF measurement guide](https://github.com/nvnunes/ao-core/blob/main/docs/stats.md)
+for the standalone calculation interface.
 
 ## Plotting Helpers
 

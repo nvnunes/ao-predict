@@ -10,7 +10,7 @@ from typing import Any, Type
 from joblib import Parallel, delayed
 import numpy as np
 from astropy import units as u
-from ao_stats import PsfMetadata, compute_psf_stats
+from ao_core.stats import PsfMetadata, compute_psf_stats
 
 from .._units import quantity_value, unit_string
 from ..persistence import SimulationStore

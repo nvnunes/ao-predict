@@ -9,7 +9,7 @@ from typing import Any, Mapping, TypeVar
 import numpy as np
 from .._precision import real_dtype, diagnostic_precision
 from astropy import units as u
-from ao_stats import clip_and_sum_normalize_psfs
+from ao_core.stats import clip_and_sum_normalize_psfs
 
 from . import schema
 from . import atm

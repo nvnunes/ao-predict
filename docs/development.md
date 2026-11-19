@@ -24,12 +24,12 @@ AO_PREDICT_HYBRID_SOURCE=../hybrid-ao-psf \
 
 Bootstrap reinstalls AO Core from GitHub by default. Set
 `AO_PREDICT_AO_CORE_SOURCE` to a local checkout, wheel or Git URL. The AO Core
-build must include `ao_core.io` and `ao_core.photometry`. Bootstrap checks
-the photometry import after installing the dependencies.
+build must include `ao_core.io`, `ao_core.photometry`, and `ao_core.stats`.
+Bootstrap checks the photometry and statistics imports after installing
+the dependencies.
 
 Set `AO_PREDICT_HYBRID_SOURCE` when Hybrid AO PSF is unavailable from the
-configured package index. The index or the AO Predict Conda environment
-must also supply dependencies such as AO Models for Hybrid AO PSF.
+configured package index.
 
 The script will:
 - create `.conda` if missing

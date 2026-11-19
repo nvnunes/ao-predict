@@ -74,7 +74,7 @@ def test_simulation_module_config_backed_exports() -> None:
     assert not hasattr(simulation, "resolve_science_coordinates")
 
 
-def test_statistics_api_has_moved_to_ao_stats() -> None:
+def test_ao_predict_does_not_export_psf_statistics() -> None:
     package = importlib.import_module("ao_predict")
     simulation = importlib.import_module("ao_predict.simulation")
 

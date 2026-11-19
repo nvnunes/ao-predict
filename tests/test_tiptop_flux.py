@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 from astropy import units as u
-from ao_stats import PsfMetadata, compute_psf_stats
+from ao_core.stats import PsfMetadata, compute_psf_stats
 
 from ao_predict import TiptopSimulation, tiptop_full_flux_denominators
 from ao_predict.simulation.validation import validate_simulation_payload_core

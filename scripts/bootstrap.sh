@@ -35,7 +35,7 @@ if [ -n "${AO_PREDICT_HYBRID_SOURCE:-}" ]; then
   install_source "$AO_PREDICT_HYBRID_SOURCE"
 fi
 conda run --prefix "$env_prefix" python -m pip install -e ".[dev,docs]"
-conda run --prefix "$env_prefix" python -c 'import ao_core.photometry'
+conda run --prefix "$env_prefix" python -c 'import ao_core.photometry, ao_core.stats'
 
 echo "[bootstrap] Configuring git hooks path..."
 git config core.hooksPath .githooks
