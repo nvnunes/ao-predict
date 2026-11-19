@@ -26,23 +26,24 @@ class ScaledHybridSimulation(HybridSimulation):
             lo_model=replace(
                 resolved.lo_model,
                 ctot_correction=HybridCtotCorrection(
-                    apply=lambda ctot, runtime: 2 * ctot,
+                    apply=lambda ctot, context: 2 * ctot,
                 ),
             ),
         )
 ```
 
-Hybrid AO PSF records correction `input_files` when saving a standalone result.
 Downstream adapters can record dataset metadata in
 `prepare_simulation_payload()`.
-See Hybrid AO PSF for the callback's wavefront units, borrowed runtime lifetime
+See Hybrid AO PSF for the callback's wavefront units, numerical context,
 and return contract.
 
-The diagnostics dataset `/diagnostics/hybrid/ngs/frequency` records the
-scalar Hybrid LO frame rate in each active NGS slot. Inactive slots contain
-`NaN`. The dataset adapter derives the trace and determinant summaries from
-the angular covariance and uses the MASTSEL conversion scale for the debug
-wavefront covariance.
+AO Predict passes the requested diagnostic level to Hybrid AO PSF and saves
+the fields that Hybrid declares. The full angular covariance is
+`/diagnostics/covariance/ctot`. MASTSEL diagnostics use
+`/diagnostics/mastsel`, with one `frame_rate` per observation.
+Per-star values follow the batch's NGS slot order and have `NaN` in inactive
+slots. `/diagnostics/hybrid/ngs_used` records that slot mask. Debug adds the
+effective MASTSEL INI and `/diagnostics/psfs_ho`.
 
 ::: ao_predict.simulation.hybrid.HybridSimulation
 

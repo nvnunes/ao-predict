@@ -195,7 +195,7 @@ def test_hybrid_payload_retains_file_paths_and_diagnostic_units(
         key.endswith(("_interpolator_provenance", "_interpolator_builder"))
         for key in payload
     )
-    assert payload["diagnostic_fields"]["hybrid/psd_valid_fraction"]["unit"] == "1"
+    assert payload["diagnostic_fields"]["covariance/ctot"]["unit"] == "mas2"
     sim.validate_simulation_payload(payload)
 
 
@@ -802,36 +802,22 @@ def test_hybrid_validation_diagnostics_are_persisted_and_readable(
     diagnostics = store.read_simulation_diagnostics(0)
     all_diagnostics = store.read_analysis_diagnostics()
     assert "diagnostics" not in store.read_simulation_stats(0)
-    assert diagnostics["hybrid"]["angle_to_wavefront_scale"].to_value(
-        u.nm / u.mas
-    ) == pytest.approx(2.0)
-    assert diagnostics["hybrid"]["psd_valid_count"] == 2
-    assert diagnostics["hybrid"]["psd_valid_fraction"].to_value(u.one) == pytest.approx(1.0)
-    np.testing.assert_array_equal(diagnostics["hybrid"]["psd_valid_mask"], np.array([True, True]))
+    assert diagnostics["mastsel"]["angle_to_wavefront_scale"].to_value(u.nm / u.mas) == 2.0
+    np.testing.assert_array_equal(diagnostics["covariance"]["psd_valid_mask"], [True, True])
     np.testing.assert_array_equal(
-        diagnostics["hybrid"]["psd_clipped"],
-        np.array([False, non_psd_policy == "clip"]),
+        diagnostics["covariance"]["psd_clipped"], [False, non_psd_policy == "clip"]
     )
-    np.testing.assert_array_equal(diagnostics["hybrid"]["ngs_used"], np.array([True, False]))
-    np.testing.assert_allclose(
-        diagnostics["hybrid"]["ngs"]["ee"].to_value(u.one),
-        np.array([0.3, np.nan]),
-        equal_nan=True,
-    )
-    frequency = diagnostics["hybrid"]["ngs"]["frequency"]
-    assert frequency.dtype == np.float32
-    np.testing.assert_array_equal(frequency.to_value(u.Hz), [500.0, np.nan])
-    second_trace = 1.0 if non_psd_policy == "clip" else 2.0
-    second_determinant = 0.0 if non_psd_policy == "clip" else 1.0
-    assert diagnostics["hybrid"]["ctot_angle_trace_min"] == 0.5 * u.mas**2
-    assert diagnostics["hybrid"]["ctot_angle_trace_max"] == second_trace * u.mas**2
-    assert diagnostics["hybrid"]["ctot_angle_trace_mean"] == (0.5 + second_trace) / 2 * u.mas**2
-    assert diagnostics["hybrid"]["ctot_angle_determinant_min"] == min(0.0625, second_determinant) * u.mas**4
-    assert diagnostics["hybrid"]["ctot_angle_determinant_max"] == max(0.0625, second_determinant) * u.mas**4
-    assert diagnostics["hybrid"]["ctot_angle_determinant_mean"] == (0.0625 + second_determinant) / 2 * u.mas**4
-    assert "ctot_wavefront" not in diagnostics["hybrid"]
-    assert "runtime_ini_text" not in diagnostics["hybrid"]
-    assert all_diagnostics["hybrid"]["angle_to_wavefront_scale"].shape == (1,)
+    np.testing.assert_array_equal(diagnostics["hybrid"]["ngs_used"], [True, False])
+    np.testing.assert_allclose(diagnostics["mastsel"]["ngs_metrics"]["ee"].to_value(u.one), [0.3, np.nan])
+    rate = diagnostics["mastsel"]["frame_rate"]
+    assert rate.dtype == np.float32 and rate.isscalar and rate == 500 * u.Hz
+    expected_second = [[1.0, 0.0], [0.0, 0.0]] if non_psd_policy == "clip" else np.eye(2)
+    ctot = diagnostics["covariance"]["ctot"]
+    np.testing.assert_array_equal(ctot[0].to_value(u.mas**2), np.eye(2) * 0.25)
+    np.testing.assert_array_equal(ctot[1].to_value(u.mas**2), expected_second)
+    assert "effective_ini" not in diagnostics["mastsel"]
+    assert "psfs_ho" not in diagnostics
+    assert all_diagnostics["mastsel"]["frame_rate"].shape == (1,)
 
 
 def test_hybrid_debug_string_diagnostics_read_as_text(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -892,7 +878,7 @@ def test_hybrid_debug_string_diagnostics_read_as_text(tmp_path: Path, monkeypatc
     summary = run_simulations_by_state(dataset_path, num_workers=1)
 
     assert summary.succeeded == 1
-    runtime_ini_text = SimulationStore(dataset_path).read_simulation_diagnostics(0)["hybrid"]["runtime_ini_text"]
+    runtime_ini_text = SimulationStore(dataset_path).read_simulation_diagnostics(0)["mastsel"]["effective_ini"]
     assert isinstance(runtime_ini_text, str)
     assert "[telescope]" in runtime_ini_text
 
@@ -915,13 +901,14 @@ def test_hybrid_debug_diagnostics_include_full_ctot_and_runtime_ini(
 
     assert context.result is not None
     diagnostics = context.result.diagnostics
-    assert "[telescope]" in diagnostics["hybrid/runtime_ini_text"]
-    np.testing.assert_allclose(
-        diagnostics["hybrid/ctot_wavefront"].to_value(u.nm**2),
-        np.stack([np.eye(2), 2.0 * np.eye(2)]),
+    assert "[telescope]" in diagnostics["mastsel/effective_ini"]
+    assert diagnostics["psfs_ho"].shape == context.runtime["hybrid_result"].psfs.shape
+    np.testing.assert_array_equal(
+        diagnostics["psfs_ho"].to_value(u.one),
+        context.runtime["hybrid_result"].diagnostics.psfs_ho,
     )
     np.testing.assert_allclose(
-        diagnostics["hybrid/ctot_angle"].to_value(u.mas**2),
+        diagnostics["covariance/ctot"].to_value(u.mas**2),
         np.stack([np.eye(2), 2.0 * np.eye(2)]) / 4.0,
     )
 
@@ -929,15 +916,15 @@ def test_hybrid_debug_diagnostics_include_full_ctot_and_runtime_ini(
 def test_hybrid_load_rejects_changed_diagnostic_field_specs(tmp_path: Path) -> None:
     payload = _simulation_payload(tmp_path, diagnostics_level="validation")
     fields = dict(payload["diagnostic_fields"])
-    fields["hybrid/angle_to_wavefront_scale"] = {
-        **fields["hybrid/angle_to_wavefront_scale"],
+    fields["mastsel/angle_to_wavefront_scale"] = {
+        **fields["mastsel/angle_to_wavefront_scale"],
         "dtype": "float64",
     }
     payload["diagnostic_fields"] = fields
 
     with pytest.raises(
         ValueError,
-        match="changed specs: hybrid/angle_to_wavefront_scale",
+        match="changed specs: mastsel/angle_to_wavefront_scale",
     ):
         HybridSimulation().load_simulation_payload(payload)
 
@@ -947,7 +934,7 @@ def test_hybrid_diagnostic_extension_fields_cannot_collide(tmp_path: Path) -> No
         def _extend_hybrid_diagnostic_field_specs(self, diagnostics_level):
             del diagnostics_level
             return {
-                "hybrid/angle_to_wavefront_scale": {
+                "mastsel/angle_to_wavefront_scale": {
                     "dtype": "float32",
                     "shape": (),
                 }
@@ -1004,7 +991,7 @@ def test_hybrid_diagnostic_extension_fields_are_appended(
 
     assert context.result is not None
     assert context.result.diagnostics["project/custom_scalar"] == pytest.approx(12.5)
-    assert "hybrid/angle_to_wavefront_scale" in context.result.diagnostics
+    assert "mastsel/angle_to_wavefront_scale" in context.result.diagnostics
 
 
 def test_hybrid_rejects_missing_ngs() -> None:

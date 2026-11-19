@@ -96,12 +96,12 @@ def test_hybrid_precision_execute_resume_and_analysis(tmp_path, monkeypatch, dty
             "meta/tel_pupil",
             "meta/pixel_scale",
             "meta/tel_diameter",
-            "diagnostics/hybrid/ctot_angle",
-            "diagnostics/hybrid/ngs/fwhm",
+            "diagnostics/covariance/ctot",
+            "diagnostics/mastsel/ngs_metrics/fwhm",
         ):
             assert root[path].dtype == dtype
-        assert root["diagnostics/hybrid/psd_clipped"].dtype == bool
-        assert root["diagnostics/hybrid/psd_valid_count"].dtype == np.int32
+        assert root["diagnostics/covariance/psd_clipped"].dtype == bool
+        assert root["diagnostics/hybrid/ngs_used"].dtype == bool
     other = np.float64 if dtype == np.float32 else np.float32
     with pytest.raises(DatasetConfigMismatchError, match="precision"):
         validate_dataset_matches_request(

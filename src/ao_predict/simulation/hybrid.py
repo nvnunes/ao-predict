@@ -15,16 +15,20 @@ from hybrid_ao_psf import (
     DiagnosticsLevel,
     HybridRequest,
     HybridResult,
+    LowOrderModel,
     MastselModel,
     NonPsdPolicy,
     PsfInterpolator,
     PsfMetricInterpolator,
     PsfProvider,
+    diagnostic_fields,
+    diagnostic_values,
     load_psf_interpolator,
     load_psf_metric_interpolator,
     simulate,
 )
 
+from .._precision import real_dtype
 from .._units import quantity_value
 from . import atm, schema
 from .base import BaseSimulationSetup, PsfParameters
@@ -122,9 +126,9 @@ class HybridSimulation(TiptopConfigBackedSimulation):
     """AO Predict adapter over the standalone Hybrid AO PSF engine.
 
     AO Predict owns payload binding, per-row option and photometry resolution,
-    result persistence, statistics, and diagnostic field names. Hybrid AO PSF
+    result persistence, statistics, and batch slot alignment. Hybrid AO PSF
     owns provider evaluation, MASTSEL execution, Ctot handling, finite-field
-    blur, jitter, and immutable scientific result construction.
+    blur, jitter, and the scientific diagnostics for each level.
     """
 
     _VERSION = "0.0.1"
@@ -234,19 +238,15 @@ class HybridSimulation(TiptopConfigBackedSimulation):
                 NonPsdPolicy.ERROR.value,
             )
         ).value
-        simulation_payload = dict(
-            super().prepare_simulation_payload(
-                base_simulation_payload,
-                simulation_cfg,
-            )
-        )
         science_path = self._resolve_required_file_path(simulation_cfg, self.KEY_SCIENCE_HO_PSF_INTERPOLATOR_PATH)
         ngs_path = self._resolve_required_file_path(simulation_cfg, self.KEY_NGS_HO_METRIC_INTERPOLATOR_PATH)
-        load_psf_interpolator(science_path)
+        _get_cached_science_ho_psf_interpolator(
+            science_path, real_dtype(simulation_cfg[schema.KEY_SIMULATION_PRECISION])
+        )
         load_psf_metric_interpolator(ngs_path)
-        simulation_payload[self.KEY_SCIENCE_HO_PSF_INTERPOLATOR_PATH] = str(science_path)
-        simulation_payload[self.KEY_NGS_HO_METRIC_INTERPOLATOR_PATH] = str(ngs_path)
-        return simulation_payload
+        simulation_cfg[self.KEY_SCIENCE_HO_PSF_INTERPOLATOR_PATH] = str(science_path)
+        simulation_cfg[self.KEY_NGS_HO_METRIC_INTERPOLATOR_PATH] = str(ngs_path)
+        return super().prepare_simulation_payload(base_simulation_payload, simulation_cfg)
 
     def validate_simulation_payload(self, simulation_payload: Mapping[str, Any]) -> None:
         """Validate persisted Hybrid simulation payload without binding state.
@@ -264,7 +264,9 @@ class HybridSimulation(TiptopConfigBackedSimulation):
         _non_psd_policy_from_payload(simulation_payload)
         science_path = self._get_required_payload_path(simulation_payload, self.KEY_SCIENCE_HO_PSF_INTERPOLATOR_PATH)
         ngs_path = self._get_required_payload_path(simulation_payload, self.KEY_NGS_HO_METRIC_INTERPOLATOR_PATH)
-        load_psf_interpolator(science_path)
+        _get_cached_science_ho_psf_interpolator(
+            science_path, real_dtype(simulation_payload.get(schema.KEY_SIMULATION_PRECISION, "float32"))
+        )
         load_psf_metric_interpolator(ngs_path)
 
     def load_simulation_payload(self, simulation_payload: Mapping[str, Any]) -> None:
@@ -535,59 +537,22 @@ class HybridSimulation(TiptopConfigBackedSimulation):
         """
         return {self.EXTRA_STAT_JITTER: _require_hybrid_result(context).jitter}
 
-    def _diagnostic_field_specs(self, diagnostics_level: str) -> Mapping[str, Mapping[str, Any]]:
-        """Return persisted Hybrid diagnostic field specs for one level.
-
-        Specs are keyed by slash-delimited ``/diagnostics`` paths and contain a
-        storage ``dtype`` plus a shape excluding the leading simulation
-        dimension ``N``. The supported non-``none`` levels are ``validation``
-        and ``debug``. ``debug`` includes all validation diagnostics plus full
-        Ctot cubes and runtime INI text.
-
-        Args:
-            diagnostics_level: Requested non-``none`` diagnostics level.
-
-        Returns:
-            Mapping from slash-delimited diagnostic field path to dtype/shape
-            spec. Shape tokens use the generic diagnostics vocabulary
-            ``num_sci`` and ``num_ngs``.
-
-        Raises:
-            ValueError: If subclass extension specs collide with upstream
-                Hybrid diagnostic fields.
-        """
-        specs: dict[str, Mapping[str, Any]] = {
-            "hybrid/angle_to_wavefront_scale": {
-                "dtype": "float32",
-                "shape": (),
-                "unit": u.nm / u.mas,
-            },
-            "hybrid/psd_valid_count": {"dtype": "int32", "shape": ()},
-            "hybrid/psd_valid_fraction": {"dtype": "float32", "shape": (), "unit": u.dimensionless_unscaled},
-            "hybrid/psd_valid_mask": {"dtype": "bool", "shape": ("num_sci",)},
-            "hybrid/psd_clipped": {"dtype": "bool", "shape": ("num_sci",)},
-            "hybrid/ctot_angle_trace_min": {"dtype": "float32", "shape": (), "unit": u.mas**2},
-            "hybrid/ctot_angle_trace_max": {"dtype": "float32", "shape": (), "unit": u.mas**2},
-            "hybrid/ctot_angle_trace_mean": {"dtype": "float32", "shape": (), "unit": u.mas**2},
-            "hybrid/ctot_angle_determinant_min": {"dtype": "float32", "shape": (), "unit": u.mas**4},
-            "hybrid/ctot_angle_determinant_max": {"dtype": "float32", "shape": (), "unit": u.mas**4},
-            "hybrid/ctot_angle_determinant_mean": {"dtype": "float32", "shape": (), "unit": u.mas**4},
-            "hybrid/ngs_used": {"dtype": "bool", "shape": ("num_ngs",)},
-            "hybrid/ngs/ee": {"dtype": "float32", "shape": ("num_ngs",), "unit": u.dimensionless_unscaled},
-            "hybrid/ngs/fwhm": {"dtype": "float32", "shape": ("num_ngs",), "unit": u.mas},
-            "hybrid/ngs/sr": {"dtype": "float32", "shape": ("num_ngs",), "unit": u.dimensionless_unscaled},
-            "hybrid/ngs/flux": {"dtype": "float32", "shape": ("num_ngs",), "unit": u.photon / u.s},
-            "hybrid/ngs/frequency": {"dtype": "float32", "shape": ("num_ngs",), "unit": u.Hz},
-        }
-        if diagnostics_level == schema.DIAGNOSTICS_LEVEL_DEBUG:
-            specs.update(
-                {
-                    "hybrid/ctot_wavefront": {"dtype": "float32", "shape": ("num_sci", 2, 2), "unit": u.nm**2},
-                    "hybrid/ctot_angle": {"dtype": "float32", "shape": ("num_sci", 2, 2), "unit": u.mas**2},
-                    "hybrid/runtime_ini_text": {"dtype": "str", "shape": ()},
-                }
+    def _diagnostic_field_specs_for_payload(
+        self, level: str, simulation_payload: Mapping[str, Any]
+    ) -> Mapping[str, Mapping[str, Any]]:
+        """Declare Hybrid fields and the batch NGS-slot mask before allocation."""
+        psf_shape = None
+        if level == schema.DIAGNOSTICS_LEVEL_DEBUG:
+            path = self._get_required_payload_path(
+                simulation_payload, self.KEY_SCIENCE_HO_PSF_INTERPOLATOR_PATH
             )
-        extension = dict(self._extend_hybrid_diagnostic_field_specs(diagnostics_level))
+            dtype = real_dtype(simulation_payload.get(schema.KEY_SIMULATION_PRECISION, "float32"))
+            psf_shape = _get_cached_science_ho_psf_interpolator(path, dtype).psf_shape
+        specs = diagnostic_fields(LowOrderModel.MASTSEL, level, psf_shape=psf_shape)
+        if level == schema.DIAGNOSTICS_LEVEL_NONE:
+            return specs
+        specs["hybrid/ngs_used"] = {"dtype": "bool", "shape": ("num_ngs",)}
+        extension = dict(self._extend_hybrid_diagnostic_field_specs(level))
         collisions = sorted(set(specs) & set(extension))
         if collisions:
             raise ValueError(f"Hybrid diagnostic extension fields collide with upstream fields: {', '.join(collisions)}")
@@ -619,7 +584,7 @@ class HybridSimulation(TiptopConfigBackedSimulation):
         The base Hybrid implementation returns no diagnostics when
         ``diagnostics_level`` is ``none``. For ``validation`` and ``debug`` it
         returns values matching the field specs declared by
-        ``_diagnostic_field_specs()`` and merges subclass extension values after
+        ``_diagnostic_field_specs_for_payload()`` and merges subclass extension values after
         checking that extension keys do not overwrite upstream keys.
 
         Args:
@@ -669,85 +634,17 @@ class HybridSimulation(TiptopConfigBackedSimulation):
         return {}
 
     def _build_hybrid_diagnostics(self, diagnostics_context: HybridDiagnosticsContext) -> Mapping[str, Any]:
-        """Map upstream Hybrid diagnostics to AO persisted field names.
-
-        ``validation`` diagnostics include compact scalar Ctot summaries, PSD
-        validity and clipping masks, slot-aligned active-NGS mask, and slot-aligned
-        MASTSEL inputs. ``debug`` adds full Ctot cubes and serialized runtime
-        INI text. Returned values are flat and must match the specs from
-        ``_diagnostic_field_specs()`` for the active level.
-
-        Args:
-            diagnostics_context: Runtime values produced by one completed
-                Hybrid simulation.
-
-        Returns:
-            Upstream Hybrid diagnostic values keyed by slash-delimited
-            ``/diagnostics`` paths.
-
-        Raises:
-            ValueError: If required MASTSEL input diagnostics are missing,
-                non-finite, or inconsistent with the active NGS mask.
-        """
-        result = diagnostics_context.result
-        upstream = result.diagnostics
-        if upstream is None:
-            raise ValueError(
-                "Hybrid AO PSF did not return the requested diagnostics."
-            )
-        mastsel = upstream.mastsel
-        if mastsel is None:
+        """Align Hybrid's per-star diagnostic values to the persisted NGS slots."""
+        upstream = diagnostics_context.result.diagnostics
+        if upstream is None or upstream.mastsel is None:
             raise ValueError("HybridSimulation requires MASTSEL diagnostics.")
-        covariance = upstream.covariance
-        ctot = covariance.ctot
-        values = ctot.to_value(u.mas**2)
-        traces = np.trace(values, axis1=-2, axis2=-1)
-        determinants = np.linalg.det(values)
-        trace_min, trace_max = traces.min(), traces.max()
-        determinant_min, determinant_max = determinants.min(), determinants.max()
-        trace_mean = np.clip(traces.mean(), trace_min, trace_max)
-        determinant_mean = np.clip(determinants.mean(), determinant_min, determinant_max)
         used = np.asarray(diagnostics_context.ngs_used, dtype=bool)
-        ngs_frequency = np.full(used.shape, np.nan, dtype=mastsel.frame_rate.dtype)
-        ngs_frequency[used] = mastsel.frame_rate.to_value(u.Hz)
-        diagnostics: dict[str, Any] = {
-            "hybrid/angle_to_wavefront_scale": self.dtype.type(
-                mastsel.angle_to_wavefront_scale.to_value(u.nm / u.mas)
-            )
-            * (u.nm / u.mas),
-            "hybrid/psd_valid_count": np.int32(covariance.psd_valid_count),
-            "hybrid/psd_valid_fraction": self.dtype.type(
-                covariance.psd_valid_fraction
-            )
-            * u.dimensionless_unscaled,
-            "hybrid/psd_valid_mask": np.asarray(
-                covariance.psd_valid_mask,
-                dtype=bool,
-            ),
-            "hybrid/psd_clipped": np.asarray(covariance.psd_clipped, dtype=bool),
-            "hybrid/ctot_angle_trace_min": self.dtype.type(trace_min) * u.mas**2,
-            "hybrid/ctot_angle_trace_max": self.dtype.type(trace_max) * u.mas**2,
-            "hybrid/ctot_angle_trace_mean": self.dtype.type(trace_mean) * u.mas**2,
-            "hybrid/ctot_angle_determinant_min": self.dtype.type(determinant_min) * u.mas**4,
-            "hybrid/ctot_angle_determinant_max": self.dtype.type(determinant_max) * u.mas**4,
-            "hybrid/ctot_angle_determinant_mean": self.dtype.type(determinant_mean) * u.mas**4,
-            "hybrid/ngs_used": used,
-            "hybrid/ngs/ee": _slot_aligned(mastsel.ngs_metrics.ee, used),
-            "hybrid/ngs/fwhm": _slot_aligned(mastsel.ngs_metrics.fwhm, used),
-            "hybrid/ngs/sr": _slot_aligned(mastsel.ngs_metrics.sr, used),
-            "hybrid/ngs/flux": _slot_aligned(mastsel.ngs_flux, used),
-            "hybrid/ngs/frequency": ngs_frequency * u.Hz,
-        }
-        if self.diagnostics_level == schema.DIAGNOSTICS_LEVEL_DEBUG:
-            diagnostics.update(
-                {
-                    "hybrid/ctot_wavefront": (
-                        ctot * mastsel.angle_to_wavefront_scale**2
-                    ).astype(self.dtype.type),
-                    "hybrid/ctot_angle": ctot.astype(self.dtype.type),
-                    "hybrid/runtime_ini_text": mastsel.effective_ini,
-                }
-            )
+        diagnostics = diagnostic_values(upstream)
+        specs = diagnostic_fields(LowOrderModel.MASTSEL, schema.DIAGNOSTICS_LEVEL_VALIDATION)
+        for name, spec in specs.items():
+            if spec["shape"] == ("num_ngs",):
+                diagnostics[name] = _slot_aligned(diagnostics[name], used)
+        diagnostics["hybrid/ngs_used"] = used
         return diagnostics
 
     def _build_runtime_mastsel_parser(

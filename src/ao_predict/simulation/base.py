@@ -205,7 +205,7 @@ class BaseSimulation(Simulation, ABC):
         payload[schema.KEY_SIMULATION_DIAGNOSTICS_LEVEL] = diagnostics_level
         if diagnostics_level != schema.DIAGNOSTICS_LEVEL_NONE:
             diagnostic_fields = _normalize_diagnostic_field_specs(
-                self._diagnostic_field_specs(diagnostics_level)
+                self._diagnostic_field_specs_for_payload(diagnostics_level, payload)
             )
             if not diagnostic_fields:
                 raise ValueError(f"{type(self).__name__} diagnostics_level={diagnostics_level!r} declared no diagnostics fields.")
@@ -256,7 +256,7 @@ class BaseSimulation(Simulation, ABC):
                 f"{type(self).__name__} diagnostics_level={level!r} requires "
                 f"simulation['{schema.KEY_SIMULATION_DIAGNOSTIC_FIELDS}']."
             )
-        expected_fields = dict(self._diagnostic_field_specs(level))
+        expected_fields = dict(self._diagnostic_field_specs_for_payload(level, simulation_payload))
         if schema.KEY_SIMULATION_PRECISION in simulation_payload:
             expected_fields = diagnostic_precision(expected_fields, real_dtype(simulation_payload[schema.KEY_SIMULATION_PRECISION]))
         if not expected_fields:
@@ -283,6 +283,12 @@ class BaseSimulation(Simulation, ABC):
                 + "; ".join(details)
             )
         return level
+
+    def _diagnostic_field_specs_for_payload(
+        self, level: str, simulation_payload: Mapping[str, Any]
+    ) -> Mapping[str, Mapping[str, Any]]:
+        """Resolve diagnostic fields from the level and file-wide run settings."""
+        return self._diagnostic_field_specs(level)
 
     def _diagnostic_field_specs(self, diagnostics_level: str) -> Mapping[str, Mapping[str, Any]]:
         """Return declared ``/diagnostics`` field specs for one level.

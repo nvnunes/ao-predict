@@ -457,11 +457,10 @@ and any simulation-level metadata it appends during payload preparation.
 
 Hybrid AO PSF owns interpolation evaluation, effective MASTSEL translation
 and execution, Ctot conditioning, finite-field blur, jitter, and scientific
-diagnostics. The AO adapter does not recompute these outputs. Its
-`non_psd_policy` simulation field selects `error` or `clip`, defaulting to
-`error` for new and previously stored payloads without the field. Validation
-and debug diagnostics persist `hybrid/psd_clipped` per science field alongside
-the validity mask of the conditioned covariance.
+diagnostics. The AO adapter passes the requested level to Hybrid and uses the fields Hybrid
+declares. AO Predict aligns per-star diagnostics to the batch NGS slots and
+passes the values to AO Core for storage. The simulation setting
+`non_psd_policy` selects `error` or `clip` and defaults to `error`.
 
 Completed AO Predict datasets are readable with their persisted class identity
 and field meanings without loading the referenced interpolator files.
