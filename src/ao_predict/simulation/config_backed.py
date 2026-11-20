@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 from . import schema
 from .base import BaseSimulation
@@ -73,7 +74,21 @@ class ConfigBackedSimulation(BaseSimulation):
         """
         config_path = self._resolve_config_path(simulation_cfg)
         config_text = config_path.read_text(encoding="utf-8")
+        return self._build_config_backed_payload(
+            base_simulation_payload, simulation_cfg, config_text
+        )
 
+    def _build_config_backed_payload(
+        self,
+        base_simulation_payload: Mapping[str, Any],
+        simulation_cfg: Mapping[str, Any],
+        config_text: str,
+    ) -> Mapping[str, Any]:
+        """Persist already read source text with the simulation settings.
+
+        Callers supply their resolved configuration and the original text.
+        The returned payload stores the text under ``base_config``.
+        """
         simulation_payload = self._build_simulation_payload(
             base_simulation_payload,
             simulation_cfg,

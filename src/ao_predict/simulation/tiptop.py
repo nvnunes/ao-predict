@@ -2,20 +2,22 @@
 
 from __future__ import annotations
 
+import tempfile
+from collections.abc import Mapping
 from configparser import ConfigParser
 from copy import deepcopy
 from dataclasses import dataclass
 from inspect import signature
 from pathlib import Path
-import tempfile
-from typing import Any, Mapping
+from typing import Any
 
 import numpy as np
+from ao_core.models.config import DetectorConfig, TelescopeConfig
 from ao_core.photometry import magnitudes_to_photons_per_frame
 from astropy import units as u
 
-from . import atm
-from . import schema
+from .._units import quantity_value
+from . import atm, schema
 from .base import BaseSimulationSetup, PsfParameters
 from .helpers import r0_to_seeing
 from .interfaces import SimulationContext, SimulationSetup
@@ -24,7 +26,6 @@ from .tiptop_config_backed import (
     _format_ini_array,
     _serialize_parser,
 )
-from .._units import quantity_value
 
 
 @dataclass(frozen=True)
@@ -278,7 +279,10 @@ class TiptopSimulation(TiptopConfigBackedSimulation):
         ngs_used = np.asarray(options[schema.KEY_OPTION_NGS_USED], dtype=bool).reshape(-1)
         if not np.any(ngs_used):
             return
-        photometry = self._get_ngs_photometry_config(parser, setup.ngs_magnitude_zeropoint)
+        low_order_detector = DetectorConfig.low_order_from_ini(parser)
+        photometry = self._get_ngs_photometry_config(
+            parser, low_order_detector, setup.ngs_magnitude_zeropoint
+        )
 
         if parser.has_section("sources_LO"):
             self._write_source_geometry_fields(
@@ -527,18 +531,20 @@ class TiptopSimulation(TiptopConfigBackedSimulation):
             raise TypeError("context.runtime['effective_parser'] must be a ConfigParser. Did create() run?")
 
         if hasattr(simulation, "psInMas"):
-            pixel_scale = float(getattr(simulation, "psInMas"))
-        elif parser.has_section("sensor_science") and "PixelScale" in parser["sensor_science"]:
-            pixel_scale = float(parser["sensor_science"]["PixelScale"])
+            pixel_scale = float(simulation.psInMas)
         else:
-            raise ValueError("Unable to resolve pixel scale (mas) from TIPTOP outputs or INI.")
+            science_detector = DetectorConfig.science_from_ini(parser)
+            if science_detector is None or science_detector.pixel_scale is None:
+                raise ValueError("Unable to resolve pixel scale (mas) from TIPTOP outputs or INI.")
+            pixel_scale = science_detector.pixel_scale.to_value(u.mas / u.pix)
 
         if hasattr(simulation, "tel_radius"):
-            tel_diameter = float(getattr(simulation, "tel_radius")) * 2.0
-        elif parser.has_section("telescope") and "TelescopeDiameter" in parser["telescope"]:
-            tel_diameter = float(parser["telescope"]["TelescopeDiameter"])
+            tel_diameter = float(simulation.tel_radius) * 2.0
         else:
-            raise ValueError("Unable to resolve telescope diameter (m) from TIPTOP outputs or INI.")
+            telescope_config = TelescopeConfig.from_ini(parser)
+            if telescope_config is None or telescope_config.diameter is None:
+                raise ValueError("Unable to resolve telescope diameter (m) from TIPTOP outputs or INI.")
+            tel_diameter = telescope_config.diameter.to_value(u.m)
 
         try:
             tel_pupil = np.asarray(simulation.fao.ao.tel.pupil, dtype=self.dtype)

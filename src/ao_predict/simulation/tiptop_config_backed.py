@@ -2,20 +2,29 @@
 
 from __future__ import annotations
 
+import io
+from collections.abc import Mapping
 from configparser import ConfigParser
 from dataclasses import dataclass
-import io
-from typing import Any, Mapping
+from typing import Any, ClassVar
 
 import numpy as np
-from astropy import units as u
+from ao_core.models.config import (
+    AtmosphereConfig,
+    DetectorConfig,
+    LoopConfig,
+    SourceConfig,
+    TelescopeConfig,
+    parse_ini,
+    read_ini_scalar,
+)
 from ao_core.photometry import WFSPhotometryConfig, photons_per_frame_to_magnitudes
+from astropy import units as u
 
-from . import atm
-from . import schema
+from .._units import quantity_value
+from . import atm, schema
 from .config_backed import ConfigBackedSimulation
 from .helpers import seeing_to_r0
-from .._units import quantity_value
 
 
 @dataclass
@@ -42,51 +51,18 @@ def _serialize_parser(parser: ConfigParser) -> str:
     return buf.getvalue()
 
 
-def _parse_ini_text(ini_text: str) -> ConfigParser:
-    """Parse INI text into a case-preserving ``ConfigParser``."""
-    parser = ConfigParser(interpolation=None)
-    parser.optionxform = str  # preserve original option case
-    parser.read_string(ini_text)
-    return parser
-
-
-def _parse_ini_array(raw: str) -> np.ndarray:
-    """Parse TIPTOP bracket-array text (``[a,b,c]``) into a float array."""
-    return np.fromstring(raw.strip("[]"), dtype=float, sep=",")
-
-
 def _format_ini_array(values: np.ndarray) -> str:
     """Format a numeric vector into TIPTOP bracket-array text."""
     arr = np.asarray(values).reshape(-1)
     return "[" + ",".join(f"{float(v):.6g}" for v in arr) + "]"
 
 
-def _get_ini_array(parser: ConfigParser, section: str, key: str) -> np.ndarray | None:
-    """Read a vector-valued INI field as float array."""
-    if not parser.has_section(section) or key not in parser[section]:
-        return None
-    values = _parse_ini_array(parser[section][key])
-    if values.size == 0:
-        return None
-    return np.asarray(values, dtype=float).reshape(-1)
-
-
-def _get_ini_float(parser: ConfigParser, section: str, key: str) -> float | None:
-    """Read a scalar-valued INI field as float."""
-    if not parser.has_section(section) or key not in parser[section]:
-        return None
-    try:
-        return float(parser[section][key])
-    except ValueError:
-        return None
-
-
 class TiptopConfigBackedSimulation(ConfigBackedSimulation):
     """Base for simulations that use the shared TIPTOP/MASTSEL INI dialect.
 
-    The class interprets the persisted base configuration as a case-preserving
-    INI file and derives AO Predict setup/options defaults from fields that are
-    common to the TIPTOP/MASTSEL configuration family. Runtime execution,
+    AO Core decodes the shared fields of the case-preserving base INI.
+    This class uses those fields to resolve AO Predict setup and option
+    defaults. Runtime execution,
     runtime parser mutation, and output extraction remain subclass
     responsibilities.
 
@@ -95,7 +71,7 @@ class TiptopConfigBackedSimulation(ConfigBackedSimulation):
             simulation payload.
     """
 
-    ATM_PROFILE_KEYS_TO_INI_FIELDS = {
+    ATM_PROFILE_KEYS_TO_INI_FIELDS: ClassVar[dict[str, str]] = {
         atm.KEY_SETUP_ATM_PROFILE_L0: "L0",
         atm.KEY_SETUP_ATM_PROFILE_CN2_HEIGHTS: "Cn2Heights",
         atm.KEY_SETUP_ATM_PROFILE_CN2_WEIGHTS: "Cn2Weights",
@@ -130,7 +106,7 @@ class TiptopConfigBackedSimulation(ConfigBackedSimulation):
         """Parse serialized INI text into bindable config state."""
         return TiptopBaseConfig(
             ini_text=base_config_text,
-            parser=_parse_ini_text(base_config_text),
+            parser=parse_ini(base_config_text),
         )
 
     def _bind_base_config(self, base_config: Any) -> None:
@@ -169,25 +145,34 @@ class TiptopConfigBackedSimulation(ConfigBackedSimulation):
         atm_wavelength = self._get_required_atm_wavelength_m(parser, "prepare setup payload") * u.m
         default_atm_profile = self._get_default_atm_profile_from_ini(parser)
 
-        lgs_r = _get_ini_array(parser, "sources_HO", "Zenith")
-        lgs_theta = _get_ini_array(parser, "sources_HO", "Azimuth")
-        if lgs_r is None:
-            lgs_r = np.asarray([], dtype=float)
-        if lgs_theta is None:
-            lgs_theta = np.asarray([], dtype=float)
-
-        sci_r = _get_ini_array(parser, "sources_science", "Zenith")
-        sci_theta = _get_ini_array(parser, "sources_science", "Azimuth")
+        high_order_sources = SourceConfig.from_ini(parser, "sources_HO")
+        science_sources = SourceConfig.from_ini(parser, "sources_science")
+        lgs_zenith_offsets = (
+            None if high_order_sources is None else high_order_sources.zenith
+        )
+        lgs_azimuths = None if high_order_sources is None else high_order_sources.azimuth
+        science_zenith_offsets = (
+            None if science_sources is None else science_sources.zenith
+        )
+        science_azimuths = None if science_sources is None else science_sources.azimuth
 
         return self._build_setup_payload(
             base_setup_payload,
             setup_cfg,
             default_atm_wavelength=atm_wavelength,
             default_atm_profile=default_atm_profile,
-            default_lgs_r=lgs_r * u.arcsec,
-            default_lgs_theta=lgs_theta * u.deg,
-            default_sci_r=None if sci_r is None else sci_r * u.arcsec,
-            default_sci_theta=None if sci_theta is None else sci_theta * u.deg,
+            default_lgs_r=(
+                np.empty(0) * u.arcsec
+                if lgs_zenith_offsets is None
+                else lgs_zenith_offsets.copy()
+            ),
+            default_lgs_theta=(
+                np.empty(0) * u.deg if lgs_azimuths is None else lgs_azimuths.copy()
+            ),
+            default_sci_r=(
+                None if science_zenith_offsets is None else science_zenith_offsets.copy()
+            ),
+            default_sci_theta=None if science_azimuths is None else science_azimuths.copy(),
         )
 
     # Options payload lifecycle
@@ -232,15 +217,12 @@ class TiptopConfigBackedSimulation(ConfigBackedSimulation):
         if schema.KEY_OPTION_ATM_PROFILE_ID not in options_payload:
             default_options[schema.KEY_OPTION_ATM_PROFILE_ID] = np.int32(0)
         if schema.KEY_OPTION_R0 not in options_payload:
-            default_options[schema.KEY_OPTION_R0] = self._get_default_r0_m_from_ini(parser) * u.m
+            default_options[schema.KEY_OPTION_R0] = self._default_r0(AtmosphereConfig.from_ini(parser))
 
         if not any(key in options_payload for key in schema.OPTION_KEYS_NGS):
             default_ngs_options = self._get_default_ngs_options_from_ini(
                 parser,
-                self._get_ngs_photometry_config(
-                    parser,
-                    setup_payload[self.KEY_SETUP_NGS_MAGNITUDE_ZEROPOINT],
-                ),
+                setup_payload[self.KEY_SETUP_NGS_MAGNITUDE_ZEROPOINT],
             )
             if default_ngs_options is not None:
                 for key, values in default_ngs_options.items():
@@ -316,7 +298,9 @@ class TiptopConfigBackedSimulation(ConfigBackedSimulation):
         if not parser.has_section("atmosphere") or "Wavelength" not in parser["atmosphere"]:
             raise ValueError(f"TIPTOP atmosphere.Wavelength must be present to {purpose}.")
         try:
-            atm_wavelength_m = float(parser["atmosphere"]["Wavelength"])
+            atm_wavelength_m = read_ini_scalar(
+                parser["atmosphere"], "Wavelength", label="atmosphere.Wavelength"
+            )
         except ValueError as exc:
             raise ValueError(f"TIPTOP atmosphere.Wavelength must be numeric to {purpose}.") from exc
         if atm_wavelength_m <= 0.0:
@@ -324,143 +308,108 @@ class TiptopConfigBackedSimulation(ConfigBackedSimulation):
         return atm_wavelength_m
 
     @staticmethod
-    def _get_frame_rate_lo(parser: ConfigParser) -> float:
-        """Read LO WFS frame rate needed for magnitude/photon conversions."""
-        if not parser.has_section("RTC") or "SensorFrameRate_LO" not in parser["RTC"]:
-            raise ValueError("TIPTOP config missing RTC.SensorFrameRate_LO required for ngs_magnitude conversion.")
-        try:
-            frame_rate_hz = float(parser["RTC"]["SensorFrameRate_LO"])
-        except ValueError as exc:
-            raise ValueError("TIPTOP RTC.SensorFrameRate_LO must be numeric for ngs_magnitude conversion.") from exc
-        if frame_rate_hz <= 0.0:
-            raise ValueError("TIPTOP RTC.SensorFrameRate_LO must be > 0 for ngs_magnitude conversion.")
-        return frame_rate_hz
-
-    @staticmethod
-    def _get_n_lenslets_lo(parser: ConfigParser) -> float:
-        """Read LO sensor lenslet count for magnitude/photon conversions."""
-        if not parser.has_section("sensor_LO") or "NumberLenslets" not in parser["sensor_LO"]:
-            raise ValueError("TIPTOP config missing sensor_LO.NumberLenslets required for ngs_magnitude conversion.")
-        n_lenslets = _parse_ini_array(parser["sensor_LO"]["NumberLenslets"])
-        if n_lenslets.size == 0:
-            raise ValueError("sensor_LO.NumberLenslets is empty.")
-        return float(n_lenslets[0])
-
-    @staticmethod
-    def _get_telescope_diameter_m(parser: ConfigParser) -> float:
-        """Read telescope diameter used in photon normalization."""
-        if not parser.has_section("telescope") or "TelescopeDiameter" not in parser["telescope"]:
-            raise ValueError("TIPTOP config missing telescope.TelescopeDiameter required for ngs_magnitude conversion.")
-        try:
-            telescope_diameter_m = float(parser["telescope"]["TelescopeDiameter"])
-        except ValueError as exc:
-            raise ValueError("TIPTOP telescope.TelescopeDiameter must be numeric for ngs_magnitude conversion.") from exc
-        if telescope_diameter_m <= 0.0:
-            raise ValueError("TIPTOP telescope.TelescopeDiameter must be > 0 for ngs_magnitude conversion.")
-        return telescope_diameter_m
-
-    @classmethod
     def _get_ngs_photometry_config(
-        cls,
         parser: ConfigParser,
+        low_order_detector: DetectorConfig | None,
         ngs_magnitude_zeropoint: u.Quantity,
     ) -> WFSPhotometryConfig:
-        """Read parser-backed inputs needed for NGS magnitude/photon conversions."""
+        """Build the NGS photometry inputs from shared telescope and LO fields."""
+        telescope_config = TelescopeConfig.from_ini(parser)
+        low_order_loop = LoopConfig.from_ini(parser, stage="LO")
+        if telescope_config is None or telescope_config.diameter is None:
+            raise ValueError("TIPTOP config missing telescope.TelescopeDiameter required for ngs_magnitude conversion.")
+        if low_order_detector is None or low_order_detector.lenslet_counts is None:
+            raise ValueError("TIPTOP config missing sensor_LO.NumberLenslets required for ngs_magnitude conversion.")
+        if low_order_loop is None or low_order_loop.frame_rate is None:
+            raise ValueError("TIPTOP config missing RTC.SensorFrameRate_LO required for ngs_magnitude conversion.")
         return WFSPhotometryConfig(
-            telescope_diameter=cls._get_telescope_diameter_m(parser) * u.m,
-            n_channels=cls._get_n_lenslets_lo(parser),
-            frame_rate=cls._get_frame_rate_lo(parser) * u.Hz,
+            telescope_diameter=telescope_config.diameter,
+            n_channels=float(low_order_detector.lenslet_counts[0].value),
+            frame_rate=low_order_loop.frame_rate,
             zeropoint=ngs_magnitude_zeropoint.to(u.photon / (u.m**2 * u.s)),
         )
 
-    def _get_default_r0_m_from_ini(self, parser: ConfigParser) -> float:
-        """Read default r0 option from INI or derive it from Seeing."""
-        r0 = _get_ini_float(parser, "atmosphere", "r0_Value")
-        if r0 is not None:
-            return float(r0)
-
-        seeing = _get_ini_float(parser, "atmosphere", "Seeing")
-        wavelength_m = _get_ini_float(parser, "atmosphere", "Wavelength")
-        if seeing is None or wavelength_m is None:
+    @staticmethod
+    def _default_r0(atmosphere_config: AtmosphereConfig | None) -> u.Quantity:
+        """Resolve the default r0, preferring an explicit Fried parameter."""
+        if atmosphere_config is not None and atmosphere_config.fried_parameter is not None:
+            return atmosphere_config.fried_parameter
+        if (
+            atmosphere_config is None
+            or atmosphere_config.seeing is None
+            or atmosphere_config.reference_wavelength is None
+        ):
             raise ValueError(
                 "TIPTOP config must provide atmosphere.r0_Value, or both atmosphere.Seeing and atmosphere.Wavelength "
                 "for default r0 option."
             )
-        if seeing <= 0.0:
-            raise ValueError("TIPTOP atmosphere.Seeing must be > 0 when deriving default r0.")
-        if wavelength_m <= 0.0:
-            raise ValueError("TIPTOP atmosphere.Wavelength must be > 0 when deriving default r0.")
-
-        return float(seeing_to_r0(seeing * u.arcsec, wavelength_m * u.m).to_value(u.m))
+        return seeing_to_r0(
+            atmosphere_config.seeing, atmosphere_config.reference_wavelength
+        ).to(u.m)
 
     # Default helpers
 
     def _get_default_atm_profile_from_ini(self, parser: ConfigParser) -> dict[str, Any]:
         """Construct default atmospheric profile from base INI."""
-        profile: dict[str, Any] = {atm.KEY_SETUP_ATM_PROFILE_NAME: "ini_default"}
-        scalar_map = {
-            atm.KEY_SETUP_ATM_PROFILE_L0: ("atmosphere", "L0"),
+        atmosphere_config = AtmosphereConfig.from_ini(parser)
+        r0 = self._default_r0(atmosphere_config)
+        assert atmosphere_config is not None
+        profile = {
+            atm.KEY_SETUP_ATM_PROFILE_NAME: "ini_default",
+            atm.KEY_SETUP_ATM_PROFILE_L0: atmosphere_config.outer_scale,
+            atm.KEY_SETUP_ATM_PROFILE_R0: r0,
+            atm.KEY_SETUP_ATM_PROFILE_CN2_HEIGHTS: atmosphere_config.layer_heights,
+            atm.KEY_SETUP_ATM_PROFILE_CN2_WEIGHTS: atmosphere_config.layer_weights,
+            atm.KEY_SETUP_ATM_PROFILE_WIND_SPEED: atmosphere_config.wind_speeds,
+            atm.KEY_SETUP_ATM_PROFILE_WIND_DIRECTION: atmosphere_config.wind_directions,
         }
-        array_map = {
-            atm.KEY_SETUP_ATM_PROFILE_CN2_HEIGHTS: ("atmosphere", "Cn2Heights"),
-            atm.KEY_SETUP_ATM_PROFILE_CN2_WEIGHTS: ("atmosphere", "Cn2Weights"),
-            atm.KEY_SETUP_ATM_PROFILE_WIND_SPEED: ("atmosphere", "WindSpeed"),
-            atm.KEY_SETUP_ATM_PROFILE_WIND_DIRECTION: ("atmosphere", "WindDirection"),
-        }
+        return {key: value for key, value in profile.items() if value is not None}
 
-        for dst_key, (section, key) in scalar_map.items():
-            value = _get_ini_float(parser, section, key)
-            if value is not None:
-                profile[dst_key] = float(value) * atm.ATM_PROFILE_FIELD_UNITS[dst_key]
-        profile[atm.KEY_SETUP_ATM_PROFILE_R0] = self._get_default_r0_m_from_ini(parser) * u.m
-        for dst_key, (section, key) in array_map.items():
-            value = _get_ini_array(parser, section, key)
-            if value is not None:
-                profile[dst_key] = value * atm.ATM_PROFILE_FIELD_UNITS[dst_key]
-        return profile
-
-    def _get_default_wavelength_m_from_ini(self, parser: ConfigParser) -> float:
+    @staticmethod
+    def _get_default_wavelength_m_from_ini(parser: ConfigParser) -> float:
         """Read default science wavelength option from INI in meters."""
-        wavelength_m = _get_ini_array(parser, "sources_science", "Wavelength")
-        if wavelength_m is None or wavelength_m.size == 0:
+        science_sources = SourceConfig.from_ini(parser, "sources_science")
+        if science_sources is None or science_sources.wavelengths is None:
             raise ValueError("TIPTOP config missing sources_science.Wavelength for default wavelength option.")
-        return float(wavelength_m[0])
+        return float(science_sources.wavelengths[0].to_value(u.m))
 
     def _get_default_zenith_angle_deg_from_ini(self, parser: ConfigParser) -> float:
         """Read default zenith angle option from INI."""
-        zenith_angle = _get_ini_float(parser, "telescope", "ZenithAngle")
-        if zenith_angle is None:
+        telescope_config = TelescopeConfig.from_ini(parser)
+        if telescope_config is None or telescope_config.zenith_angle is None:
             raise ValueError("TIPTOP config missing telescope.ZenithAngle for default zenith_angle option.")
-        return float(zenith_angle)
+        return float(telescope_config.zenith_angle.to_value(u.deg))
 
     def _get_default_ngs_options_from_ini(
         self,
         parser: ConfigParser,
-        photometry: WFSPhotometryConfig,
+        ngs_magnitude_zeropoint: u.Quantity,
     ) -> dict[str, np.ndarray] | None:
-        """Read default NGS geometry/magnitude options from INI."""
-        ngs_r = _get_ini_array(parser, "sources_LO", "Zenith")
-        ngs_theta = _get_ini_array(parser, "sources_LO", "Azimuth")
-        if ngs_r is None or ngs_theta is None:
+        """Resolve the default NGS geometry and convert photon counts to magnitudes."""
+        low_order_detector = DetectorConfig.low_order_from_ini(parser)
+        photometry = self._get_ngs_photometry_config(
+            parser, low_order_detector, ngs_magnitude_zeropoint
+        )
+        low_order_sources = SourceConfig.from_ini(parser, "sources_LO")
+        if (
+            low_order_sources is None
+            or low_order_sources.zenith is None
+            or low_order_sources.azimuth is None
+        ):
             return None
-        if ngs_r.shape != ngs_theta.shape:
-            raise ValueError("TIPTOP sources_LO Zenith/Azimuth arrays must have identical shape.")
-
-        if not parser.has_section("sensor_LO") or "NumberPhotons" not in parser["sensor_LO"]:
+        if low_order_detector is None or low_order_detector.photons_per_frame is None:
             return None
-        photons = _parse_ini_array(parser["sensor_LO"]["NumberPhotons"]).reshape(-1)
-        if photons.size == 0:
-            raise ValueError("TIPTOP sensor_LO.NumberPhotons cannot be empty.")
-        if photons.size == 1 and ngs_r.size > 1:
-            photons = np.full((ngs_r.size,), float(photons[0]), dtype=float)
-        if photons.size != ngs_r.size:
+        photons = low_order_detector.photons_per_frame
+        if photons.size == 1 and low_order_sources.zenith.size > 1:
+            photons = np.full(low_order_sources.zenith.size, photons[0].value) * u.photon
+        if photons.size != low_order_sources.zenith.size:
             raise ValueError(
                 "TIPTOP sensor_LO.NumberPhotons length must match NGS count from sources_LO Zenith/Azimuth."
             )
 
-        ngs_magnitude = photons_per_frame_to_magnitudes(photons * u.photon, photometry).to_value(u.mag)
+        ngs_magnitude = photons_per_frame_to_magnitudes(photons, photometry).to_value(u.mag)
         return {
-            schema.KEY_OPTION_NGS_R: np.asarray(ngs_r, dtype=float).reshape(-1),
-            schema.KEY_OPTION_NGS_THETA: np.asarray(ngs_theta, dtype=float).reshape(-1),
+            schema.KEY_OPTION_NGS_R: low_order_sources.zenith.to_value(u.arcsec),
+            schema.KEY_OPTION_NGS_THETA: low_order_sources.azimuth.to_value(u.deg),
             schema.KEY_OPTION_NGS_MAGNITUDE: np.asarray(ngs_magnitude, dtype=float).reshape(-1),
         }

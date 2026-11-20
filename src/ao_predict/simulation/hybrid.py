@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+from ao_core.models.config import read_ini_source
 from astropy import units as u
 from hybrid_ao_psf import (
     DiagnosticsLevel,
@@ -228,10 +229,17 @@ class HybridSimulation(TiptopConfigBackedSimulation):
             FileNotFoundError: If required config or file paths are missing.
         """
         simulation_cfg = dict(simulation_cfg)
+        config_text = None
         if schema.KEY_SIMULATION_PRECISION not in simulation_cfg:
-            precision_parser = ConfigParser(interpolation=None)
-            precision_parser.read_string(self._resolve_config_path(simulation_cfg).read_text())
-            simulation_cfg[schema.KEY_SIMULATION_PRECISION] = precision_parser.get("hybrid", "precision", fallback="float32")
+            ini_source = read_ini_source(
+                self._resolve_config_path(simulation_cfg),
+                parser=ConfigParser(interpolation=None),
+            )
+            config_text = ini_source.text
+            assert config_text is not None
+            simulation_cfg[schema.KEY_SIMULATION_PRECISION] = ini_source.parser.get(
+                "hybrid", "precision", fallback="float32"
+            )
         simulation_cfg[self.KEY_NON_PSD_POLICY] = _normalize_non_psd_policy(
             simulation_cfg.get(
                 self.KEY_NON_PSD_POLICY,
@@ -246,7 +254,11 @@ class HybridSimulation(TiptopConfigBackedSimulation):
         load_psf_metric_interpolator(ngs_path)
         simulation_cfg[self.KEY_SCIENCE_HO_PSF_INTERPOLATOR_PATH] = str(science_path)
         simulation_cfg[self.KEY_NGS_HO_METRIC_INTERPOLATOR_PATH] = str(ngs_path)
-        return super().prepare_simulation_payload(base_simulation_payload, simulation_cfg)
+        if config_text is None:
+            return super().prepare_simulation_payload(base_simulation_payload, simulation_cfg)
+        return self._build_config_backed_payload(
+            base_simulation_payload, simulation_cfg, config_text
+        )
 
     def validate_simulation_payload(self, simulation_payload: Mapping[str, Any]) -> None:
         """Validate persisted Hybrid simulation payload without binding state.
@@ -365,12 +377,12 @@ class HybridSimulation(TiptopConfigBackedSimulation):
         parser = self._build_runtime_mastsel_parser(setup, options)
         wavelength = _require_option_scalar(options, schema.KEY_OPTION_WAVELENGTH)
         zenith_angle = _require_option_scalar(options, schema.KEY_OPTION_ZENITH_ANGLE)
-        science = self.science_ho_psf_interpolator
-        science.evaluate(
+        science_psf_interpolator = self.science_ho_psf_interpolator
+        science_psf_interpolator.evaluate(
             zenith_angle=zenith_angle,
             wavelength=wavelength,
-            x=science.x[:1],
-            y=science.y[:1],
+            x=science_psf_interpolator.x[:1],
+            y=science_psf_interpolator.y[:1],
         )
         self._get_ngs_ho_metric_interpolator().evaluate(
             zenith_angle=zenith_angle,

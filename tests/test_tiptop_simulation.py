@@ -682,8 +682,8 @@ def test_tiptop_requires_ngs_mag_zeropoint(tmp_path: Path):
 @pytest.mark.parametrize(
     ("line", "match"),
     [
-        ("SensorFrameRate_LO=fast", "RTC.SensorFrameRate_LO must be numeric"),
-        ("SensorFrameRate_LO=0.0", "RTC.SensorFrameRate_LO must be > 0"),
+        ("SensorFrameRate_LO=fast", r"RTC\.SensorFrameRate_LO must be a finite scalar"),
+        ("SensorFrameRate_LO=0.0", "frame_rate must be positive"),
     ],
 )
 def test_tiptop_rejects_invalid_lo_frame_rate_for_ngs_mag(tmp_path: Path, line: str, match: str):
@@ -718,8 +718,8 @@ def test_tiptop_rejects_invalid_lo_frame_rate_for_ngs_mag(tmp_path: Path, line: 
 @pytest.mark.parametrize(
     ("line", "match"),
     [
-        ("TelescopeDiameter=wide", "telescope.TelescopeDiameter must be numeric"),
-        ("TelescopeDiameter=0.0", "telescope.TelescopeDiameter must be > 0"),
+        ("TelescopeDiameter=wide", r"telescope\.TelescopeDiameter must be a finite scalar"),
+        ("TelescopeDiameter=0.0", "diameter must be positive"),
     ],
 )
 def test_tiptop_rejects_invalid_telescope_diameter_for_ngs_mag(tmp_path: Path, line: str, match: str):

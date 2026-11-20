@@ -1,11 +1,13 @@
 """Dataset-bound precision, ordinary resume, and native-free analysis loading."""
 
 from dataclasses import replace
+from pathlib import Path
 
 import h5py
 import numpy as np
 import pytest
 from astropy import units as u
+from test_hybrid_simulation import _options, _setup_payload, _write_hybrid_inputs
 
 from ao_predict import (
     DatasetConfigMismatchError,
@@ -19,9 +21,8 @@ from ao_predict import (
 )
 from ao_predict.analysis import load_analysis_dataset
 from ao_predict.persistence import SimulationStore
-from ao_predict.simulation.runner import create_simulation_from_config
 from ao_predict.simulation.config import normalize_simulation_config
-from test_hybrid_simulation import _write_hybrid_inputs, _setup_payload, _options
+from ao_predict.simulation.runner import create_simulation_from_config
 
 
 @pytest.mark.parametrize("dtype", [np.float32, np.float64])
@@ -115,9 +116,20 @@ def test_hybrid_precision_execute_resume_and_analysis(tmp_path, monkeypatch, dty
     assert store.read_simulation_psfs(0).dtype == dtype
 
 
-def test_ini_precision_and_typed_override(tmp_path):
+@pytest.mark.parametrize("precision_key", ["precision", "Precision"])
+def test_ini_precision_and_typed_override(tmp_path, monkeypatch, precision_key):
     ini, science, ngs = _write_hybrid_inputs(tmp_path)
-    ini.write_text(ini.read_text() + "\n[hybrid]\nprecision=float64\n")
+    text = ini.read_text() + f"\n[hybrid]\n{precision_key}=float64\n"
+    ini.write_text(text, encoding="utf-8")
+    reads = []
+    read_text = Path.read_text
+
+    def track_read(path, *args, **kwargs):
+        if path.resolve() == ini.resolve():
+            reads.append(path)
+        return read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", track_read)
     config = {
         "name": "Hybrid",
         "base_path": str(tmp_path),
@@ -127,10 +139,15 @@ def test_ini_precision_and_typed_override(tmp_path):
     }
     simulation, payload = create_simulation_from_config(config)
     assert simulation.dtype == np.float64 and payload["precision"] == "float64"
+    assert payload["base_config"] == text
+    assert len(reads) == 1
+    reads.clear()
     simulation, payload = create_simulation_from_config(
         {**config, "precision": "float32"}
     )
     assert simulation.dtype == np.float32 and payload["precision"] == "float32"
+    assert payload["base_config"] == text
+    assert len(reads) == 1
     assert "precision" not in normalize_simulation_config(
         SimulationConfig(name="Hybrid")
     )
@@ -146,8 +163,9 @@ def test_ini_precision_and_typed_override(tmp_path):
 
 
 def test_invalid_precision_load_keeps_bound_state(tmp_path):
-    from ao_predict.simulation.hybrid import HybridSimulation
     from test_hybrid_simulation import _simulation_payload
+
+    from ao_predict.simulation.hybrid import HybridSimulation
 
     sim = HybridSimulation()
     payload = _simulation_payload(tmp_path)
@@ -185,9 +203,10 @@ def test_telescope_invariants_allow_unit_conversion_roundoff(tmp_path,dtype,diam
 
 
 def test_candidate_legacy_precision_is_independent_of_bound_state(tmp_path):
-    from ao_predict.simulation.hybrid import HybridSimulation
     from test_hybrid_simulation import _simulation_payload
+
     from ao_predict._precision import diagnostic_precision
+    from ao_predict.simulation.hybrid import HybridSimulation
     sim=HybridSimulation()
     original=_simulation_payload(tmp_path,diagnostics_level='debug')
     double={**original,'precision':'float64','diagnostic_fields':diagnostic_precision(original['diagnostic_fields'],np.dtype('float64'))}

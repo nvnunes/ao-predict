@@ -25,8 +25,10 @@ Keep one obvious owner for each major concern:
   direct `hybrid-ao-psf` dependency. AO Predict owns the Hybrid dataset adapter,
   not interpolation builders, files, or evaluation.
 - NGS magnitude, photon-flux, and WFS photon conversions belong to
-  `ao_core.photometry`. AO Predict owns calibration choice, INI parsing,
-  active-star selection, TIPTOP rounding, and Hybrid request binding.
+  `ao_core.photometry`. Shared physical INI values come from
+  `ao_core.models.config`. AO Predict owns setup and option precedence,
+  calibration choice, active-star selection, TIPTOP rounding, and runtime
+  request binding.
 - AO Core owns shared result fields and HDF5 I/O. AO Predict's
   `persistence/*` validates the simulation dataset, adapts its payloads to
   shared storage and manages batch status and resumption.
