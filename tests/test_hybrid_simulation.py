@@ -37,6 +37,8 @@ from ao_predict.simulation.hybrid import (
     HybridResolvedInputs,
     HybridSetup,
     HybridSimulation,
+    _hybrid_payload_for_request_match,
+    _slot_aligned,
 )
 from ao_predict.simulation.runner import (
     _populate_result_stats,
@@ -1091,3 +1093,41 @@ def _ngs_samples() -> PsfMetricSamples:
         fwhm=np.array([[80.0, 81.0, 82.0], [83.0, 84.0, 85.0]]) * u.mas,
         sr=np.array([[0.1, 0.11, 0.12], [0.13, 0.14, 0.15]]) * u.one,
     )
+
+
+def test_e2e_debug_diagnostics_align_active_stars_to_batch_slots() -> None:
+    fields = hybrid_ao_psf.diagnostic_fields("e2e-calibrated", "debug", psf_shape=(4, 4))
+    used = np.array([True, False, True])
+
+    gains = _slot_aligned(
+        [0.8, 0.9] * u.one, used, fields["e2e_calibrated/sensing_gains"]["shape"]
+    )
+    np.testing.assert_array_equal(gains.value, [0.8, np.nan, 0.9])
+
+    reconstructor = np.arange(8, dtype=float).reshape(2, 4) * u.one
+    padded = _slot_aligned(
+        reconstructor, used, fields["e2e_calibrated/reconstructor"]["shape"]
+    )
+    assert padded.shape == (2, 3, 2)
+    np.testing.assert_array_equal(padded[:, used].reshape(2, 4), reconstructor)
+    assert np.isnan(padded[:, ~used]).all()
+
+    covariance = np.arange(16, dtype=float).reshape(4, 4) * u.mas**2
+    padded = _slot_aligned(
+        covariance, used, fields["e2e_calibrated/reconstructor_noise_covariance"]["shape"]
+    )
+    assert padded.shape == (3, 2, 3, 2)
+    np.testing.assert_array_equal(padded[used, :, :, :][:, :, used, :].reshape(4, 4), covariance)
+    assert np.isnan(padded[~used]).all()
+    assert np.isnan(padded[:, :, ~used]).all()
+
+
+def test_hybrid_request_matching_flattens_persisted_diagnostic_specs() -> None:
+    fields = {
+        "science_ho_psf_interpolator_path": "science.pkl",
+        "ngs_ho_metric_interpolator_path": "ngs.pkl",
+    }
+    spec = {"dtype": "float64", "shape": ["num_sci", 2, 2], "unit": "mas2"}
+    expected = {**fields, "diagnostic_fields": {"covariance/ctot": spec}}
+    stored = {**fields, "diagnostic_fields": {"covariance": {"ctot": spec}}}
+    assert _hybrid_payload_for_request_match(expected, stored) == expected

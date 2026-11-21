@@ -10,9 +10,11 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+from ao_core.io.ini import parse_ini, resolve_ini_path
 from astropy import units as u
 from hybrid_ao_psf import (
     DiagnosticsLevel,
+    E2ECalibratedModel,
     HybridRequest,
     HybridResult,
     LowOrderModel,
@@ -23,6 +25,7 @@ from hybrid_ao_psf import (
     PsfProvider,
     diagnostic_fields,
     diagnostic_values,
+    load_e2e_calibrated_model,
     load_psf_interpolator,
     load_psf_metric_interpolator,
     simulate,
@@ -31,7 +34,7 @@ from hybrid_ao_psf import (
 from .._precision import real_dtype
 from .._units import quantity_value
 from . import atm, schema
-from .base import BaseSimulationSetup, PsfParameters
+from .base import BaseSimulationSetup, PsfParameters, _normalize_diagnostic_field_specs
 from .coordinates import polar_to_cartesian
 from .interfaces import SimulationContext, SimulationSetup
 from .tiptop_config_backed import (
@@ -74,13 +77,13 @@ class HybridResolvedInputs:
     Attributes:
         request: Fully resolved request for one upstream simulation.
         science_psfs: Loaded reusable science-HO-PSF provider.
-        lo_model: Configured MASTSEL model with the NGS metric provider.
+        lo_model: Prepared low-order model with its NGS metric provider.
         ngs_used: AO slot mask corresponding to the active request vectors.
     """
 
     request: HybridRequest
     science_psfs: PsfProvider
-    lo_model: MastselModel
+    lo_model: MastselModel | E2ECalibratedModel
     ngs_used: np.ndarray
 
     def __post_init__(self) -> None:
@@ -88,8 +91,8 @@ class HybridResolvedInputs:
             raise TypeError("request must be a HybridRequest.")
         if not isinstance(self.science_psfs, PsfProvider):
             raise TypeError("science_psfs must implement PsfProvider.")
-        if not isinstance(self.lo_model, MastselModel):
-            raise TypeError("lo_model must be a MastselModel.")
+        if not isinstance(self.lo_model, (MastselModel, E2ECalibratedModel)):
+            raise TypeError("lo_model must be a supported Hybrid low-order model.")
         ngs_used = np.asarray(self.ngs_used, dtype=bool).reshape(-1).copy()
         if int(np.count_nonzero(ngs_used)) != len(self.request.ngs_positions):
             raise ValueError("ngs_used active count must match the Hybrid request.")
@@ -127,13 +130,15 @@ class HybridSimulation(TiptopConfigBackedSimulation):
 
     AO Predict owns payload binding, per-row option and photometry resolution,
     result persistence, statistics, and batch slot alignment. Hybrid AO PSF
-    owns provider evaluation, MASTSEL execution, Ctot handling, finite-field
+    owns provider evaluation, low-order prediction, Ctot handling, finite-field
     blur, jitter, and the scientific diagnostics for each level.
 
     Configuration requires ``config_path``, ``science_ho_psf_interpolator_path``,
     and ``ngs_ho_metric_interpolator_path``. Paths are resolved against
     ``simulation.base_path`` when supplied. An explicit ``simulation.precision``
-    overrides ``[hybrid] precision`` in the base INI. The default is ``float32``.
+    overrides the precision in the base INI. The default is ``float32``.
+    ``[hybrid] LOModel`` selects MASTSEL or E2E-Calibrated. The fitted
+    model files and matching NGS metrics are supplied in ``[inputs]``.
     """
 
     _VERSION = "0.0.1"
@@ -141,6 +146,7 @@ class HybridSimulation(TiptopConfigBackedSimulation):
     EXTRA_STAT_JITTER = "jitter"
     KEY_SCIENCE_HO_PSF_INTERPOLATOR_PATH = "science_ho_psf_interpolator_path"
     KEY_NGS_HO_METRIC_INTERPOLATOR_PATH = "ngs_ho_metric_interpolator_path"
+    KEY_E2E_CONFIG_PATH = "e2e_config_path"
     KEY_NON_PSD_POLICY = "non_psd_policy"
     KEY_RUNTIME_EFFECTIVE_PARSER = "effective_parser"
     KEY_RUNTIME_RESULT = "hybrid_result"
@@ -164,6 +170,8 @@ class HybridSimulation(TiptopConfigBackedSimulation):
         self._ngs_ho_metric_interpolator: PsfMetricInterpolator | None = None
         self._science_ho_psf_interpolator: PsfInterpolator | None = None
         self._non_psd_policy = NonPsdPolicy.ERROR
+        self._e2e_config_path: Path | None = None
+        self._e2e_model: E2ECalibratedModel | None = None
 
     @property
     def science_ho_psf_interpolator(self) -> PsfInterpolator:
@@ -211,15 +219,26 @@ class HybridSimulation(TiptopConfigBackedSimulation):
     ) -> Mapping[str, Any]:
         """Resolve Hybrid settings and validate interpolators before persisting.
 
-        The base lifecycle supplies the original MASTSEL INI text. Precision
+        The base lifecycle supplies the original INI text. Precision
         is resolved before loading the science interpolator because its dtype
         forms part of the interpolator cache key.
         """
         simulation_cfg = dict(simulation_cfg)
-        if schema.KEY_SIMULATION_PRECISION not in simulation_cfg:
-            parser = ConfigParser(interpolation=None)
-            parser.read_string(config_text)
-            simulation_cfg[schema.KEY_SIMULATION_PRECISION] = parser.get(
+        parser = parse_ini(config_text)
+        model = _configured_lo_model(parser)
+        if self.KEY_E2E_CONFIG_PATH in simulation_cfg:
+            raise ValueError("e2e_config_path is derived from the Hybrid INI.")
+        if model is LowOrderModel.E2E_CALIBRATED:
+            source = self._resolve_config_path(simulation_cfg).resolve()
+            simulation_cfg[self.KEY_E2E_CONFIG_PATH] = str(source)
+            simulation_cfg.setdefault(
+                schema.KEY_SIMULATION_PRECISION,
+                parser.get("settings", "Precision", fallback="float32"),
+            )
+        elif schema.KEY_SIMULATION_PRECISION not in simulation_cfg:
+            mastsel_parser = ConfigParser(interpolation=None)
+            mastsel_parser.read_string(config_text)
+            simulation_cfg[schema.KEY_SIMULATION_PRECISION] = mastsel_parser.get(
                 "hybrid", "precision", fallback="float32"
             )
         simulation_cfg[self.KEY_NON_PSD_POLICY] = _normalize_non_psd_policy(
@@ -233,6 +252,8 @@ class HybridSimulation(TiptopConfigBackedSimulation):
         _get_cached_science_ho_psf_interpolator(
             science_path, real_dtype(simulation_cfg[schema.KEY_SIMULATION_PRECISION])
         )
+        if model is LowOrderModel.E2E_CALIBRATED:
+            _validate_e2e_ngs_metrics(parser, source, ngs_path)
         load_psf_metric_interpolator(ngs_path)
         simulation_cfg[self.KEY_SCIENCE_HO_PSF_INTERPOLATOR_PATH] = str(science_path)
         simulation_cfg[self.KEY_NGS_HO_METRIC_INTERPOLATOR_PATH] = str(ngs_path)
@@ -260,6 +281,7 @@ class HybridSimulation(TiptopConfigBackedSimulation):
             science_path, real_dtype(simulation_payload.get(schema.KEY_SIMULATION_PRECISION, "float32"))
         )
         load_psf_metric_interpolator(ngs_path)
+        self._checked_e2e_config_path(simulation_payload, ngs_path)
 
     def load_simulation_payload(self, simulation_payload: Mapping[str, Any]) -> None:
         """Bind base INI plus science and NGS file paths.
@@ -284,6 +306,7 @@ class HybridSimulation(TiptopConfigBackedSimulation):
         non_psd_policy = _non_psd_policy_from_payload(simulation_payload)
         science_path = self._get_required_payload_path(simulation_payload, self.KEY_SCIENCE_HO_PSF_INTERPOLATOR_PATH)
         ngs_path = self._get_required_payload_path(simulation_payload, self.KEY_NGS_HO_METRIC_INTERPOLATOR_PATH)
+        e2e_config_path = self._checked_e2e_config_path(simulation_payload, ngs_path)
         self._load_base_simulation_payload(simulation_payload)
         self._base_config_text = base_config_text
         self._bind_base_config(base_config)
@@ -292,10 +315,28 @@ class HybridSimulation(TiptopConfigBackedSimulation):
         self._science_ho_psf_interpolator = None
         self._ngs_ho_metric_interpolator = None
         self._non_psd_policy = non_psd_policy
+        self._e2e_config_path = e2e_config_path
+        self._e2e_model = None
+
+    def _checked_e2e_config_path(
+        self, simulation_payload: Mapping[str, Any], ngs_path: Path,
+    ) -> Path | None:
+        """Resolve the INI source and check it against the persisted run settings."""
+        config_text = self._get_required_base_config_text(simulation_payload)
+        parser = parse_ini(config_text)
+        if _configured_lo_model(parser) is LowOrderModel.MASTSEL:
+            if self.KEY_E2E_CONFIG_PATH in simulation_payload:
+                raise ValueError("MASTSEL cannot use e2e_config_path.")
+            return None
+        source = self._get_required_payload_path(simulation_payload, self.KEY_E2E_CONFIG_PATH)
+        if source.read_text(encoding="utf-8") != config_text:
+            raise ValueError(f"E2E-Calibrated INI changed since dataset preparation: {source}")
+        _validate_e2e_ngs_metrics(parser, source, ngs_path)
+        return source
 
     def _config_file_description(self) -> str:
-        """Return the user-facing description for missing MASTSEL INI errors."""
-        return "MASTSEL INI file"
+        """Return the user-facing description for missing Hybrid INI errors."""
+        return "Hybrid INI file"
 
     # Setup payload lifecycle
 
@@ -342,8 +383,8 @@ class HybridSimulation(TiptopConfigBackedSimulation):
             setup: Bound typed setup object for this simulation instance.
 
         Returns:
-            Runtime scratch mapping containing the effective MASTSEL parser and
-            active NGS coordinates/magnitudes.
+            Runtime scratch mapping with active NGS coordinates and magnitudes,
+            plus the row's parser when using MASTSEL.
 
         Raises:
             TypeError: If ``setup`` is not ``HybridSetup``.
@@ -354,7 +395,6 @@ class HybridSimulation(TiptopConfigBackedSimulation):
         if not isinstance(setup, HybridSetup):
             raise TypeError("HybridSimulation setup must be HybridSetup.")
         active_ngs = self._active_ngs_from_options(options)
-        parser = self._build_runtime_mastsel_parser(setup, options)
         wavelength = _require_option_scalar(options, schema.KEY_OPTION_WAVELENGTH)
         zenith_angle = _require_option_scalar(options, schema.KEY_OPTION_ZENITH_ANGLE)
         science_psf_interpolator = self.science_ho_psf_interpolator
@@ -369,10 +409,10 @@ class HybridSimulation(TiptopConfigBackedSimulation):
             x=active_ngs.x,
             y=active_ngs.y,
         )
-        return {
-            self.KEY_RUNTIME_EFFECTIVE_PARSER: parser,
-            "active_ngs": active_ngs,
-        }
+        runtime = {"active_ngs": active_ngs}
+        if self._e2e_config_path is None:
+            runtime[self.KEY_RUNTIME_EFFECTIVE_PARSER] = self._build_runtime_mastsel_parser(setup, options)
+        return runtime
 
     def run(self, context: SimulationContext) -> None:
         """Execute one AO option row through Hybrid AO PSF exactly once.
@@ -424,9 +464,6 @@ class HybridSimulation(TiptopConfigBackedSimulation):
         active_ngs = context.runtime.get("active_ngs")
         if not isinstance(active_ngs, _ActiveNgs):
             active_ngs = self._active_ngs_from_options(options)
-        parser = context.runtime.get(self.KEY_RUNTIME_EFFECTIVE_PARSER)
-        if not isinstance(parser, ConfigParser):
-            raise TypeError("context.runtime['effective_parser'] must be a ConfigParser. Did create() run?")
         science_x, science_y = polar_to_cartesian(setup.sci_r, setup.sci_theta)
         return HybridResolvedInputs(
             request=HybridRequest(
@@ -445,13 +482,26 @@ class HybridSimulation(TiptopConfigBackedSimulation):
                 diagnostics_level=DiagnosticsLevel(self.diagnostics_level),
             ),
             science_psfs=self._get_science_ho_psf_interpolator(),
-            lo_model=MastselModel(
-                mastsel_ini=_serialize_parser(parser),
-                ngs_metrics=self._get_ngs_ho_metric_interpolator(),
-                ngs_magnitude_zeropoint=setup.ngs_magnitude_zeropoint.astype(self.dtype),
-                non_psd_policy=self._non_psd_policy,
-            ),
+            lo_model=self._resolve_lo_model(context, setup),
             ngs_used=_ngs_used_mask(options),
+        )
+
+    def _resolve_lo_model(
+        self, context: SimulationContext, setup: HybridSetup,
+    ) -> MastselModel | E2ECalibratedModel:
+        """Reuse the fitted model or prepare MASTSEL for this row's atmosphere."""
+        if self._e2e_config_path is not None:
+            if self._e2e_model is None:
+                self._e2e_model = load_e2e_calibrated_model(self._e2e_config_path, dtype=self.dtype)
+            return self._e2e_model
+        parser = context.runtime.get(self.KEY_RUNTIME_EFFECTIVE_PARSER)
+        if not isinstance(parser, ConfigParser):
+            raise TypeError("context.runtime['effective_parser'] must be a ConfigParser. Did create() run?")
+        return MastselModel(
+            mastsel_ini=_serialize_parser(parser),
+            ngs_metrics=self._get_ngs_ho_metric_interpolator(),
+            ngs_magnitude_zeropoint=setup.ngs_magnitude_zeropoint.astype(self.dtype),
+            non_psd_policy=self._non_psd_policy,
         )
 
     def _extract_psfs(self, context: SimulationContext) -> np.ndarray | None:
@@ -515,7 +565,7 @@ class HybridSimulation(TiptopConfigBackedSimulation):
         )
 
     def build_extra_stats(self, context: SimulationContext) -> Mapping[str, Any]:
-        """Return Hybrid jitter from MASTSEL Ctot.
+        """Return Hybrid jitter from the selected low-order model.
 
         Args:
             context: Completed simulation context.
@@ -540,7 +590,11 @@ class HybridSimulation(TiptopConfigBackedSimulation):
             )
             dtype = real_dtype(simulation_payload.get(schema.KEY_SIMULATION_PRECISION, "float32"))
             psf_shape = _get_cached_science_ho_psf_interpolator(path, dtype).psf_shape
-        specs = diagnostic_fields(LowOrderModel.MASTSEL, level, psf_shape=psf_shape)
+        model = (
+            LowOrderModel.E2E_CALIBRATED
+            if self.KEY_E2E_CONFIG_PATH in simulation_payload else LowOrderModel.MASTSEL
+        )
+        specs = diagnostic_fields(model, level, psf_shape=psf_shape)
         if level == schema.DIAGNOSTICS_LEVEL_NONE:
             return specs
         specs["hybrid/ngs_used"] = {"dtype": "bool", "shape": ("num_ngs",)}
@@ -628,14 +682,19 @@ class HybridSimulation(TiptopConfigBackedSimulation):
     def _build_hybrid_diagnostics(self, diagnostics_context: HybridDiagnosticsContext) -> Mapping[str, Any]:
         """Align Hybrid's per-star diagnostic values to the persisted NGS slots."""
         upstream = diagnostics_context.result.diagnostics
-        if upstream is None or upstream.mastsel is None:
-            raise ValueError("HybridSimulation requires MASTSEL diagnostics.")
+        if upstream is None:
+            raise ValueError("HybridSimulation requires diagnostics at the requested level.")
         used = np.asarray(diagnostics_context.ngs_used, dtype=bool)
         diagnostics = diagnostic_values(upstream)
-        specs = diagnostic_fields(LowOrderModel.MASTSEL, schema.DIAGNOSTICS_LEVEL_VALIDATION)
+        model = (
+            LowOrderModel.E2E_CALIBRATED
+            if self._e2e_config_path is not None else LowOrderModel.MASTSEL
+        )
+        psf_shape = diagnostics_context.result.psfs.shape[-2:]
+        specs = diagnostic_fields(model, self.diagnostics_level, psf_shape=psf_shape)
         for name, spec in specs.items():
-            if spec["shape"] == ("num_ngs",):
-                diagnostics[name] = _slot_aligned(diagnostics[name], used)
+            if "num_ngs" in spec["shape"]:
+                diagnostics[name] = _slot_aligned(diagnostics[name], used, spec["shape"])
         diagnostics["hybrid/ngs_used"] = used
         return diagnostics
 
@@ -760,12 +819,10 @@ def _require_hybrid_ngs_used(context: SimulationContext) -> np.ndarray:
 def _hybrid_payload_for_request_match(
     expected: Mapping[str, object], stored: Mapping[str, object]
 ) -> Mapping[str, object]:
-    """Compare Hybrid setup independently of retired interpolator records.
+    """Compare fitted paths and diagnostic fields across HDF5 serialization.
 
-    Existing datasets may include source paths and build records in addition
-    to the paths to their fitted interpolators. Only those four retired
-    records are ignored. The fitted file paths still participate in
-    matching.
+    Older datasets may carry extra interpolator build records. Diagnostic
+    specs read from HDF5 are nested and are flattened to the request's form.
     """
     fields = (
         HybridSimulation.KEY_SCIENCE_HO_PSF_INTERPOLATOR_PATH,
@@ -778,7 +835,11 @@ def _hybrid_payload_for_request_match(
         for field in fields
         for suffix in ("provenance", "builder")
     }
-    return {name: value for name, value in stored.items() if name not in retired}
+    payload = {name: value for name, value in stored.items() if name not in retired}
+    key = schema.KEY_SIMULATION_DIAGNOSTIC_FIELDS
+    if key in payload:
+        payload[key] = _normalize_diagnostic_field_specs(payload[key])
+    return payload
 
 
 def _runtime_r0_m(setup: HybridSetup, options: Mapping[str, Any]) -> u.Quantity:
@@ -796,15 +857,35 @@ def _ngs_used_mask(options: Mapping[str, Any]) -> np.ndarray:
     return np.asarray(options[schema.KEY_OPTION_NGS_USED], dtype=bool).reshape(-1)
 
 
-def _slot_aligned(active_values: u.Quantity, used: np.ndarray) -> u.Quantity:
-    """Return NGS slot-aligned values with inactive slots set to ``NaN``."""
-    active = np.asarray(active_values.value).reshape(-1)
-    used = np.asarray(used, dtype=bool).reshape(-1)
-    if active.shape[0] != int(np.count_nonzero(used)):
-        raise ValueError("Hybrid diagnostics active NGS values do not match ngs_used.")
-    out = np.full(used.shape, np.nan, dtype=active.dtype)
-    out[used] = active
-    return out * active_values.unit
+def _slot_aligned(
+    active_values: u.Quantity, used: np.ndarray, shape: tuple[int | str, ...],
+) -> u.Quantity:
+    """Expand active vectors or per-star matrix blocks to the batch NGS slots."""
+    active_slots = np.flatnonzero(used)
+    active_shape = tuple(len(active_slots) if axis == "num_ngs" else axis for axis in shape)
+    output_shape = tuple(len(used) if axis == "num_ngs" else axis for axis in shape)
+    active = np.asarray(active_values.value).reshape(active_shape)
+    output = np.full(output_shape, np.nan, dtype=active.dtype)
+    indices = np.ix_(*(active_slots if axis == "num_ngs" else np.arange(axis) for axis in shape))
+    output[indices] = active
+    return output * active_values.unit
+
+
+def _configured_lo_model(parser: ConfigParser) -> LowOrderModel:
+    """Read the explicit Hybrid low-order model selection, defaulting to MASTSEL."""
+    return LowOrderModel(parser.get("hybrid", "LOModel", fallback=LowOrderModel.MASTSEL.value))
+
+
+def _validate_e2e_ngs_metrics(parser: ConfigParser, source: Path, ngs_path: Path) -> None:
+    """Require the batch and calibrated model to use the same NGS metrics."""
+    calibrated_path = resolve_ini_path(
+        parser.get("inputs", "NGSMetricsPath", fallback=""),
+        source=source,
+        label="inputs.NGSMetricsPath",
+        must_exist=True,
+    )
+    if calibrated_path != ngs_path:
+        raise ValueError("The batch NGS metrics must match inputs.NGSMetricsPath for E2E-Calibrated.")
 
 
 def _require_option_scalar(options: Mapping[str, Any], key: str) -> u.Quantity:

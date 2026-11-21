@@ -1,9 +1,12 @@
 # Hybrid Simulation
 
 `HybridSimulation` is AO Predict's dataset adapter over Hybrid AO PSF. Supply
-the upstream science-HO-PSF and NGS-HO-metric artifact paths through
-`SimulationConfig.specific_fields`; `non_psd_policy` selects `error` (the
-default) or `clip` for materially non-positive-semidefinite Ctot. See the
+the science HO PSF and NGS metric interpolator paths through
+`SimulationConfig.specific_fields`. The INI selected by `config_path` sets
+`[hybrid] LOModel`, which defaults to `mastsel`. MASTSEL supports
+`non_psd_policy` of `error` or `clip`. With `LOModel = e2e-calibrated`,
+`[inputs]` supplies the four fitted model paths and `NGSMetricsPath` must
+match the simulation's NGS metric interpolator. See the
 [Python API guide](../../api.md#hybrid-interpolation-inputs) for an AO Predict
 configuration example and the [Hybrid AO PSF project](https://github.com/nvnunes/hybrid-ao-psf)
 for the standalone engine and artifact API.
@@ -42,8 +45,10 @@ the fields that Hybrid declares. The full angular covariance is
 `/diagnostics/covariance/ctot`. MASTSEL diagnostics use
 `/diagnostics/mastsel`, with one `frame_rate` per observation.
 Per-star values follow the batch's NGS slot order and have `NaN` in inactive
-slots. `/diagnostics/hybrid/ngs_used` records that slot mask. Debug adds the
-effective MASTSEL INI and `/diagnostics/psfs_ho`.
+slots. `/diagnostics/hybrid/ngs_used` records that slot mask. Debug adds
+`/diagnostics/psfs_ho` and the model's detailed fields. E2E-Calibrated
+stores reconstructor matrices in per-star, two-axis blocks so the same
+NGS slot mask applies to the matrix fields.
 
 ::: ao_predict.simulation.hybrid.HybridSimulation
 
