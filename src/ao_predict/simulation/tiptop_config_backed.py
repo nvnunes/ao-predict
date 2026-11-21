@@ -6,17 +6,17 @@ import io
 from collections.abc import Mapping
 from configparser import ConfigParser
 from dataclasses import dataclass
+from functools import cached_property
 from typing import Any, ClassVar
 
 import numpy as np
+from ao_core.io.ini import parse_ini, read_ini_scalar
 from ao_core.models.config import (
     AtmosphereConfig,
     DetectorConfig,
     LoopConfig,
     SourceConfig,
     TelescopeConfig,
-    parse_ini,
-    read_ini_scalar,
 )
 from ao_core.photometry import WFSPhotometryConfig, photons_per_frame_to_magnitudes
 from astropy import units as u
@@ -41,6 +41,18 @@ class TiptopBaseConfig:
     ini_text: str
     parser: ConfigParser
 
+    @cached_property
+    def _atmosphere(self) -> AtmosphereConfig | None:
+        return AtmosphereConfig.from_ini(self.parser)
+
+    @cached_property
+    def _science_sources(self) -> SourceConfig | None:
+        return SourceConfig.from_ini(self.parser, "sources_science")
+
+    @cached_property
+    def _telescope(self) -> TelescopeConfig | None:
+        return TelescopeConfig.from_ini(self.parser)
+
 
 # INI format helpers
 
@@ -61,10 +73,9 @@ class TiptopConfigBackedSimulation(ConfigBackedSimulation):
     """Base for simulations that use the shared TIPTOP/MASTSEL INI dialect.
 
     AO Core decodes the shared fields of the case-preserving base INI.
-    This class uses those fields to resolve AO Predict setup and option
-    defaults. Runtime execution,
-    runtime parser mutation, and output extraction remain subclass
-    responsibilities.
+    This class resolves AO Predict setup and option defaults from those
+    fields. Subclasses edit a copy of the base parser for runtime execution
+    and extract the results.
 
     Attributes:
         base_config: Parsed ``TiptopBaseConfig`` bound from the persisted
@@ -140,13 +151,14 @@ class TiptopConfigBackedSimulation(ConfigBackedSimulation):
             ValueError: If required INI fields needed for default derivation
                 are missing or invalid.
         """
-        parser = self.base_config.parser
+        config = self.base_config
+        atmosphere = config._atmosphere
+        if atmosphere is None or atmosphere.reference_wavelength is None:
+            raise ValueError("TIPTOP atmosphere.Wavelength must be present to prepare setup payload.")
+        default_atm_profile = self._get_default_atm_profile_from_ini(config.parser)
 
-        atm_wavelength = self._get_required_atm_wavelength_m(parser, "prepare setup payload") * u.m
-        default_atm_profile = self._get_default_atm_profile_from_ini(parser)
-
-        high_order_sources = SourceConfig.from_ini(parser, "sources_HO")
-        science_sources = SourceConfig.from_ini(parser, "sources_science")
+        high_order_sources = SourceConfig.from_ini(config.parser, "sources_HO")
+        science_sources = config._science_sources
         lgs_zenith_offsets = (
             None if high_order_sources is None else high_order_sources.zenith
         )
@@ -159,7 +171,7 @@ class TiptopConfigBackedSimulation(ConfigBackedSimulation):
         return self._build_setup_payload(
             base_setup_payload,
             setup_cfg,
-            default_atm_wavelength=atm_wavelength,
+            default_atm_wavelength=atmosphere.reference_wavelength,
             default_atm_profile=default_atm_profile,
             default_lgs_r=(
                 np.empty(0) * u.arcsec
@@ -206,22 +218,28 @@ class TiptopConfigBackedSimulation(ConfigBackedSimulation):
         if num_sims <= 0:
             raise ValueError("num_sims must be > 0.")
 
-        parser = self.base_config.parser
+        config = self.base_config
         options_payload = {str(key): value.copy() if hasattr(value, "copy") else value for key, value in base_options_payload.items()}
 
         default_options: dict[str, Any] = {}
         if schema.KEY_OPTION_WAVELENGTH not in options_payload:
-            default_options[schema.KEY_OPTION_WAVELENGTH] = self._get_default_wavelength_m_from_ini(parser) * u.m
+            science_sources = config._science_sources
+            if science_sources is None or science_sources.wavelengths is None:
+                raise ValueError("TIPTOP config missing sources_science.Wavelength for default wavelength option.")
+            default_options[schema.KEY_OPTION_WAVELENGTH] = science_sources.wavelengths[0]
         if schema.KEY_OPTION_ZENITH_ANGLE not in options_payload:
-            default_options[schema.KEY_OPTION_ZENITH_ANGLE] = self._get_default_zenith_angle_deg_from_ini(parser) * u.deg
+            telescope = config._telescope
+            if telescope is None or telescope.zenith_angle is None:
+                raise ValueError("TIPTOP config missing telescope.ZenithAngle for default zenith_angle option.")
+            default_options[schema.KEY_OPTION_ZENITH_ANGLE] = telescope.zenith_angle
         if schema.KEY_OPTION_ATM_PROFILE_ID not in options_payload:
             default_options[schema.KEY_OPTION_ATM_PROFILE_ID] = np.int32(0)
         if schema.KEY_OPTION_R0 not in options_payload:
-            default_options[schema.KEY_OPTION_R0] = self._default_r0(AtmosphereConfig.from_ini(parser))
+            default_options[schema.KEY_OPTION_R0] = self._default_r0(config._atmosphere)
 
         if not any(key in options_payload for key in schema.OPTION_KEYS_NGS):
             default_ngs_options = self._get_default_ngs_options_from_ini(
-                parser,
+                config,
                 setup_payload[self.KEY_SETUP_NGS_MAGNITUDE_ZEROPOINT],
             )
             if default_ngs_options is not None:
@@ -309,13 +327,12 @@ class TiptopConfigBackedSimulation(ConfigBackedSimulation):
 
     @staticmethod
     def _get_ngs_photometry_config(
-        parser: ConfigParser,
+        telescope_config: TelescopeConfig | None,
         low_order_detector: DetectorConfig | None,
+        low_order_loop: LoopConfig | None,
         ngs_magnitude_zeropoint: u.Quantity,
     ) -> WFSPhotometryConfig:
         """Build the NGS photometry inputs from shared telescope and LO fields."""
-        telescope_config = TelescopeConfig.from_ini(parser)
-        low_order_loop = LoopConfig.from_ini(parser, stage="LO")
         if telescope_config is None or telescope_config.diameter is None:
             raise ValueError("TIPTOP config missing telescope.TelescopeDiameter required for ngs_magnitude conversion.")
         if low_order_detector is None or low_order_detector.lenslet_counts is None:
@@ -350,8 +367,17 @@ class TiptopConfigBackedSimulation(ConfigBackedSimulation):
     # Default helpers
 
     def _get_default_atm_profile_from_ini(self, parser: ConfigParser) -> dict[str, Any]:
-        """Construct default atmospheric profile from base INI."""
-        atmosphere_config = AtmosphereConfig.from_ini(parser)
+        """Construct the default setup profile from a TIPTOP or MASTSEL INI.
+
+        Subclasses may complete the profile before setup validation. The bound
+        base parser shares its decoded atmosphere with the setup wavelength and
+        option defaults. A different parser supplies its own atmosphere.
+        """
+        config = self._base_config
+        if config is not None and parser is config.parser:
+            atmosphere_config = config._atmosphere
+        else:
+            atmosphere_config = AtmosphereConfig.from_ini(parser)
         r0 = self._default_r0(atmosphere_config)
         assert atmosphere_config is not None
         profile = {
@@ -365,32 +391,20 @@ class TiptopConfigBackedSimulation(ConfigBackedSimulation):
         }
         return {key: value for key, value in profile.items() if value is not None}
 
-    @staticmethod
-    def _get_default_wavelength_m_from_ini(parser: ConfigParser) -> float:
-        """Read default science wavelength option from INI in meters."""
-        science_sources = SourceConfig.from_ini(parser, "sources_science")
-        if science_sources is None or science_sources.wavelengths is None:
-            raise ValueError("TIPTOP config missing sources_science.Wavelength for default wavelength option.")
-        return float(science_sources.wavelengths[0].to_value(u.m))
-
-    def _get_default_zenith_angle_deg_from_ini(self, parser: ConfigParser) -> float:
-        """Read default zenith angle option from INI."""
-        telescope_config = TelescopeConfig.from_ini(parser)
-        if telescope_config is None or telescope_config.zenith_angle is None:
-            raise ValueError("TIPTOP config missing telescope.ZenithAngle for default zenith_angle option.")
-        return float(telescope_config.zenith_angle.to_value(u.deg))
-
     def _get_default_ngs_options_from_ini(
         self,
-        parser: ConfigParser,
+        config: TiptopBaseConfig,
         ngs_magnitude_zeropoint: u.Quantity,
     ) -> dict[str, np.ndarray] | None:
         """Resolve the default NGS geometry and convert photon counts to magnitudes."""
-        low_order_detector = DetectorConfig.low_order_from_ini(parser)
+        low_order_detector = DetectorConfig.low_order_from_ini(config.parser)
         photometry = self._get_ngs_photometry_config(
-            parser, low_order_detector, ngs_magnitude_zeropoint
+            config._telescope,
+            low_order_detector,
+            LoopConfig.from_ini(config.parser, stage="LO"),
+            ngs_magnitude_zeropoint,
         )
-        low_order_sources = SourceConfig.from_ini(parser, "sources_LO")
+        low_order_sources = SourceConfig.from_ini(config.parser, "sources_LO")
         if (
             low_order_sources is None
             or low_order_sources.zenith is None

@@ -302,7 +302,10 @@ def test_tiptop_create_context_leaves_ini_ngs_when_options_omit_ngs(tmp_path: Pa
     assert ctx.runtime["effective_parser"]["sensor_LO"]["NumberPhotons"] == "[100]"
 
 
-def test_tiptop_prepare_options_payload_loads_ngs_defaults_from_ini(tmp_path: Path):
+@pytest.mark.parametrize("use_ini_defaults", [False, True])
+def test_tiptop_prepare_options_payload_loads_defaults_from_ini(
+    tmp_path: Path, use_ini_defaults: bool
+):
     sim = TiptopSimulation()
     ini_path = tmp_path / "tiptop.ini"
     ini_path.write_text(_ini_text(), encoding="utf-8")
@@ -315,16 +318,29 @@ def test_tiptop_prepare_options_payload_loads_ngs_defaults_from_ini(tmp_path: Pa
         {"ngs_magnitude_zeropoint": 3.0e10 * u.photon / (u.m**2 * u.s)},
     )
 
-    options_payload = sim.prepare_options_payload(
-        2,
-        setup_payload,
-        {
-            "wavelength": np.array([1.65, 1.65], dtype=float) * u.um,
-            "zenith_angle": np.array([20.0, 25.0], dtype=float) * u.deg,
-            "atm_profile_id": np.array([0, 0], dtype=np.int32),
-            "r0": np.array([0.16, 0.14], dtype=float) * u.m,
-        },
-    )
+    assert setup_payload["atm_wavelength"].to_value(u.nm) == pytest.approx(500)
+    assert setup_payload["atm_profiles"][0]["r0"].to_value(u.m) == pytest.approx(0.16)
+
+    if use_ini_defaults:
+        explicit_options = {}
+        expected_wavelength = [1.65, 1.65]
+        expected_zenith_angle = [20.0, 20.0]
+        expected_r0 = [0.16, 0.16]
+    else:
+        expected_wavelength = [1.25, 2.2]
+        expected_zenith_angle = [15.0, 25.0]
+        expected_r0 = [0.10, 0.14]
+        explicit_options = {
+            "wavelength": np.array(expected_wavelength) * u.um,
+            "zenith_angle": np.array(expected_zenith_angle) * u.deg,
+            "r0": np.array(expected_r0) * u.m,
+        }
+    options_payload = sim.prepare_options_payload(2, setup_payload, explicit_options)
+
+    np.testing.assert_array_equal(options_payload["atm_profile_id"], [0, 0])
+    np.testing.assert_allclose(options_payload["wavelength"].to_value(u.um), expected_wavelength)
+    np.testing.assert_allclose(options_payload["zenith_angle"].to_value(u.deg), expected_zenith_angle)
+    np.testing.assert_allclose(options_payload["r0"].to_value(u.m), expected_r0)
 
     np.testing.assert_allclose(
         options_payload["ngs_r"].to_value(u.arcsec),

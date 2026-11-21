@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-from ao_core.models.config import DetectorConfig, TelescopeConfig
+from ao_core.models.config import DetectorConfig, LoopConfig, TelescopeConfig
 from ao_core.photometry import magnitudes_to_photons_per_frame
 from astropy import units as u
 
@@ -281,7 +281,10 @@ class TiptopSimulation(TiptopConfigBackedSimulation):
             return
         low_order_detector = DetectorConfig.low_order_from_ini(parser)
         photometry = self._get_ngs_photometry_config(
-            parser, low_order_detector, setup.ngs_magnitude_zeropoint
+            TelescopeConfig.from_ini(parser),
+            low_order_detector,
+            LoopConfig.from_ini(parser, stage="LO"),
+            setup.ngs_magnitude_zeropoint,
         )
 
         if parser.has_section("sources_LO"):

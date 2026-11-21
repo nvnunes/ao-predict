@@ -10,7 +10,6 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-from ao_core.models.config import read_ini_source
 from astropy import units as u
 from hybrid_ao_psf import (
     DiagnosticsLevel,
@@ -130,6 +129,11 @@ class HybridSimulation(TiptopConfigBackedSimulation):
     result persistence, statistics, and batch slot alignment. Hybrid AO PSF
     owns provider evaluation, MASTSEL execution, Ctot handling, finite-field
     blur, jitter, and the scientific diagnostics for each level.
+
+    Configuration requires ``config_path``, ``science_ho_psf_interpolator_path``,
+    and ``ngs_ho_metric_interpolator_path``. Paths are resolved against
+    ``simulation.base_path`` when supplied. An explicit ``simulation.precision``
+    overrides ``[hybrid] precision`` in the base INI. The default is ``float32``.
     """
 
     _VERSION = "0.0.1"
@@ -199,45 +203,23 @@ class HybridSimulation(TiptopConfigBackedSimulation):
 
     # Simulation payload lifecycle
 
-    def prepare_simulation_payload(
+    def _build_config_backed_payload(
         self,
         base_simulation_payload: Mapping[str, Any],
         simulation_cfg: Mapping[str, Any],
+        config_text: str,
     ) -> Mapping[str, Any]:
-        """Build the persisted Hybrid ``/simulation`` payload.
+        """Resolve Hybrid settings and validate interpolators before persisting.
 
-        The MASTSEL base INI is persisted through the inherited
-        ``base_config`` lifecycle. Interpolator file paths are resolved
-        relative to ``simulation.base_path``, loaded, validated, and persisted
-        as resolved strings under ``/simulation``. The exact MASTSEL base INI
-        text remains available under ``/simulation/base_config``.
-
-        Args:
-            base_simulation_payload: Core simulation payload containing name,
-                version, and declared extra stats.
-            simulation_cfg: User-facing simulation config. Hybrid requires
-                ``config_path``, ``science_ho_psf_interpolator_path``, and
-                ``ngs_ho_metric_interpolator_path``.
-
-        Returns:
-            Persisted ``/simulation`` mapping for Hybrid datasets.
-
-        Raises:
-            TypeError: If required path fields have invalid types.
-            ValueError: If the MASTSEL INI text or interpolator files are
-                invalid, or if the selected diagnostics level is unsupported.
-            FileNotFoundError: If required config or file paths are missing.
+        The base lifecycle supplies the original MASTSEL INI text. Precision
+        is resolved before loading the science interpolator because its dtype
+        forms part of the interpolator cache key.
         """
         simulation_cfg = dict(simulation_cfg)
-        config_text = None
         if schema.KEY_SIMULATION_PRECISION not in simulation_cfg:
-            ini_source = read_ini_source(
-                self._resolve_config_path(simulation_cfg),
-                parser=ConfigParser(interpolation=None),
-            )
-            config_text = ini_source.text
-            assert config_text is not None
-            simulation_cfg[schema.KEY_SIMULATION_PRECISION] = ini_source.parser.get(
+            parser = ConfigParser(interpolation=None)
+            parser.read_string(config_text)
+            simulation_cfg[schema.KEY_SIMULATION_PRECISION] = parser.get(
                 "hybrid", "precision", fallback="float32"
             )
         simulation_cfg[self.KEY_NON_PSD_POLICY] = _normalize_non_psd_policy(
@@ -254,9 +236,7 @@ class HybridSimulation(TiptopConfigBackedSimulation):
         load_psf_metric_interpolator(ngs_path)
         simulation_cfg[self.KEY_SCIENCE_HO_PSF_INTERPOLATOR_PATH] = str(science_path)
         simulation_cfg[self.KEY_NGS_HO_METRIC_INTERPOLATOR_PATH] = str(ngs_path)
-        if config_text is None:
-            return super().prepare_simulation_payload(base_simulation_payload, simulation_cfg)
-        return self._build_config_backed_payload(
+        return super()._build_config_backed_payload(
             base_simulation_payload, simulation_cfg, config_text
         )
 
